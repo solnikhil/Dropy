@@ -225,9 +225,11 @@ final class OverlayController: NSObject {
                     await selectedWindowClosed(request: request)
                     return
                 }
-                guard request == generation else { return }
+                guard request == generation, state == .capturing,
+                      selectedIdentity == selected.identity else { return }
                 try await capture.start(window: current, renderer: renderer)
-                guard request == generation, state != .closed else { return }
+                guard request == generation, state == .capturing,
+                      selectedIdentity == selected.identity else { return }
                 status?.stringValue = "Live preview · interaction bridge not enabled yet"
                 monitorWindow(selected.identity, request: request, renderer: renderer)
             } catch {
@@ -267,6 +269,8 @@ final class OverlayController: NSObject {
 
     private func selectedWindowClosed(request: UUID) async {
         guard request == generation, state == .capturing else { return }
+        generation = UUID()
+        let invalidatedRequest = generation
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
@@ -276,14 +280,16 @@ final class OverlayController: NSObject {
         state = .sourceUnavailable
         status?.stringValue = "Source window closed. Refresh to choose another."
         await capture.stop()
-        if request == generation, state == .sourceUnavailable { renderer?.clear() }
+        if generation == invalidatedRequest, state == .sourceUnavailable { renderer?.clear() }
     }
 
     @objc private func applicationTerminated(_ notification: Notification) {
         guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                 as? NSRunningApplication,
               let identity = selectedIdentity,
-              application.processIdentifier == identity.processID else { return }
+              application.processIdentifier == identity.processID,
+              application.launchDate == identity.processLaunchDate,
+              application.bundleIdentifier == identity.bundleIdentifier else { return }
         let request = generation
         Task { await selectedWindowClosed(request: request) }
     }

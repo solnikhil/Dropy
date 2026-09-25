@@ -4,11 +4,11 @@ import Foundation
 /// a saved app preference must never be treated as a saved window selection.
 public struct WindowIdentity: Equatable, Sendable {
     public let processID: Int32
-    public let processLaunchDate: Date?
+    public let processLaunchDate: Date
     public let windowID: UInt32
     public let bundleIdentifier: String?
 
-    public init(processID: Int32, processLaunchDate: Date?, windowID: UInt32,
+    public init(processID: Int32, processLaunchDate: Date, windowID: UInt32,
                 bundleIdentifier: String?) {
         self.processID = processID
         self.processLaunchDate = processLaunchDate
