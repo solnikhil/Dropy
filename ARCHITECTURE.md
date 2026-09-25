@@ -12,13 +12,16 @@ That full contract is **not yet implemented**. The first native slice is a live,
 |---|---|---|
 | `DropyCore/Preferences` | Durable choices for trigger, direct/last/picker opening, size, display mode and dismissal | Basic persisted settings; selected-region and several dismissal modes not yet exposed |
 | `DropyCore/Geometry` | Top-edge display geometry and inverse image-coordinate mapping | Unit-checked for fit/fill and boundary cases |
-| `WindowCatalog` | Discover exact `SCWindow` objects belonging to ordinary running apps | Filters system/accessory windows and empty-title duplicates |
-| `CaptureController` | Start/stop one desktop-independent `SCStream`; own a bounded latest-frame mailbox | Runs only while a window is selected in an open overlay |
+| `DropyCore/WindowIdentity` | Session-local process/window identity; reject a reused ID after relaunch | Pure matching checks; never persisted as an app preference |
+| `WindowCatalog` | Discover and freshly resolve exact `SCWindow` objects belonging to ordinary running apps | Picker filters system/accessory windows; resolution does not filter by title or size |
+| `CaptureController` | Start/stop one desktop-independent `SCStream`; own a bounded latest-frame mailbox | Runs only while a window is selected; reconfigures output on source resize |
 | `MetalFrameView` | Import BGRA IOSurface-backed buffers as Metal textures and display fit/fill/native modes | Visually checked with Spotify and tldraw; not profiled |
-| `OverlayController` | AppKit panel, picker, view-only state, source selection and lifecycle | Opens at the screen top; closes without quitting the source app |
+| `OverlayController` | AppKit panel, picker, view-only state, source selection and lifecycle | Rechecks the exact window every two seconds while capturing and reacts to app termination; closes without quitting the source app |
 | `AppDelegate` | Status menu, hover/click trigger, preferences | Menu bar entry and basic settings |
 
 The overlay state should eventually be modeled as a stricter state machine: closed → opening → source resolving → capture starting → viewing → interaction active → closing, plus distinct permission, target-quit, stream-interrupted and recovery states. The current `State` enum is only the first lifecycle boundary.
+
+The window check runs only during capture. Its two-second ScreenCaptureKit catalog refresh is a correctness guard for window close and resize, not a measured final cadence; the M1 benchmark must include its WindowServer and energy cost. App termination also has an immediate workspace notification. A vanished source clears the preview and requires an explicit new choice, avoiding a silent switch to another same-title document.
 
 ## Capture and rendering decision
 

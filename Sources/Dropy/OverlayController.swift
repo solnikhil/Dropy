@@ -16,11 +16,20 @@ final class OverlayController: NSObject {
     private var status: NSTextField?
     private var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
-    private var selectedWindowID: CGWindowID?
+    private var selectedIdentity: WindowIdentity?
+    private var identityTask: Task<Void, Never>?
     private var generation = UUID()
     private(set) var state: State = .closed
 
-    init(preferences: PreferenceStore) { self.preferences = preferences }
+    init(preferences: PreferenceStore) {
+        self.preferences = preferences
+        super.init()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(applicationTerminated(_:)),
+            name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+    }
+
+    deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
 
     func toggle() {
         state == .closed ? open() : close()
@@ -62,7 +71,9 @@ final class OverlayController: NSObject {
         guard state != .closed else { return }
         generation = UUID()
         state = .closed
-        selectedWindowID = nil
+        selectedIdentity = nil
+        identityTask?.cancel()
+        identityTask = nil
         panel?.orderOut(nil)
         panel = nil
         list = nil
@@ -82,16 +93,18 @@ final class OverlayController: NSObject {
                 guard request == generation, state != .closed else { return }
                 available = windows
                 rebuildWindowList()
-                status?.stringValue = windows.isEmpty
-                    ? "No capturable windows. Open an app and refresh."
-                    : "Choose a window · live preview only"
+                if state != .capturing {
+                    status?.stringValue = windows.isEmpty
+                        ? "No capturable windows. Open an app and refresh."
+                        : "Choose a window · live preview only"
+                }
                 let preferredBundleID: String?
                 switch preferences.value.openBehavior {
                 case .direct: preferredBundleID = preferences.value.selectedBundleIdentifier
                 case .lastUsed: preferredBundleID = preferences.value.lastUsedBundleIdentifier
                 case .picker: preferredBundleID = nil
                 }
-                if let bundleID = preferredBundleID,
+                if state == .selecting, let bundleID = preferredBundleID,
                    let index = windows.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
                     selectWindow(at: index)
                 }
@@ -193,7 +206,9 @@ final class OverlayController: NSObject {
         let selected = available[index]
         let request = UUID()
         generation = request
-        selectedWindowID = selected.window.windowID
+        identityTask?.cancel()
+        identityTask = nil
+        selectedIdentity = selected.identity
         if let bundleID = selected.bundleIdentifier {
             preferences.update {
                 $0.lastUsedBundleIdentifier = bundleID
@@ -204,15 +219,71 @@ final class OverlayController: NSObject {
         state = .capturing
         Task {
             do {
-                try await capture.start(window: selected.window, renderer: renderer)
+                guard let current = try await WindowCatalog.resolve(selected.identity) else {
+                    await selectedWindowClosed(request: request)
+                    return
+                }
+                guard request == generation else { return }
+                try await capture.start(window: current, renderer: renderer)
                 guard request == generation, state != .closed else { return }
                 status?.stringValue = "Live preview · interaction bridge not enabled yet"
+                monitorWindow(selected.identity, request: request, renderer: renderer)
             } catch {
                 guard request == generation else { return }
                 state = .error
                 status?.stringValue = "Preview failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func monitorWindow(_ identity: WindowIdentity, request: UUID,
+                               renderer: MetalFrameView) {
+        identityTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self,
+                      request == self.generation, self.state == .capturing,
+                      self.selectedIdentity == identity else { return }
+                do {
+                    guard let current = try await WindowCatalog.resolve(identity) else {
+                        await self.selectedWindowClosed(request: request)
+                        return
+                    }
+                    guard !Task.isCancelled, request == self.generation else { return }
+                    try await self.capture.updateWindow(current, renderer: renderer)
+                } catch {
+                    guard !Task.isCancelled, request == self.generation else { return }
+                    self.state = .error
+                    self.status?.stringValue = "Window check failed: \(error.localizedDescription)"
+                    await self.capture.stop()
+                    if request == self.generation { self.renderer?.clear() }
+                    return
+                }
+            }
+        }
+    }
+
+    private func selectedWindowClosed(request: UUID) async {
+        guard request == generation, state == .capturing else { return }
+        selectedIdentity = nil
+        identityTask?.cancel()
+        identityTask = nil
+        available = []
+        rebuildWindowList()
+        renderer?.clear()
+        state = .selecting
+        status?.stringValue = "Source window closed. Refresh to choose another."
+        await capture.stop()
+        if request == generation, state == .selecting { renderer?.clear() }
+    }
+
+    @objc private func applicationTerminated(_ notification: Notification) {
+        guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication,
+              let identity = selectedIdentity,
+              application.processIdentifier == identity.processID else { return }
+        let request = generation
+        Task { await selectedWindowClosed(request: request) }
     }
 
     @objc private func closeClicked() { close() }

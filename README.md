@@ -10,8 +10,9 @@ Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app 
 - A picker for ordinary running app windows, with ScreenCaptureKit capture and an IOSurface-backed Metal preview.
 - Hover or click notch triggers, plus a menu-bar entry; compact/medium/wide sizes; picker/direct/last-used opening; fit/fill/native-scale content display. These choices are saved locally.
 - The capture stream stops when the overlay closes. The source app continues running.
+- A selected window is rechecked by process, launch time, bundle and window ID while the overlay is open. Closing it clears the preview; resizing it updates capture dimensions.
 
-The preview is labelled as view-only in the UI. Direct and last-used opening choose a previously selected *running window*; Dropy does not yet launch an app that is closed, pin installed apps, select a crop region, or implement every dismissal mode.
+The preview is labelled as view-only in the UI. Direct and last-used opening match a saved *app* and choose one of its current windows; they do not yet remember a particular document window. Dropy does not yet launch an app that is closed, pin installed apps, select a crop region, or implement every dismissal mode.
 
 ## Build and run
 
