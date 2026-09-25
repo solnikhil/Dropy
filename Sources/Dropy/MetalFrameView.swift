@@ -52,12 +52,17 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     func present(_ pixelBuffer: CVPixelBuffer) {
         precondition(Thread.isMainThread)
         currentPixelBuffer = pixelBuffer
+        isHidden = false
         setNeedsDisplay(bounds)
     }
 
+    /// Hide the layer as well as drawing an empty pass. While the panel is covered,
+    /// for example by Control Center during a system "Stop sharing", no drawable may
+    /// be available, and a skipped draw would leave the last frame on screen.
     func clear() {
         precondition(Thread.isMainThread)
         currentPixelBuffer = nil
+        isHidden = true
         setNeedsDisplay(bounds)
     }
 

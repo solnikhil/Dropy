@@ -15,6 +15,10 @@ swift test
 
 The local build script assembles an ad-hoc-signed development `.app` in `.build/local`. It is not a release package. Screen capture and Accessibility are separate macOS permissions; do not ask contributors to disable system protections. If a test changes another app's window, restore it even after failure.
 
+Each rebuild changes the ad-hoc signature, so macOS may treat it as a new app for Screen Recording. Launching the binary from a terminal (`.build/local/Dropy.app/Contents/MacOS/Dropy --show`) uses the terminal's grant instead.
+
+To stress rapid switching without input automation, set `DROPY_DEBUG_ALTERNATE=<bundle-id>[,<switches>[,<max-interval-ms>[,close]]]`. Dropy alternates between that app's first two picker windows with random gaps, logs the window that should end up showing, and with `close` closes the overlay afterwards. `Dropy capture started/stopped ... running=N` log lines show whether any stream leaked.
+
 ## Issues and pull requests
 
 - Use an issue for an implementation slice or a reproducible feasibility experiment. State macOS version, target app/version, display configuration, permissions and exact interaction being tested.
