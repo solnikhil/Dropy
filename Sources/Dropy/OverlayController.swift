@@ -20,6 +20,13 @@ final class OverlayController: NSObject {
     private var selectedApplicationName = ""
     private var restartedAfterInterruption = false
     private var identityTask: Task<Void, Never>?
+    private struct PendingStart {
+        let identity: WindowIdentity
+        let request: UUID
+        let renderer: MetalFrameView
+    }
+    private var pendingStart: PendingStart?
+    private var startInFlight = false
     /// Changes on open, close, every selection and every failure. Async work
     /// continues only while its captured generation is still current.
     private var generation = UUID()
@@ -111,6 +118,7 @@ final class OverlayController: NSObject {
                    let index = windows.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
                     selectWindow(at: index)
                 }
+                if shouldAutoSelect { startDebugAlternationIfRequested() }
             } catch {
                 guard request == generation, state != .closed, !state.isCapturing else { return }
                 setState(.failed(catalogFailure(for: error)))
@@ -237,6 +245,37 @@ final class OverlayController: NSObject {
         list.frame.size.height = max(CGFloat(available.count) * 49, 1)
     }
 
+    /// Development-only stress driver for rapid A/B switching without input automation:
+    /// `DROPY_DEBUG_ALTERNATE=<bundle-id>[,<switches>[,<max-interval-ms>[,close]]]` alternates between
+    /// that app's first two picker windows with random gaps up to the interval, then logs
+    /// the window that should be showing; `close` then closes the overlay after three
+    /// seconds to check that no stream survives. Logs window IDs only.
+    private func startDebugAlternationIfRequested() {
+        guard let spec = ProcessInfo.processInfo.environment["DROPY_DEBUG_ALTERNATE"] else { return }
+        let parts = spec.split(separator: ",").map(String.init)
+        let switches = parts.count > 1 ? max(Int(parts[1]) ?? 40, 1) : 40
+        let maxInterval = parts.count > 2 ? max(Int(parts[2]) ?? 150, 0) : 150
+        let pair = available.filter { $0.bundleIdentifier == parts.first }.prefix(2).map(\.window.windowID)
+        guard pair.count == 2 else {
+            NSLog("Dropy debug alternate: fewer than two windows")
+            return
+        }
+        NSLog("Dropy debug alternate: windows=%u,%u switches=%ld", pair[0], pair[1], switches)
+        Task {
+            for step in 0..<switches {
+                guard state != .closed,
+                      let index = available.firstIndex(where: { $0.window.windowID == pair[step % 2] })
+                else { return }
+                selectWindow(at: index)
+                try? await Task.sleep(for: .milliseconds(Int.random(in: 0...maxInterval)))
+            }
+            NSLog("Dropy debug alternate done: expected=%u", pair[(switches - 1) % 2])
+            guard parts.count > 3, parts[3] == "close" else { return }
+            try? await Task.sleep(for: .seconds(3))
+            close()
+        }
+    }
+
     private func selectWindow(at index: Int) {
         guard available.indices.contains(index), let renderer else { return }
         let selected = available[index]
@@ -261,37 +300,53 @@ final class OverlayController: NSObject {
         request == generation && state.isCapturing && selectedIdentity == identity
     }
 
+    /// Latest selection wins, and at most one resolve-and-start runs at a time.
+    /// Starting every superseded selection queued dozens of window-list fetches
+    /// during rapid switching and delayed the final preview by seconds.
     private func startCapture(_ identity: WindowIdentity, request: UUID, renderer: MetalFrameView) {
         setState(.starting(applicationName: selectedApplicationName))
+        pendingStart = PendingStart(identity: identity, request: request, renderer: renderer)
+        guard !startInFlight else { return }
+        startInFlight = true
+        Task {
+            while let next = pendingStart {
+                pendingStart = nil
+                guard isCurrent(next.request, next.identity) else { continue }
+                await performStart(next.identity, request: next.request, renderer: next.renderer)
+            }
+            startInFlight = false
+        }
+    }
+
+    private func performStart(_ identity: WindowIdentity, request: UUID,
+                              renderer: MetalFrameView) async {
         let onStop: @MainActor (Error) -> Void = { [weak self] error in
             self?.captureStopped(error, identity: identity, request: request, renderer: renderer)
         }
-        Task {
-            let resolution: WindowResolution
-            do {
-                resolution = try await WindowCatalog.resolve(identity)
-            } catch {
-                guard isCurrent(request, identity) else { return }
-                await fail(catalogFailure(for: error), request: request)
-                return
-            }
+        let resolution: WindowResolution
+        do {
+            resolution = try await WindowCatalog.resolve(identity)
+        } catch {
             guard isCurrent(request, identity) else { return }
-            guard case .available(let window) = resolution else {
-                await fail(unavailable(resolution), request: request)
-                return
-            }
-            do {
-                let started = try await capture.start(window: window, renderer: renderer,
-                                                      onUnexpectedStop: onStop)
-                guard started, isCurrent(request, identity) else { return }
-                showVisibility(of: window)
-                monitorWindow(identity, request: request, renderer: renderer)
-            } catch {
-                guard isCurrent(request, identity) else { return }
-                let captureFailure = await startFailure(for: error, identity: identity)
-                guard isCurrent(request, identity) else { return }
-                await fail(captureFailure, request: request)
-            }
+            await fail(catalogFailure(for: error), request: request)
+            return
+        }
+        guard isCurrent(request, identity) else { return }
+        guard case .available(let window) = resolution else {
+            await fail(unavailable(resolution), request: request)
+            return
+        }
+        do {
+            let started = try await capture.start(window: window, renderer: renderer,
+                                                  onUnexpectedStop: onStop)
+            guard started, isCurrent(request, identity) else { return }
+            showVisibility(of: window)
+            monitorWindow(identity, request: request, renderer: renderer)
+        } catch {
+            guard isCurrent(request, identity) else { return }
+            let captureFailure = await startFailure(for: error, identity: identity)
+            guard isCurrent(request, identity) else { return }
+            await fail(captureFailure, request: request)
         }
     }
 

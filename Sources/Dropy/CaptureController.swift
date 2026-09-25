@@ -80,6 +80,9 @@ final class CaptureController {
     private var stopObserver: StreamStopObserver?
     private var requestID = UUID()
     private var outputSize: CGSize?
+    /// Streams whose capture started and has not been stopped yet. More than one,
+    /// or any after close, is a leak. Logged by count and window ID only.
+    private var runningStreams = Set<ObjectIdentifier>()
 
     /// Starts one stream. `onUnexpectedStop` runs on the main actor only while this
     /// stream is still the active one; a stop Dropy requested is never reported.
@@ -100,7 +103,7 @@ final class CaptureController {
                       (error as NSError).domain, code)
                 let stopped = self.detachActiveStream()
                 onUnexpectedStop(error)
-                try? await stopped?.stopCapture()
+                await self.stopCapture(stopped)
             }
         }
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
@@ -116,6 +119,8 @@ final class CaptureController {
         self.outputSize = CGSize(width: configuration.width, height: configuration.height)
         do {
             try await stream.startCapture()
+            runningStreams.insert(ObjectIdentifier(stream))
+            NSLog("Dropy capture started: window=%u running=%ld", window.windowID, runningStreams.count)
         } catch {
             mailbox.invalidate()
             guard request == requestID, self.stream === stream else { return false }
@@ -124,7 +129,7 @@ final class CaptureController {
         }
         guard request == requestID, self.stream === stream else {
             mailbox.invalidate()
-            try? await stream.stopCapture()
+            await stopCapture(stream)
             return false
         }
         return true
@@ -173,7 +178,15 @@ final class CaptureController {
     }
 
     private func stopActiveStream() async {
-        try? await detachActiveStream()?.stopCapture()
+        await stopCapture(detachActiveStream())
+    }
+
+    private func stopCapture(_ stream: SCStream?) async {
+        guard let stream else { return }
+        if runningStreams.remove(ObjectIdentifier(stream)) != nil {
+            NSLog("Dropy capture stopped: running=%ld", runningStreams.count)
+        }
+        try? await stream.stopCapture()
     }
 
     /// Forget the active stream synchronously, so no later callback treats it as current.
