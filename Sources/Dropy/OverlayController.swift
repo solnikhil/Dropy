@@ -1,5 +1,6 @@
 import AppKit
 import DropyCore
+import ScreenCaptureKit
 
 final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -7,19 +8,22 @@ final class OverlayPanel: NSPanel {
 
 @MainActor
 final class OverlayController: NSObject {
-    enum State { case closed, opening, selecting, capturing, sourceUnavailable, error }
-
     private let preferences: PreferenceStore
     private let capture = CaptureController()
     private var panel: OverlayPanel?
     private var list: NSStackView?
     private var status: NSTextField?
+    private var privacyButton: NSButton?
     private var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
     private var selectedIdentity: WindowIdentity?
+    private var selectedApplicationName = ""
+    private var restartedAfterInterruption = false
     private var identityTask: Task<Void, Never>?
+    /// Changes on open, close, every selection and every failure. Async work
+    /// continues only while its captured generation is still current.
     private var generation = UUID()
-    private(set) var state: State = .closed
+    private(set) var state: CapturePhase = .closed
 
     init(preferences: PreferenceStore) {
         self.preferences = preferences
@@ -39,7 +43,6 @@ final class OverlayController: NSObject {
         guard state == .closed else { return }
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
                 ?? NSScreen.main else { return }
-        state = .opening
         generation = UUID()
         let full = OverlayGeometry.frame(on: screen.frame,
                                          preferredSize: preferences.value.sizePreset.dimensions)
@@ -63,14 +66,14 @@ final class OverlayController: NSObject {
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().setFrame(full, display: true)
         }
-        state = .selecting
+        setState(.selecting)
         refreshWindows()
     }
 
     func close() {
         guard state != .closed else { return }
         generation = UUID()
-        state = .closed
+        setState(.closed)
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
@@ -78,28 +81,26 @@ final class OverlayController: NSObject {
         panel = nil
         list = nil
         status = nil
+        privacyButton = nil
         renderer?.clear()
         renderer = nil
         Task { await capture.stop() }
     }
 
+    /// Person-initiated refresh: reload the list and leave any failure state.
     func refreshWindows() {
         guard state != .closed else { return }
         let request = generation
-        status?.stringValue = "Finding open windows…"
+        let shouldAutoSelect = state == .selecting
+        if !state.isCapturing { status?.stringValue = "Finding open windows…" }
         Task {
             do {
                 let windows = try await WindowCatalog.availableWindows()
                 guard request == generation, state != .closed else { return }
                 available = windows
                 rebuildWindowList()
-                let shouldAutoSelect = state == .selecting
-                if state == .sourceUnavailable { state = .selecting }
-                if state == .selecting || state == .opening {
-                    status?.stringValue = windows.isEmpty
-                        ? "No capturable windows. Open an app and refresh."
-                        : "Choose a window · live preview only"
-                }
+                guard !state.isCapturing else { return }
+                setState(.selecting)
                 let preferredBundleID: String?
                 switch preferences.value.openBehavior {
                 case .direct: preferredBundleID = preferences.value.selectedBundleIdentifier
@@ -111,11 +112,41 @@ final class OverlayController: NSObject {
                     selectWindow(at: index)
                 }
             } catch {
-                guard request == generation else { return }
-                state = .error
-                status?.stringValue = "Capture unavailable: \(error.localizedDescription)"
+                guard request == generation, state != .closed, !state.isCapturing else { return }
+                let nsError = error as NSError
+                switch CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) {
+                case .permissionDenied: setState(.failed(.permissionDenied))
+                default: setState(.failed(.windowListUnavailable(code: nsError.code)))
+                }
             }
         }
+    }
+
+    /// Repopulate the list after a failure without replacing the failure message,
+    /// so the person can make an explicit new choice.
+    private func reloadListKeepingState() {
+        let request = generation
+        Task {
+            guard let windows = try? await WindowCatalog.availableWindows(),
+                  request == generation, state.failure != nil else { return }
+            available = windows
+            rebuildWindowList()
+        }
+    }
+
+    private func setState(_ next: CapturePhase) {
+        if next != state { NSLog("Dropy state: %@", next.diagnosticName) }
+        state = next
+        switch next {
+        case .closed: break
+        case .selecting:
+            status?.stringValue = available.isEmpty
+                ? "No capturable windows. Open an app and refresh."
+                : "Choose a window · live preview only"
+        default:
+            status?.stringValue = next.message ?? ""
+        }
+        privacyButton?.isHidden = next.failure?.opensPrivacySettings != true
     }
 
     private func buildContent(in panel: NSPanel, size: CGSize) {
@@ -145,6 +176,13 @@ final class OverlayController: NSObject {
         let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshClicked))
         refresh.frame = CGRect(x: 22, y: size.height - 124, width: 90, height: 27)
         root.addSubview(refresh)
+
+        let privacy = NSButton(title: "Open Privacy Settings", target: self,
+                               action: #selector(privacyClicked))
+        privacy.frame = CGRect(x: 118, y: size.height - 124, width: 160, height: 27)
+        privacy.isHidden = true
+        root.addSubview(privacy)
+        privacyButton = privacy
 
         let scroll = NSScrollView(frame: CGRect(x: 18, y: 50,
                                                 width: 252, height: size.height - 185))
@@ -211,76 +249,149 @@ final class OverlayController: NSObject {
         identityTask?.cancel()
         identityTask = nil
         selectedIdentity = selected.identity
+        selectedApplicationName = selected.applicationName
+        restartedAfterInterruption = false
         if let bundleID = selected.bundleIdentifier {
             preferences.update {
                 $0.lastUsedBundleIdentifier = bundleID
                 if $0.openBehavior == .direct { $0.selectedBundleIdentifier = bundleID }
             }
         }
-        status?.stringValue = "Starting preview: \(selected.applicationName)…"
-        state = .capturing
+        renderer.clear()
+        startCapture(selected.identity, request: request, renderer: renderer)
+    }
+
+    private func isCurrent(_ request: UUID, _ identity: WindowIdentity) -> Bool {
+        request == generation && state.isCapturing && selectedIdentity == identity
+    }
+
+    private func startCapture(_ identity: WindowIdentity, request: UUID, renderer: MetalFrameView) {
+        setState(.starting(applicationName: selectedApplicationName))
+        let onStop: @MainActor (Error) -> Void = { [weak self] error in
+            self?.captureStopped(error, identity: identity, request: request, renderer: renderer)
+        }
         Task {
             do {
-                guard let current = try await WindowCatalog.resolve(selected.identity) else {
-                    await selectedWindowClosed(request: request)
+                let resolution = try await WindowCatalog.resolve(identity)
+                guard isCurrent(request, identity) else { return }
+                guard case .available(let window) = resolution else {
+                    await fail(unavailable(resolution), request: request)
                     return
                 }
-                guard request == generation, state == .capturing,
-                      selectedIdentity == selected.identity else { return }
-                try await capture.start(window: current, renderer: renderer)
-                guard request == generation, state == .capturing,
-                      selectedIdentity == selected.identity else { return }
-                status?.stringValue = "Live preview · interaction bridge not enabled yet"
-                monitorWindow(selected.identity, request: request, renderer: renderer)
+                let started = try await capture.start(window: window, renderer: renderer,
+                                                      onUnexpectedStop: onStop)
+                guard started, isCurrent(request, identity) else { return }
+                showVisibility(of: window)
+                monitorWindow(identity, request: request, renderer: renderer)
             } catch {
-                guard request == generation else { return }
-                state = .error
-                status?.stringValue = "Preview failed: \(error.localizedDescription)"
+                guard isCurrent(request, identity) else { return }
+                await fail(failure(for: error), request: request)
             }
         }
+    }
+
+    /// Minimized, hidden and other-Space windows stop producing frames; say so
+    /// instead of presenting a frozen image as live.
+    private func showVisibility(of window: SCWindow) {
+        setState(window.isOnScreen ? .viewing : .paused(applicationName: selectedApplicationName))
     }
 
     private func monitorWindow(_ identity: WindowIdentity, request: UUID,
                                renderer: MetalFrameView) {
+        identityTask?.cancel()
         identityTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled, let self,
-                      request == self.generation, self.state == .capturing,
-                      self.selectedIdentity == identity else { return }
+                guard !Task.isCancelled, let self, self.isCurrent(request, identity) else { return }
                 do {
-                    guard let current = try await WindowCatalog.resolve(identity) else {
-                        await self.selectedWindowClosed(request: request)
+                    let resolution = try await WindowCatalog.resolve(identity)
+                    guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
+                    guard case .available(let window) = resolution else {
+                        await self.fail(self.unavailable(resolution), request: request)
                         return
                     }
-                    guard !Task.isCancelled, request == self.generation else { return }
-                    try await self.capture.updateWindow(current, renderer: renderer)
+                    try await self.capture.updateWindow(window, renderer: renderer)
+                    guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
+                    self.showVisibility(of: window)
                 } catch {
-                    guard !Task.isCancelled, request == self.generation else { return }
-                    self.state = .error
-                    self.status?.stringValue = "Window check failed: \(error.localizedDescription)"
-                    await self.capture.stop()
-                    if request == self.generation { self.renderer?.clear() }
-                    return
+                    guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
+                    // A failed catalog read does not stop a healthy stream; the
+                    // stream delegate reports real stops. Revoked permission does.
+                    if case .permissionDenied = self.failure(for: error) {
+                        await self.fail(.permissionDenied, request: request)
+                        return
+                    }
+                    NSLog("Dropy window check failed: code=%ld", (error as NSError).code)
                 }
             }
         }
     }
 
-    private func selectedWindowClosed(request: UUID) async {
-        guard request == generation, state == .capturing else { return }
+    /// The stream ended without Dropy asking. Re-resolve the exact window to
+    /// explain why, and restart once if the same window is still available.
+    private func captureStopped(_ error: Error, identity: WindowIdentity, request: UUID,
+                                renderer: MetalFrameView) {
+        guard isCurrent(request, identity) else { return }
+        let nsError = error as NSError
+        let kind = CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code)
+        Task {
+            switch kind {
+            case .permissionDenied:
+                await fail(.permissionDenied, request: request)
+            case .stoppedFromSystemControls:
+                await fail(.stoppedFromSystemControls, request: request)
+            case .sourceMissing, .interrupted:
+                let resolution = try? await WindowCatalog.resolve(identity)
+                guard isCurrent(request, identity) else { return }
+                switch resolution {
+                case .some(.available), .none:
+                    guard !restartedAfterInterruption else {
+                        await fail(.streamInterrupted(code: nsError.code), request: request)
+                        return
+                    }
+                    restartedAfterInterruption = true
+                    identityTask?.cancel()
+                    identityTask = nil
+                    startCapture(identity, request: request, renderer: renderer)
+                case .some(let gone):
+                    await fail(unavailable(gone), request: request)
+                }
+            }
+        }
+    }
+
+    private func unavailable(_ resolution: WindowResolution) -> CaptureFailure {
+        switch resolution {
+        case .processExited: .targetQuit(applicationName: selectedApplicationName)
+        case .windowClosed, .available: .sourceWindowClosed(applicationName: selectedApplicationName)
+        }
+    }
+
+    private func failure(for error: Error) -> CaptureFailure {
+        let nsError = error as NSError
+        switch CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) {
+        case .permissionDenied: return .permissionDenied
+        case .stoppedFromSystemControls: return .stoppedFromSystemControls
+        case .sourceMissing, .interrupted: return .streamInterrupted(code: nsError.code)
+        }
+    }
+
+    /// Every capture failure ends here: invalidate in-flight work, stop the stream,
+    /// clear the preview and keep the reason visible. The source app is never
+    /// moved or hidden, so it stays reachable through normal macOS controls.
+    private func fail(_ failure: CaptureFailure, request: UUID) async {
+        guard request == generation, state.isCapturing else { return }
         generation = UUID()
-        let invalidatedRequest = generation
+        let failedGeneration = generation
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
-        available = []
-        rebuildWindowList()
         renderer?.clear()
-        state = .sourceUnavailable
-        status?.stringValue = "Source window closed. Refresh to choose another."
+        setState(.failed(failure))
         await capture.stop()
-        if generation == invalidatedRequest, state == .sourceUnavailable { renderer?.clear() }
+        guard generation == failedGeneration else { return }
+        renderer?.clear()
+        if !failure.opensPrivacySettings { reloadListKeepingState() }
     }
 
     @objc private func applicationTerminated(_ notification: Notification) {
@@ -291,7 +402,14 @@ final class OverlayController: NSObject {
               application.launchDate == identity.processLaunchDate,
               application.bundleIdentifier == identity.bundleIdentifier else { return }
         let request = generation
-        Task { await selectedWindowClosed(request: request) }
+        Task { await fail(.targetQuit(applicationName: selectedApplicationName), request: request) }
+    }
+
+    @objc private func privacyClicked() {
+        guard let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func closeClicked() { close() }

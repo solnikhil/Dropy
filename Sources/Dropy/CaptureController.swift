@@ -10,6 +10,7 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private var latest: CVPixelBuffer?
     private var scheduled = false
+    private var invalidated = false
     private var loggedFormat = false
     private weak var renderer: MetalFrameView?
     private(set) var receivedFrames = 0
@@ -22,6 +23,7 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         guard type == .screen,
               let image = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         lock.lock()
+        guard !invalidated else { lock.unlock(); return }
         if !loggedFormat {
             loggedFormat = true
             let surface = CVPixelBufferGetIOSurface(image)?.takeUnretainedValue()
@@ -42,9 +44,18 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         if shouldSchedule { DispatchQueue.main.async { self.deliverLatest() } }
     }
 
+    /// Drop the pending frame and refuse later ones, so a stopped or superseded
+    /// stream can never repaint the preview after it was cleared.
+    func invalidate() {
+        lock.lock()
+        invalidated = true
+        latest = nil
+        lock.unlock()
+    }
+
     @MainActor private func deliverLatest() {
         lock.lock()
-        let image = latest
+        let image = invalidated ? nil : latest
         latest = nil
         scheduled = false
         lock.unlock()
@@ -52,32 +63,67 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 }
 
+/// Reports a stream that stopped without Dropy asking, such as a revoked permission,
+/// the system screen-sharing control, or the source app going away.
+final class StreamStopObserver: NSObject, SCStreamDelegate, @unchecked Sendable {
+    private let onStop: @Sendable (Error) -> Void
+
+    init(onStop: @escaping @Sendable (Error) -> Void) { self.onStop = onStop }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) { onStop(error) }
+}
+
 @MainActor
 final class CaptureController {
     private var stream: SCStream?
     private var mailbox: FrameMailbox?
+    private var stopObserver: StreamStopObserver?
     private var requestID = UUID()
     private var outputSize: CGSize?
 
-    func start(window: SCWindow, renderer: MetalFrameView) async throws {
+    /// Starts one stream. `onUnexpectedStop` runs on the main actor only while this
+    /// stream is still the active one; a stop Dropy requested is never reported.
+    /// Returns false when a newer start or a stop superseded this request.
+    @discardableResult
+    func start(window: SCWindow, renderer: MetalFrameView,
+               onUnexpectedStop: @escaping @MainActor (Error) -> Void) async throws -> Bool {
         let request = UUID()
         requestID = request
         await stopActiveStream()
-        guard request == requestID else { return }
+        guard request == requestID else { return false }
         let configuration = makeConfiguration(window: window, renderer: renderer)
+        let observer = StreamStopObserver { [weak self] error in
+            Task { @MainActor [weak self] in
+                guard let self, self.requestID == request, self.stream != nil else { return }
+                let code = (error as NSError).code
+                NSLog("Dropy capture stopped unexpectedly: domain=%@ code=%ld",
+                      (error as NSError).domain, code)
+                let stopped = self.detachActiveStream()
+                onUnexpectedStop(error)
+                try? await stopped?.stopCapture()
+            }
+        }
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
-                              configuration: configuration, delegate: nil)
+                              configuration: configuration, delegate: observer)
         let mailbox = FrameMailbox(renderer: renderer)
         try stream.addStreamOutput(mailbox, type: .screen,
                                    sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
-        try await stream.startCapture()
+        do {
+            try await stream.startCapture()
+        } catch {
+            mailbox.invalidate()
+            throw error
+        }
         guard request == requestID else {
+            mailbox.invalidate()
             try? await stream.stopCapture()
-            return
+            return false
         }
         self.stream = stream
         self.mailbox = mailbox
+        self.stopObserver = observer
         self.outputSize = CGSize(width: configuration.width, height: configuration.height)
+        return true
     }
 
     /// Keep capture resolution aligned with a resized source without tearing
@@ -123,10 +169,16 @@ final class CaptureController {
     }
 
     private func stopActiveStream() async {
+        try? await detachActiveStream()?.stopCapture()
+    }
+
+    /// Forget the active stream synchronously, so no later callback treats it as current.
+    private func detachActiveStream() -> SCStream? {
         outputSize = nil
-        guard let stream else { return }
-        self.stream = nil
-        self.mailbox = nil
-        try? await stream.stopCapture()
+        mailbox?.invalidate()
+        mailbox = nil
+        stopObserver = nil
+        defer { stream = nil }
+        return stream
     }
 }
