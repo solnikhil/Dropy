@@ -101,6 +101,7 @@ public enum CapturePhase: Equatable, Sendable {
 public enum CaptureErrorKind: Equatable, Sendable {
     case permissionDenied
     case stoppedFromSystemControls
+    case windowListUnavailable
     /// The content went away; the caller re-resolves the window to tell a
     /// closed window from a quit app.
     case sourceMissing
@@ -123,8 +124,9 @@ public enum CaptureErrorKind: Equatable, Sendable {
         switch code {
         case userDeclined: return .permissionDenied
         case userStopped: return .stoppedFromSystemControls
+        case noWindowList: return .windowListUnavailable
         case applicationConnectionInvalid, applicationConnectionInterrupted,
-             noMatchingApplicationContext, noWindowList, noCaptureSource:
+             noMatchingApplicationContext, noCaptureSource:
             return .sourceMissing
         default: return .interrupted
         }

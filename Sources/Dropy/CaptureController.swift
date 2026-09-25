@@ -108,21 +108,25 @@ final class CaptureController {
         let mailbox = FrameMailbox(renderer: renderer)
         try stream.addStreamOutput(mailbox, type: .screen,
                                    sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
-        do {
-            try await stream.startCapture()
-        } catch {
-            mailbox.invalidate()
-            throw error
-        }
-        guard request == requestID else {
-            mailbox.invalidate()
-            try? await stream.stopCapture()
-            return false
-        }
+        // The delegate can stop a stream before startCapture returns. Publish
+        // this session first so that an early stop is not silently discarded.
         self.stream = stream
         self.mailbox = mailbox
         self.stopObserver = observer
         self.outputSize = CGSize(width: configuration.width, height: configuration.height)
+        do {
+            try await stream.startCapture()
+        } catch {
+            mailbox.invalidate()
+            guard request == requestID, self.stream === stream else { return false }
+            _ = detachActiveStream()
+            throw error
+        }
+        guard request == requestID, self.stream === stream else {
+            mailbox.invalidate()
+            try? await stream.stopCapture()
+            return false
+        }
         return true
     }
 

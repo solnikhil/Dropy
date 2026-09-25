@@ -10,6 +10,7 @@ final class CaptureLifecycleTests: XCTestCase {
         XCTAssertEqual(CaptureErrorKind.classify(domain: domain, code: -3817), .stoppedFromSystemControls)
         XCTAssertEqual(CaptureErrorKind.classify(domain: domain, code: -3815), .sourceMissing)
         XCTAssertEqual(CaptureErrorKind.classify(domain: domain, code: -3805), .sourceMissing)
+        XCTAssertEqual(CaptureErrorKind.classify(domain: domain, code: -3813), .windowListUnavailable)
         XCTAssertEqual(CaptureErrorKind.classify(domain: domain, code: -3821), .interrupted)
         XCTAssertEqual(CaptureErrorKind.classify(domain: NSCocoaErrorDomain, code: -3801), .interrupted)
     }

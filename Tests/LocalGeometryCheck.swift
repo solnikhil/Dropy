@@ -55,6 +55,8 @@ check(CaptureErrorKind.classify(domain: streamDomain, code: -3817) == .stoppedFr
       "system stop control is never auto-restarted")
 check(CaptureErrorKind.classify(domain: streamDomain, code: -3815) == .sourceMissing,
       "missing capture source triggers re-resolution")
+check(CaptureErrorKind.classify(domain: streamDomain, code: -3813) == .windowListUnavailable,
+      "missing window list keeps its own recovery state")
 check(CaptureErrorKind.classify(domain: "other", code: -3801) == .interrupted,
       "codes from other domains are not trusted")
 let failures: [CaptureFailure] = [.permissionDenied, .sourceWindowClosed(applicationName: "A"),

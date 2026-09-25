@@ -113,11 +113,7 @@ final class OverlayController: NSObject {
                 }
             } catch {
                 guard request == generation, state != .closed, !state.isCapturing else { return }
-                let nsError = error as NSError
-                switch CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) {
-                case .permissionDenied: setState(.failed(.permissionDenied))
-                default: setState(.failed(.windowListUnavailable(code: nsError.code)))
-                }
+                setState(.failed(catalogFailure(for: error)))
             }
         }
     }
@@ -271,13 +267,20 @@ final class OverlayController: NSObject {
             self?.captureStopped(error, identity: identity, request: request, renderer: renderer)
         }
         Task {
+            let resolution: WindowResolution
             do {
-                let resolution = try await WindowCatalog.resolve(identity)
+                resolution = try await WindowCatalog.resolve(identity)
+            } catch {
                 guard isCurrent(request, identity) else { return }
-                guard case .available(let window) = resolution else {
-                    await fail(unavailable(resolution), request: request)
-                    return
-                }
+                await fail(catalogFailure(for: error), request: request)
+                return
+            }
+            guard isCurrent(request, identity) else { return }
+            guard case .available(let window) = resolution else {
+                await fail(unavailable(resolution), request: request)
+                return
+            }
+            do {
                 let started = try await capture.start(window: window, renderer: renderer,
                                                       onUnexpectedStop: onStop)
                 guard started, isCurrent(request, identity) else { return }
@@ -285,7 +288,9 @@ final class OverlayController: NSObject {
                 monitorWindow(identity, request: request, renderer: renderer)
             } catch {
                 guard isCurrent(request, identity) else { return }
-                await fail(failure(for: error), request: request)
+                let captureFailure = await startFailure(for: error, identity: identity)
+                guard isCurrent(request, identity) else { return }
+                await fail(captureFailure, request: request)
             }
         }
     }
@@ -317,7 +322,7 @@ final class OverlayController: NSObject {
                     guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
                     // A failed catalog read does not stop a healthy stream; the
                     // stream delegate reports real stops. Revoked permission does.
-                    if case .permissionDenied = self.failure(for: error) {
+                    if case .permissionDenied = self.catalogFailure(for: error) {
                         await self.fail(.permissionDenied, request: request)
                         return
                     }
@@ -340,11 +345,20 @@ final class OverlayController: NSObject {
                 await fail(.permissionDenied, request: request)
             case .stoppedFromSystemControls:
                 await fail(.stoppedFromSystemControls, request: request)
+            case .windowListUnavailable:
+                await fail(.windowListUnavailable(code: nsError.code), request: request)
             case .sourceMissing, .interrupted:
-                let resolution = try? await WindowCatalog.resolve(identity)
+                let resolution: WindowResolution
+                do {
+                    resolution = try await WindowCatalog.resolve(identity)
+                } catch {
+                    guard isCurrent(request, identity) else { return }
+                    await fail(catalogFailure(for: error), request: request)
+                    return
+                }
                 guard isCurrent(request, identity) else { return }
                 switch resolution {
-                case .some(.available), .none:
+                case .available:
                     guard !restartedAfterInterruption else {
                         await fail(.streamInterrupted(code: nsError.code), request: request)
                         return
@@ -353,7 +367,7 @@ final class OverlayController: NSObject {
                     identityTask?.cancel()
                     identityTask = nil
                     startCapture(identity, request: request, renderer: renderer)
-                case .some(let gone):
+                case let gone:
                     await fail(unavailable(gone), request: request)
                 }
             }
@@ -372,7 +386,30 @@ final class OverlayController: NSObject {
         switch CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) {
         case .permissionDenied: return .permissionDenied
         case .stoppedFromSystemControls: return .stoppedFromSystemControls
+        case .windowListUnavailable: return .windowListUnavailable(code: nsError.code)
         case .sourceMissing, .interrupted: return .streamInterrupted(code: nsError.code)
+        }
+    }
+
+    private func catalogFailure(for error: Error) -> CaptureFailure {
+        let nsError = error as NSError
+        if CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) == .permissionDenied {
+            return .permissionDenied
+        }
+        return .windowListUnavailable(code: nsError.code)
+    }
+
+    private func startFailure(for error: Error, identity: WindowIdentity) async -> CaptureFailure {
+        let nsError = error as NSError
+        guard CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) == .sourceMissing else {
+            return failure(for: error)
+        }
+        do {
+            let resolution = try await WindowCatalog.resolve(identity)
+            if case .available = resolution { return .streamInterrupted(code: nsError.code) }
+            return unavailable(resolution)
+        } catch {
+            return catalogFailure(for: error)
         }
     }
 
