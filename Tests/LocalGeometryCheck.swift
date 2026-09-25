@@ -33,4 +33,18 @@ preferences.lastUsedBundleIdentifier = "com.example.target"
 let encoded = try JSONEncoder().encode(preferences)
 let decoded = try JSONDecoder().decode(DropyPreferences.self, from: encoded)
 check(decoded == preferences, "preference persistence round trip")
+
+let source = WindowIdentity(processID: 100, processLaunchDate: Date(timeIntervalSince1970: 1_000),
+                            windowID: 42, bundleIdentifier: "org.example.editor")
+check(source.matches(source), "exact source window matches")
+check(!source.matches(WindowIdentity(processID: 101, processLaunchDate: source.processLaunchDate,
+                                     windowID: 42, bundleIdentifier: "org.example.editor")),
+      "reused window ID in another process must not match")
+check(!source.matches(WindowIdentity(processID: 100,
+                                     processLaunchDate: Date(timeIntervalSince1970: 1_010),
+                                     windowID: 42, bundleIdentifier: "org.example.editor")),
+      "reused PID after relaunch must not match")
+check(!source.matches(WindowIdentity(processID: 100, processLaunchDate: source.processLaunchDate,
+                                     windowID: 43, bundleIdentifier: "org.example.editor")),
+      "another document window must not match")
 print("DropyCore checks passed")

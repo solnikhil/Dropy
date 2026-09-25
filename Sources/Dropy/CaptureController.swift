@@ -57,11 +57,43 @@ final class CaptureController {
     private var stream: SCStream?
     private var mailbox: FrameMailbox?
     private var requestID = UUID()
+    private var outputSize: CGSize?
 
     func start(window: SCWindow, renderer: MetalFrameView) async throws {
-        await stop()
         let request = UUID()
         requestID = request
+        await stopActiveStream()
+        guard request == requestID else { return }
+        let configuration = makeConfiguration(window: window, renderer: renderer)
+        let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
+                              configuration: configuration, delegate: nil)
+        let mailbox = FrameMailbox(renderer: renderer)
+        try stream.addStreamOutput(mailbox, type: .screen,
+                                   sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
+        try await stream.startCapture()
+        guard request == requestID else {
+            try? await stream.stopCapture()
+            return
+        }
+        self.stream = stream
+        self.mailbox = mailbox
+        self.outputSize = CGSize(width: configuration.width, height: configuration.height)
+    }
+
+    /// Keep capture resolution aligned with a resized source without tearing
+    /// down the renderer or selecting a new window by title.
+    func updateWindow(_ window: SCWindow, renderer: MetalFrameView) async throws {
+        guard let stream else { return }
+        let request = requestID
+        let configuration = makeConfiguration(window: window, renderer: renderer)
+        let nextSize = CGSize(width: configuration.width, height: configuration.height)
+        guard nextSize != outputSize else { return }
+        try await stream.updateConfiguration(configuration)
+        guard request == requestID else { return }
+        outputSize = nextSize
+    }
+
+    private func makeConfiguration(window: SCWindow, renderer: MetalFrameView) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         let backingScale = renderer.window?.backingScaleFactor ?? 2
         let sourceWidth = max(window.frame.width, 1)
@@ -82,22 +114,16 @@ final class CaptureController {
         configuration.queueDepth = 3
         configuration.capturesAudio = false
         configuration.includeChildWindows = true
-        let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
-                              configuration: configuration, delegate: nil)
-        let mailbox = FrameMailbox(renderer: renderer)
-        try stream.addStreamOutput(mailbox, type: .screen,
-                                   sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
-        try await stream.startCapture()
-        guard request == requestID else {
-            try? await stream.stopCapture()
-            return
-        }
-        self.stream = stream
-        self.mailbox = mailbox
+        return configuration
     }
 
     func stop() async {
         requestID = UUID()
+        await stopActiveStream()
+    }
+
+    private func stopActiveStream() async {
+        outputSize = nil
         guard let stream else { return }
         self.stream = nil
         self.mailbox = nil

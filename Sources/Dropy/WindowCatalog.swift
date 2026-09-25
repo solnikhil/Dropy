@@ -1,11 +1,21 @@
 import AppKit
+import DropyCore
 import ScreenCaptureKit
 
 struct CapturableWindow {
     let window: SCWindow
     let applicationName: String
+    let processID: pid_t
+    let processLaunchDate: Date
     let bundleIdentifier: String?
     let title: String
+
+    var identity: WindowIdentity {
+        WindowIdentity(processID: processID,
+                       processLaunchDate: processLaunchDate,
+                       windowID: window.windowID,
+                       bundleIdentifier: bundleIdentifier)
+    }
 
     var displayName: String {
         title.isEmpty ? applicationName : "\(applicationName) — \(title)"
@@ -13,19 +23,40 @@ struct CapturableWindow {
 }
 
 enum WindowCatalog {
+    /// Resolve against a fresh system snapshot, including untitled and small
+    /// windows that are omitted from the picker. Never fall back to a title or
+    /// bundle-ID match: either can select the wrong document after relaunch.
+    static func resolve(_ identity: WindowIdentity) async throws -> SCWindow? {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: false)
+        return content.windows.first { window in
+            guard let owner = window.owningApplication,
+                  let launchDate = NSRunningApplication(processIdentifier: owner.processID)?.launchDate
+            else { return false }
+            return identity.matches(WindowIdentity(processID: owner.processID,
+                                                   processLaunchDate: launchDate,
+                                                   windowID: window.windowID,
+                                                   bundleIdentifier: owner.bundleIdentifier))
+        }
+    }
+
     static func availableWindows() async throws -> [CapturableWindow] {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: false)
         let candidates: [CapturableWindow] = content.windows.compactMap { window in
             guard let owner = window.owningApplication,
                   owner.processID != getpid(),
-                  NSRunningApplication(processIdentifier: owner.processID)?.activationPolicy == .regular,
+                  let runningApplication = NSRunningApplication(processIdentifier: owner.processID),
+                  runningApplication.activationPolicy == .regular,
+                  let launchDate = runningApplication.launchDate,
                   window.frame.width >= 160,
                   window.frame.height >= 100 else { return nil }
             let appName = owner.applicationName
             guard !appName.isEmpty else { return nil }
             return CapturableWindow(window: window,
                                     applicationName: appName,
+                                    processID: owner.processID,
+                                    processLaunchDate: launchDate,
                                     bundleIdentifier: owner.bundleIdentifier,
                                     title: (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         }
