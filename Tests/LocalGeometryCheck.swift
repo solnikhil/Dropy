@@ -47,4 +47,41 @@ check(!source.matches(WindowIdentity(processID: 100,
 check(!source.matches(WindowIdentity(processID: 100, processLaunchDate: source.processLaunchDate,
                                      windowID: 43, bundleIdentifier: "org.example.editor")),
       "another document window must not match")
+
+let streamDomain = CaptureErrorKind.streamErrorDomain
+check(CaptureErrorKind.classify(domain: streamDomain, code: -3801) == .permissionDenied,
+      "declined TCC is a permission failure")
+check(CaptureErrorKind.classify(domain: streamDomain, code: -3817) == .stoppedFromSystemControls,
+      "system stop control is never auto-restarted")
+check(CaptureErrorKind.classify(domain: streamDomain, code: -3815) == .sourceMissing,
+      "missing capture source triggers re-resolution")
+check(CaptureErrorKind.classify(domain: streamDomain, code: -3813) == .windowListUnavailable,
+      "missing window list keeps its own recovery state")
+check(CaptureErrorKind.classify(domain: "other", code: -3801) == .interrupted,
+      "codes from other domains are not trusted")
+let failures: [CaptureFailure] = [.permissionDenied, .sourceWindowClosed(applicationName: "A"),
+                                  .targetQuit(applicationName: "A"), .stoppedFromSystemControls,
+                                  .streamInterrupted(code: 1), .windowListUnavailable(code: 1)]
+check(Set(failures.map(\.message)).count == failures.count, "failure messages are distinct")
+check(failures.filter(\.opensPrivacySettings) == [.permissionDenied], "only permission opens settings")
+check(!CapturePhase.failed(.permissionDenied).isCapturing && CapturePhase.paused(applicationName: "A").isCapturing,
+      "failed phases own no stream; paused still does")
+
+func summary(_ pid: Int32, _ id: UInt32, _ app: String, _ title: String, layer: Int = 0,
+             size: CGSize = CGSize(width: 800, height: 600), onScreen: Bool = true) -> WindowSummary {
+    WindowSummary(processID: pid, windowID: id, applicationName: app, title: title,
+                  layer: layer, size: size, isOnScreen: onScreen)
+}
+check(WindowPicker.entries(from: [summary(10, 1959, "Safari", "about:blank"),
+                                  summary(10, 1953, "Safari", "about:blank")]).map(\.label)
+      == ["Safari — about:blank (1 of 2)", "Safari — about:blank (2 of 2)"],
+      "same-title windows are distinguishable")
+check(WindowPicker.entries(from: [summary(20, 984, "ChatGPT", "ChatGPT"),
+                                  summary(20, 992, "ChatGPT", "ChatGPT", layer: 3, onScreen: false)])
+      .map(\.windowID) == [984], "floating layer panels are excluded")
+check(WindowPicker.entries(from: [summary(30, 1856, "TextEdit", "",
+                                          size: CGSize(width: 500, height: 500), onScreen: false)]).isEmpty,
+      "off-screen untitled helper is not a fallback")
+check(WindowPicker.entries(from: [summary(40, 1899, "TextEdit", "docA.txt", onScreen: false)]).map(\.label)
+      == ["TextEdit — docA.txt · not visible"], "minimized window stays selectable and is marked")
 print("DropyCore checks passed")

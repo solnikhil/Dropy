@@ -66,13 +66,20 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
-        guard let pixelBuffer = currentPixelBuffer,
-              CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA,
-              let unmanagedSurface = CVPixelBufferGetIOSurface(pixelBuffer),
-              let drawable = currentDrawable,
+        guard let drawable = currentDrawable,
               let pass = currentRenderPassDescriptor,
               let buffer = commandQueue.makeCommandBuffer(),
               let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        // Without a usable frame, still present the cleared pass. Returning early
+        // would leave the previous source's last image on screen.
+        guard let pixelBuffer = currentPixelBuffer,
+              CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA,
+              let unmanagedSurface = CVPixelBufferGetIOSurface(pixelBuffer) else {
+            encoder.endEncoding()
+            buffer.present(drawable)
+            buffer.commit()
+            return
+        }
 
         let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
         let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
@@ -84,6 +91,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
             descriptor: textureDescriptor,
             iosurface: unmanagedSurface.takeUnretainedValue(), plane: 0) else {
             encoder.endEncoding()
+            buffer.present(drawable)
+            buffer.commit()
             return
         }
 

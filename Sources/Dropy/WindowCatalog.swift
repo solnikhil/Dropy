@@ -8,7 +8,7 @@ struct CapturableWindow {
     let processID: pid_t
     let processLaunchDate: Date
     let bundleIdentifier: String?
-    let title: String
+    let displayName: String
 
     var identity: WindowIdentity {
         WindowIdentity(processID: processID,
@@ -16,20 +16,24 @@ struct CapturableWindow {
                        windowID: window.windowID,
                        bundleIdentifier: bundleIdentifier)
     }
+}
 
-    var displayName: String {
-        title.isEmpty ? applicationName : "\(applicationName) — \(title)"
-    }
+enum WindowResolution {
+    case available(SCWindow)
+    /// The exact process is still running, but the window is gone.
+    case windowClosed
+    /// The exact process exited. A relaunched app is a different process.
+    case processExited
 }
 
 enum WindowCatalog {
     /// Resolve against a fresh system snapshot, including untitled and small
     /// windows that are omitted from the picker. Never fall back to a title or
     /// bundle-ID match: either can select the wrong document after relaunch.
-    static func resolve(_ identity: WindowIdentity) async throws -> SCWindow? {
+    static func resolve(_ identity: WindowIdentity) async throws -> WindowResolution {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: false)
-        return content.windows.first { window in
+        let match = content.windows.first { window in
             guard let owner = window.owningApplication,
                   let launchDate = NSRunningApplication(processIdentifier: owner.processID)?.launchDate
             else { return false }
@@ -38,40 +42,49 @@ enum WindowCatalog {
                                                    windowID: window.windowID,
                                                    bundleIdentifier: owner.bundleIdentifier))
         }
+        if let match { return .available(match) }
+        return isRunning(identity) ? .windowClosed : .processExited
+    }
+
+    /// Checks the process by PID and launch date, so a reused PID is not mistaken
+    /// for the original process.
+    static func isRunning(_ identity: WindowIdentity) -> Bool {
+        guard let application = NSRunningApplication(processIdentifier: identity.processID),
+              !application.isTerminated else { return false }
+        return application.launchDate == identity.processLaunchDate &&
+            application.bundleIdentifier == identity.bundleIdentifier
     }
 
     static func availableWindows() async throws -> [CapturableWindow] {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: false)
-        let candidates: [CapturableWindow] = content.windows.compactMap { window in
+        var eligible: [UInt32: (window: SCWindow, launchDate: Date)] = [:]
+        var summaries: [WindowSummary] = []
+        for window in content.windows {
             guard let owner = window.owningApplication,
                   owner.processID != getpid(),
                   let runningApplication = NSRunningApplication(processIdentifier: owner.processID),
                   runningApplication.activationPolicy == .regular,
-                  let launchDate = runningApplication.launchDate,
-                  window.frame.width >= 160,
-                  window.frame.height >= 100 else { return nil }
-            let appName = owner.applicationName
-            guard !appName.isEmpty else { return nil }
+                  let launchDate = runningApplication.launchDate else { continue }
+            eligible[window.windowID] = (window, launchDate)
+            summaries.append(WindowSummary(
+                processID: owner.processID,
+                windowID: window.windowID,
+                applicationName: owner.applicationName,
+                title: (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                layer: window.windowLayer,
+                size: window.frame.size,
+                isOnScreen: window.isOnScreen))
+        }
+        return WindowPicker.entries(from: summaries).compactMap { entry in
+            guard let (window, launchDate) = eligible[entry.windowID],
+                  let owner = window.owningApplication else { return nil }
             return CapturableWindow(window: window,
-                                    applicationName: appName,
+                                    applicationName: owner.applicationName,
                                     processID: owner.processID,
                                     processLaunchDate: launchDate,
                                     bundleIdentifier: owner.bundleIdentifier,
-                                    title: (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        let byApp = Dictionary(grouping: candidates) { $0.window.owningApplication?.processID ?? 0 }
-        let useful = byApp.values.flatMap { windows -> [CapturableWindow] in
-            let titled = windows.filter { !$0.title.isEmpty }
-            if !titled.isEmpty { return titled }
-            return windows.max(by: { $0.window.frame.width * $0.window.frame.height <
-                                     $1.window.frame.width * $1.window.frame.height }).map { [$0] } ?? []
-        }
-        return useful.sorted { lhs, rhs in
-            if lhs.applicationName == rhs.applicationName {
-                return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
-            }
-            return lhs.applicationName.localizedStandardCompare(rhs.applicationName) == .orderedAscending
+                                    displayName: entry.label)
         }
     }
 }
