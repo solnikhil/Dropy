@@ -19,6 +19,8 @@ Each rebuild changes the ad-hoc signature, so macOS may treat it as a new app fo
 
 To stress rapid switching without input automation, set `DROPY_DEBUG_ALTERNATE=<bundle-id>[,<switches>[,<max-interval-ms>[,close]]]`. Dropy alternates between that app's first two picker windows with random gaps, logs the window that should end up showing, and with `close` closes the overlay afterwards. `Dropy capture started/stopped ... running=N` log lines show whether any stream leaked.
 
+Each stream logs a `Dropy capture metrics:` summary when it stops. `Scripts/benchmark.sh` runs the repeatable workloads; see [docs/BENCHMARK.md](docs/BENCHMARK.md) for the method, the clock-domain rules and how to report results. Include the report's header (date, revision, hardware, macOS, displays) with any performance claim.
+
 ## Issues and pull requests
 
 - Use an issue for an implementation slice or a reproducible feasibility experiment. State macOS version, target app/version, display configuration, permissions and exact interaction being tested.
