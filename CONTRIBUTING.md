@@ -1,0 +1,27 @@
+# Contributing to Dropy
+
+Dropy is early-stage macOS software. The most valuable contributions establish **what works under stated conditions**. Please check [ROADMAP.md](ROADMAP.md) and existing issues before starting a large change.
+
+## Build and verify
+
+Use a macOS machine with Xcode and a Swift 6 toolchain:
+
+```sh
+swift build
+swift test
+./Scripts/build-local.sh
+./Scripts/test-local.sh
+```
+
+The local build script assembles an ad-hoc-signed development `.app` in `.build/local`. It is not a release package. Screen capture and Accessibility are separate macOS permissions; do not ask contributors to disable system protections. If a test changes another app's window, restore it even after failure.
+
+## Issues and pull requests
+
+- Use an issue for an implementation slice or a reproducible feasibility experiment. State macOS version, target app/version, display configuration, permissions and exact interaction being tested.
+- Keep the captured window's identity distinct from the app process and the focused window. Avoid broad fallbacks that can send input to the wrong target.
+- Do not log captured pixels, text, window titles or other sensitive content by default. Logs should explain state and performance without disclosing a user's work.
+- Report a capability only for the workflow and app classes actually verified. Update [docs/FEASIBILITY.md](docs/FEASIBILITY.md) and, when applicable, the compatibility matrix in the relevant issue.
+- Add tests for geometry, state transitions and regressions that would change behavior. Explain manual UI or performance checks in the PR body.
+- Keep dependencies minimal and record their license before adding one.
+
+The project uses the [MIT license](LICENSE). By submitting a contribution, you agree that it can be distributed under that license.

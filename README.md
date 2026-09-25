@@ -1,30 +1,35 @@
 # Dropy
 
-Dropy is a macOS utility being built for a free, open-source release. Its goal is to expand the MacBook notch into a temporary container for an existing application's live UI. Dismissing Dropy should leave the source app running and its session intact. A public license still needs to be selected before release.
+Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app container around the MacBook notch. The intended experience is to reveal an existing app's live UI in a Dropy-owned overlay, work there, and dismiss the overlay without losing the app's session.
 
-## Current build
+**Current status: early native build, view-only.** Dropy can mirror a selected running window, but it does not yet route general interaction into that app or hide the app's original window. The [roadmap](ROADMAP.md) makes those requirements explicit feasibility gates before a full-container claim.
 
-The first native slice has a notch-anchored panel, running-window picker, persistent trigger, size, open-behavior and content-view settings, a ScreenCaptureKit window stream, and a Metal preview. The preview is **view-only**. A controlled test outside the app proved one Accessibility button action, but did not establish general mouse, keyboard, menu, IME, or drag-and-drop routing. The source app's own window currently remains visible elsewhere on the desktop. Do not describe this build as an arbitrary-app interactive container.
+## What works today
 
-The code separates preferences/geometry, window discovery, capture, presentation, and overlay lifecycle. Input routing and source-window placement are explicit future modules, gated by the experiments in the [research record](../outputs/dropy-device-feasibility-check.md).
+- A top-edge AppKit panel that expands from the notch area and can temporarily cover part of the menu bar.
+- A picker for ordinary running app windows, with ScreenCaptureKit capture and an IOSurface-backed Metal preview.
+- Hover or click notch triggers, plus a menu-bar entry; compact/medium/wide sizes; picker/direct/last-used opening; fit/fill/native-scale content display. These choices are saved locally.
+- The capture stream stops when the overlay closes. The source app continues running.
 
-## Build locally
+The preview is labelled as view-only in the UI. Direct and last-used opening choose a previously selected *running window*; Dropy does not yet launch an app that is closed, pin installed apps, select a crop region, or implement every dismissal mode.
 
-The repository includes a Swift package manifest for full Xcode/SwiftPM installations. This machine's Command Line Tools installation currently lacks `BuildServerProtocol.framework`, so `swift test` and `swift build` fail before package compilation. The local build script compiles the same sources directly with `swiftc` and assembles a temporary `.app` bundle:
+## Build and run
+
+With Xcode and a Swift 6 toolchain on macOS:
 
 ```sh
+swift build
+swift test
 ./Scripts/build-local.sh
-./Scripts/test-local.sh
 open .build/local/Dropy.app
 ```
 
-The app lives in the menu bar. Choose **Open Dropy**, or hover at the notch to reveal it, then choose a running window. Screen Recording permission may be requested by macOS. The overlay closes from its **Close** button or menu item. Size and open behavior are available in the status menu. This is a local development build, ad-hoc signed; it is not a distributable release.
+On the original development machine, the Command Line Tools installation lacks a SwiftPM framework, so `swift build` and `swift test` fail before compilation. The direct `swiftc` build script and `./Scripts/test-local.sh` work there. The script assembles an ad-hoc-signed development `.app`; it is not a signed public release. macOS may request Screen Recording permission when a window is selected.
 
-## Architecture and release gates
+Dropy appears as a diamond in the menu bar. Use **Open Dropy** or the selected notch trigger, choose a running window, and close the panel from its **Close** button. Settings are in the menu-bar menu.
 
-- Capture only the selected window while the overlay is open. The frame callback keeps one latest buffer and drops older pending frames.
-- Present IOSurface-backed pixel buffers through Metal. This avoids the test harness's CPU image conversion, but no end-to-end copy or latency claim has been benchmarked yet.
-- Keep capture, input, focus, and source-window placement as separate adapters. The latter three remain unresolved for a general app.
-- Validate exact-window input, original-window visibility, menus/dialogs/IME/drag-and-drop, multi-display/full-screen behavior, permissions, recovery, and performance before promising the full product experience.
+## Engineering direction
 
-The [tldraw scope](../outputs/Dropy%20-%20Product%20and%20Build%20Scope.tldraw) and [findings](../outputs/dropy-findings-explained.md) carry the product contract and investigation plan.
+Capture, presentation, source-window tracking, input/focus and source placement are separate concerns. The capture path is implemented; exact-window input and keeping arbitrary source windows out of sight remain open. A controlled test activated one Accessibility-exposed button in an off-screen test app, but that does not establish general typing, scrolling, menus, IME or drag-and-drop. [Feasibility status](docs/FEASIBILITY.md) records what has and has not been shown.
+
+Read [ROADMAP.md](ROADMAP.md) for milestones and pass/fail criteria, [ARCHITECTURE.md](ARCHITECTURE.md) for module boundaries, the [compatibility observations](docs/COMPATIBILITY.md) for actual app checks, and [CONTRIBUTING.md](CONTRIBUTING.md) to help. Security reports should follow [SECURITY.md](SECURITY.md). Windows is a later platform track with a separate backend.

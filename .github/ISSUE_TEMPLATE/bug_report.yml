@@ -1,0 +1,23 @@
+name: Bug report
+description: Report a reproducible problem in Dropy
+labels: [bug]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened?
+      description: Include what you expected and the smallest steps that reproduce the issue.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Dropy revision, macOS version, Mac/display configuration, target app/version
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: Relevant state
+      description: Capture or Accessibility permission, selected window, focus changes, and whether the original window remained visible. Do not include private window content.

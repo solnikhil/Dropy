@@ -1,0 +1,23 @@
+name: Feasibility experiment
+description: Record a controlled capture, input, containment or performance experiment
+labels: [research]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Question and pass criterion
+      description: State what the experiment can prove and what it cannot.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup and method
+      description: Include macOS build, target app/version, display scale, permissions, captured window identity and focus state.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Observations and limits
+      description: Record actual receiver, source visibility, secondary UI and recovery. Mark unmeasured performance as unmeasured.

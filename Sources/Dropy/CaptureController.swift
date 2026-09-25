@@ -6,7 +6,7 @@ import ScreenCaptureKit
 
 /// The stream callback only replaces a bounded latest-frame slot. Rendering runs
 /// on the main thread; an overloaded UI drops stale frames instead of queueing them.
-final class FrameMailbox: NSObject, SCStreamOutput {
+final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private var latest: CVPixelBuffer?
     private var scheduled = false
@@ -42,7 +42,7 @@ final class FrameMailbox: NSObject, SCStreamOutput {
         if shouldSchedule { DispatchQueue.main.async { self.deliverLatest() } }
     }
 
-    private func deliverLatest() {
+    @MainActor private func deliverLatest() {
         lock.lock()
         let image = latest
         latest = nil

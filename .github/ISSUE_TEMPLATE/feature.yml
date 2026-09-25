@@ -1,0 +1,16 @@
+name: Feature proposal
+description: Propose a focused behavior from the product roadmap
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: User need
+      description: Describe the workflow and expected behavior inside the Dropy container.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and acceptance criteria
+      description: Include settings, failure states, accessibility and compatibility requirements where relevant.

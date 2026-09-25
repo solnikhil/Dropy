@@ -45,4 +45,4 @@ ScreenCaptureKit documents capture of covered and off-screen windows, with minim
 5. **Platform:** menu bar crowding, full-screen Spaces, Stage Manager, mixed-DPI displays, unplug/rearrangement, notchless Macs, permission denial/revocation and protected content.
 6. **Open source:** choose and publish a license, audit dependency notices, reproducible build and a versioned compatibility matrix before public release. Windows will need a separate platform backend.
 
-The [final research note](../outputs/dropy-final-research-before-build.md), [device checks](../outputs/dropy-device-feasibility-check.md) and [tldraw map](../outputs/Dropy%20-%20Product%20and%20Build%20Scope.tldraw) hold more context.
+The public [feasibility record](docs/FEASIBILITY.md) and [roadmap](ROADMAP.md) hold the current product boundary and validation plan. Detailed device-specific experiment logs remain in the local research workspace.
