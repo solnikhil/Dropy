@@ -84,4 +84,17 @@ check(WindowPicker.entries(from: [summary(30, 1856, "TextEdit", "",
       "off-screen untitled helper is not a fallback")
 check(WindowPicker.entries(from: [summary(40, 1899, "TextEdit", "docA.txt", onScreen: false)]).map(\.label)
       == ["TextEdit — docA.txt · not visible"], "minimized window stays selectable and is marked")
+
+let percentiles = LatencySummary((1...100).map(Double.init))
+check(percentiles?.p50 == 50 && percentiles?.p95 == 95 && percentiles?.p99 == 99, "nearest-rank percentiles")
+check(!ClockDomainCheck.accepts(offsetMilliseconds: 5, intervals: [20, 20]), "clock offset rejects percentiles")
+check(!ClockDomainCheck.accepts(offsetMilliseconds: 0, intervals: [20] + Array(repeating: -1, count: 5)),
+      "negative intervals reject percentiles")
+var sessionMetrics = CaptureSessionMetrics(windowID: 42)
+sessionMetrics.pixelFormat = fourCharacterCode(0x42475241)
+sessionMetrics.recordStatus("complete")
+sessionMetrics.recordPresented(callbackToPresent: 30, frameAge: 31)
+let metricsLine = sessionMetrics.summary(durationSeconds: 1, stopReason: "closed")
+check(metricsLine.contains("/BGRA") && metricsLine.contains("frameAge=[n=1") && metricsLine.hasSuffix("stop=closed"),
+      "metrics summary")
 print("DropyCore checks passed")

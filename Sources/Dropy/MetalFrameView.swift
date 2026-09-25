@@ -12,6 +12,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private let pipeline: MTLRenderPipelineState
     private var currentPixelBuffer: CVPixelBuffer?
     private var visibilityGeneration = UUID()
+    /// Timestamps for the frame not yet drawn; attached to exactly one drawable.
+    private var pendingStamp: FrameStamp?
+    /// One-shot callback on the main thread with the Core Animation media time at
+    /// which the next captured frame reached the screen.
+    var onNextPresented: (@MainActor (CFTimeInterval) -> Void)?
     var contentMode: DropyCore.ContentMode = .fit {
         didSet { setNeedsDisplay(bounds) }
     }
@@ -51,8 +56,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
     required init(coder: NSCoder) { fatalError("Use init(frame:)") }
 
-    func present(_ pixelBuffer: CVPixelBuffer) {
+    func present(_ pixelBuffer: CVPixelBuffer, stamp: FrameStamp? = nil) {
         precondition(Thread.isMainThread)
+        // A frame replaced before any draw never reaches the screen.
+        pendingStamp?.recorder.recordNotPresented()
+        pendingStamp = stamp
         currentPixelBuffer = pixelBuffer
         setNeedsDisplay(bounds)
     }
@@ -62,6 +70,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     func clear() {
         precondition(Thread.isMainThread)
         currentPixelBuffer = nil
+        pendingStamp?.recorder.recordNotPresented()
+        pendingStamp = nil
         visibilityGeneration = UUID()
         alphaValue = 0
         setNeedsDisplay(bounds)
@@ -121,13 +131,21 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         encoder.setFragmentTexture(texture, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
-        if alphaValue == 0 {
-            let generation = visibilityGeneration
-            drawable.addPresentedHandler { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self, self.visibilityGeneration == generation,
-                          self.currentPixelBuffer != nil else { return }
-                    self.alphaValue = 1
+        let stamp = pendingStamp
+        pendingStamp = nil
+        let generation = visibilityGeneration
+        let armed = onNextPresented != nil
+        drawable.addPresentedHandler { [weak self] drawable in
+            let presentedTime = drawable.presentedTime
+            if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime) }
+            guard presentedTime > 0 else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.visibilityGeneration == generation,
+                      self.currentPixelBuffer != nil else { return }
+                self.alphaValue = 1
+                if armed, let reveal = self.onNextPresented {
+                    self.onNextPresented = nil
+                    reveal(presentedTime)
                 }
             }
         }

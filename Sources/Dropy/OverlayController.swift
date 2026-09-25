@@ -28,6 +28,7 @@ final class OverlayController: NSObject {
     private var pendingStart: PendingStart?
     private var startInFlight = false
     private var overlaySession = UUID()
+    private var opensInProcess = 0
     /// Changes on open, close, every selection and every failure. Async work
     /// continues only while its captured generation is still current.
     private var generation = UUID()
@@ -66,6 +67,15 @@ final class OverlayController: NSObject {
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         buildContent(in: panel, size: full.size)
+        opensInProcess += 1
+        let openedAt = CACurrentMediaTime()
+        let openNumber = opensInProcess
+        // Reveal: open request to the first captured frame on screen. "Warm" means
+        // this process has opened the overlay before.
+        renderer?.onNextPresented = { presentedTime in
+            NSLog("Dropy reveal: firstFrame=%.1fms open=%ld warm=%@",
+                  (presentedTime - openedAt) * 1_000, openNumber, openNumber > 1 ? "yes" : "no")
+        }
         self.panel = panel
         panel.orderFrontRegardless()
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -94,7 +104,7 @@ final class OverlayController: NSObject {
         privacyButton = nil
         renderer?.clear()
         renderer = nil
-        Task { await capture.stop() }
+        Task { await capture.stop(reason: "closed") }
     }
 
     /// Person-initiated refresh: reload the list and leave any failure state.
@@ -485,7 +495,7 @@ final class OverlayController: NSObject {
         identityTask = nil
         renderer?.clear()
         setState(.failed(failure))
-        await capture.stop()
+        await capture.stop(reason: failure.diagnosticName)
         guard generation == failedGeneration else { return }
         renderer?.clear()
         if !failure.opensPrivacySettings { reloadListKeepingState() }

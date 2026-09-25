@@ -103,6 +103,45 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.async { [weak self] in self?.overlay.open() }
         }
+        startDebugDriversIfRequested()
+    }
+
+    /// Development-only drivers for repeatable measurements without input automation.
+    /// - `DROPY_DEBUG_CYCLES=<n>[,<hold-ms>]`: open, wait for a live preview (or a failure,
+    ///   up to ten seconds), hold, close; repeat n times.
+    /// - `DROPY_DEBUG_QUIT_AFTER=<seconds>`: close the overlay and quit, so every
+    ///   capture logs its metrics summary.
+    private func startDebugDriversIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        if let spec = environment["DROPY_DEBUG_CYCLES"] {
+            let parts = spec.split(separator: ",").compactMap { Int($0) }
+            let cycles = max(parts.first ?? 10, 1)
+            let hold = parts.count > 1 ? max(parts[1], 0) : 1_000
+            Task { @MainActor [weak self] in
+                for cycle in 1...cycles {
+                    guard let self else { return }
+                    if self.overlay.state == .closed { self.overlay.open() }
+                    var waited = 0
+                    while self.overlay.state != .viewing, self.overlay.state.failure == nil, waited < 10_000 {
+                        try? await Task.sleep(for: .milliseconds(50))
+                        waited += 50
+                    }
+                    NSLog("Dropy debug cycle %ld: %@", cycle, self.overlay.state.diagnosticName)
+                    try? await Task.sleep(for: .milliseconds(hold))
+                    self.overlay.close()
+                    try? await Task.sleep(for: .milliseconds(300))
+                }
+                NSLog("Dropy debug cycles done")
+            }
+        }
+        if let seconds = environment["DROPY_DEBUG_QUIT_AFTER"].flatMap(Double.init) {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(seconds))
+                self?.overlay.close()
+                try? await Task.sleep(for: .milliseconds(500))
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

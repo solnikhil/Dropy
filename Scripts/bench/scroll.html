@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dropy bench scroll</title>
+<style>
+  body { margin: 0; font: 15px/1.5 -apple-system, sans-serif; background: #fff; color: #222; }
+  article { max-width: 720px; margin: 0 auto; padding: 24px; }
+  h2 { margin-top: 2em; }
+  .band { height: 40px; margin: 8px 0; border-radius: 6px; }
+</style>
+<article id="content"></article>
+<script>
+  // Synthetic text and colour bands; scrolls itself 4 px per frame and wraps.
+  const content = document.getElementById("content");
+  for (let section = 1; section <= 60; section++) {
+    content.insertAdjacentHTML("beforeend",
+      `<h2>Section ${section}</h2><p>${"Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(12)}</p>` +
+      `<div class="band" style="background:hsl(${section * 37 % 360} 70% 60%)"></div>`);
+  }
+  function step() {
+    const max = document.documentElement.scrollHeight - innerHeight;
+    scrollTo(0, scrollY + 4 >= max ? 0 : scrollY + 4);
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+</script>
