@@ -7,7 +7,7 @@ final class OverlayPanel: NSPanel {
 
 @MainActor
 final class OverlayController: NSObject {
-    enum State { case closed, opening, selecting, capturing, error }
+    enum State { case closed, opening, selecting, capturing, sourceUnavailable, error }
 
     private let preferences: PreferenceStore
     private let capture = CaptureController()
@@ -93,7 +93,9 @@ final class OverlayController: NSObject {
                 guard request == generation, state != .closed else { return }
                 available = windows
                 rebuildWindowList()
-                if state != .capturing {
+                let shouldAutoSelect = state == .selecting
+                if state == .sourceUnavailable { state = .selecting }
+                if state == .selecting || state == .opening {
                     status?.stringValue = windows.isEmpty
                         ? "No capturable windows. Open an app and refresh."
                         : "Choose a window · live preview only"
@@ -104,7 +106,7 @@ final class OverlayController: NSObject {
                 case .lastUsed: preferredBundleID = preferences.value.lastUsedBundleIdentifier
                 case .picker: preferredBundleID = nil
                 }
-                if state == .selecting, let bundleID = preferredBundleID,
+                if shouldAutoSelect, let bundleID = preferredBundleID,
                    let index = windows.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
                     selectWindow(at: index)
                 }
@@ -271,10 +273,10 @@ final class OverlayController: NSObject {
         available = []
         rebuildWindowList()
         renderer?.clear()
-        state = .selecting
+        state = .sourceUnavailable
         status?.stringValue = "Source window closed. Refresh to choose another."
         await capture.stop()
-        if request == generation, state == .selecting { renderer?.clear() }
+        if request == generation, state == .sourceUnavailable { renderer?.clear() }
     }
 
     @objc private func applicationTerminated(_ notification: Notification) {
