@@ -86,6 +86,14 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
 
     func recordMailboxDrop() { lock.withLock { metrics.mailboxDrops += 1 } }
 
+    func recordUnchanged() { lock.withLock { metrics.unchanged += 1 } }
+
+    func recordRateChange(idle: Bool) {
+        lock.withLock {
+            if idle { metrics.idleRateSwitches += 1 } else { metrics.fullRateSwitches += 1 }
+        }
+    }
+
     /// `presentedTime` is Core Animation media time in seconds, or zero when the
     /// compositor never showed the drawable.
     func recordPresented(_ stamp: FrameStamp, presentedTime: CFTimeInterval) {

@@ -1,6 +1,7 @@
 import AppKit
 import CoreMedia
 import CoreVideo
+import DropyCore
 import IOSurface
 import ScreenCaptureKit
 
@@ -9,27 +10,57 @@ import ScreenCaptureKit
 final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private var latest: (image: CVPixelBuffer, stamp: FrameStamp)?
+    /// The last frame sent toward the renderer, kept to detect unchanged frames.
+    private var lastForwarded: CVPixelBuffer?
     private var scheduled = false
     private var invalidated = false
     private weak var renderer: MetalFrameView?
     let metrics: CaptureMetricsRecorder
+    /// Consecutive unchanged frames before the source counts as idle (0.5 s at 60 fps).
+    static let idleThreshold = 30
+    private var consecutiveUnchanged = 0
+    private var sourceIdle = false
+    /// Called on the capture queue when the source becomes idle (true) or changes again.
+    private let onActivityChange: @Sendable (Bool) -> Void
 
-    init(renderer: MetalFrameView, metrics: CaptureMetricsRecorder) {
+    init(renderer: MetalFrameView, metrics: CaptureMetricsRecorder,
+         onActivityChange: @escaping @Sendable (Bool) -> Void) {
         self.renderer = renderer
         self.metrics = metrics
+        self.onActivityChange = onActivityChange
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                 of type: SCStreamOutputType) {
         guard type == .screen else { return }
         lock.lock()
-        guard !invalidated else { lock.unlock(); return }
-        guard let stamp = metrics.recordFrame(sampleBuffer,
+        let previous = invalidated ? nil : lastForwarded
+        let active = !invalidated
+        lock.unlock()
+        guard active,
+              let stamp = metrics.recordFrame(sampleBuffer,
                                               image: CMSampleBufferGetImageBuffer(sampleBuffer)),
-              let image = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            lock.unlock()
+              let image = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        // Unchanged content skips the main-thread handoff, the draw and the
+        // compositor work entirely. The comparison runs outside the lock; stream
+        // callbacks are serial, so only this queue writes `lastForwarded`.
+        if let previous, Self.identical(previous, image) {
+            metrics.recordUnchanged()
+            consecutiveUnchanged += 1
+            if consecutiveUnchanged == Self.idleThreshold, !sourceIdle {
+                sourceIdle = true
+                onActivityChange(true)
+            }
             return
         }
+        consecutiveUnchanged = 0
+        if sourceIdle {
+            sourceIdle = false
+            onActivityChange(false)
+        }
+        lock.lock()
+        guard !invalidated else { lock.unlock(); return }
+        lastForwarded = image
         if latest != nil { metrics.recordMailboxDrop() }
         latest = (image, stamp)
         let shouldSchedule = !scheduled
@@ -44,6 +75,7 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         lock.lock()
         invalidated = true
         latest = nil
+        lastForwarded = nil
         lock.unlock()
     }
 
@@ -54,6 +86,24 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         scheduled = false
         lock.unlock()
         if let frame { renderer?.present(frame.image, stamp: frame.stamp) }
+    }
+}
+
+extension FrameMailbox {
+    static func identical(_ first: CVPixelBuffer, _ second: CVPixelBuffer) -> Bool {
+        let width = CVPixelBufferGetWidth(first), height = CVPixelBufferGetHeight(first)
+        guard width == CVPixelBufferGetWidth(second), height == CVPixelBufferGetHeight(second),
+              CVPixelBufferGetPixelFormatType(first) == CVPixelBufferGetPixelFormatType(second),
+              CVPixelBufferGetPixelFormatType(first) == kCVPixelFormatType_32BGRA else { return false }
+        guard CVPixelBufferLockBaseAddress(first, .readOnly) == kCVReturnSuccess else { return false }
+        defer { CVPixelBufferUnlockBaseAddress(first, .readOnly) }
+        guard CVPixelBufferLockBaseAddress(second, .readOnly) == kCVReturnSuccess else { return false }
+        defer { CVPixelBufferUnlockBaseAddress(second, .readOnly) }
+        guard let a = CVPixelBufferGetBaseAddress(first),
+              let b = CVPixelBufferGetBaseAddress(second) else { return false }
+        return FrameComparison.identical(a, rowStride: CVPixelBufferGetBytesPerRow(first),
+                                         b, rowStride: CVPixelBufferGetBytesPerRow(second),
+                                         bytesPerRow: width * 4, rows: height)
     }
 }
 
@@ -78,6 +128,8 @@ final class CaptureController {
     /// Retaining a failed stop also keeps it available for diagnosis.
     private var runningStreams: [ObjectIdentifier: (stream: SCStream, windowID: UInt32)] = [:]
     private var recorders: [ObjectIdentifier: CaptureMetricsRecorder] = [:]
+    private var activeConfiguration: SCStreamConfiguration?
+    private var captureIdle = false
 
     /// Starts one stream. `onUnexpectedStop` runs on the main actor only while this
     /// stream is still the active one; a stop Dropy requested is never reported.
@@ -105,7 +157,9 @@ final class CaptureController {
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
                               configuration: configuration, delegate: observer)
         let recorder = CaptureMetricsRecorder(windowID: window.windowID, requestedAt: requestedAt)
-        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder)
+        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder) { [weak self] idle in
+            Task { @MainActor [weak self] in await self?.setSourceIdle(idle, request: request) }
+        }
         do {
             try stream.addStreamOutput(mailbox, type: .screen,
                                        sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
@@ -120,6 +174,7 @@ final class CaptureController {
         self.mailbox = mailbox
         self.stopObserver = observer
         self.outputSize = CGSize(width: configuration.width, height: configuration.height)
+        self.activeConfiguration = configuration
         do {
             try await stream.startCapture()
             recorder.startReturned()
@@ -152,6 +207,23 @@ final class CaptureController {
         try await stream.updateConfiguration(configuration)
         guard request == requestID else { return }
         outputSize = nextSize
+        activeConfiguration = configuration
+    }
+
+    /// While the source is unchanged, capture at a low rate; the first changed frame
+    /// restores the full rate. ScreenCaptureKit keeps producing identical frames for
+    /// titled windows, so without this an idle source costs as much as a live one.
+    private func setSourceIdle(_ idle: Bool, request: UUID) async {
+        guard request == requestID, let stream, let configuration = activeConfiguration,
+              idle != captureIdle else { return }
+        captureIdle = idle
+        configuration.minimumFrameInterval = Self.frameInterval(idle: idle)
+        mailbox?.metrics.recordRateChange(idle: idle)
+        try? await stream.updateConfiguration(configuration)
+    }
+
+    private static func frameInterval(idle: Bool) -> CMTime {
+        CMTime(value: 1, timescale: idle ? 10 : 60)
     }
 
     private func makeConfiguration(window: SCWindow, renderer: MetalFrameView) -> SCStreamConfiguration {
@@ -171,8 +243,10 @@ final class CaptureController {
         configuration.width = max(64, Int(sourceWidth * captureScale))
         configuration.height = max(64, Int(sourceHeight * captureScale))
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        configuration.queueDepth = 3
+        configuration.minimumFrameInterval = Self.frameInterval(idle: captureIdle)
+        // One surface stays retained for unchanged-frame comparison, so allow one
+        // more than the renderer and mailbox need.
+        configuration.queueDepth = 4
         configuration.capturesAudio = false
         configuration.includeChildWindows = true
         return configuration
@@ -213,6 +287,8 @@ final class CaptureController {
     /// Forget the active stream synchronously, so no later callback treats it as current.
     private func detachActiveStream() -> SCStream? {
         outputSize = nil
+        activeConfiguration = nil
+        captureIdle = false
         mailbox?.invalidate()
         mailbox = nil
         stopObserver = nil

@@ -59,6 +59,11 @@ public struct CaptureSessionMetrics: Sendable {
     public var pixelFormat = ""
     /// Frames by ScreenCaptureKit status, e.g. complete, idle, blank, suspended.
     public var statusCounts: [String: Int] = [:]
+    /// Complete frames byte-identical to the last forwarded frame, skipped before rendering.
+    public var unchanged = 0
+    /// Switches to the low idle capture rate, and back to the full rate.
+    public var idleRateSwitches = 0
+    public var fullRateSwitches = 0
     /// Complete frames replaced in the mailbox before the main thread took them.
     public var mailboxDrops = 0
     /// Frames the compositor reported as shown.
@@ -115,6 +120,8 @@ public struct CaptureSessionMetrics: Sendable {
             "output=\(width)x\(height)/\(pixelFormat.isEmpty ? "-" : pixelFormat)",
             "status=[\(statuses)]",
             String(format: "completeRate=%.1f/s", rate),
+            "unchanged=\(unchanged)",
+            "rateChanges=\(idleRateSwitches)idle/\(fullRateSwitches)full",
             "mailboxDrops=\(mailboxDrops)",
             "presented=\(presented)",
             "notPresented=\(notPresented)",

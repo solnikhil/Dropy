@@ -64,7 +64,10 @@ final class OverlayController: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
         panel.isOpaque = true
-        panel.hasShadow = true
+        // An active window's shadow was re-rendered on every composite while content
+        // behind it changed, adding about 25 points of GPU utilization with nothing
+        // captured. A hairline border separates the panel instead.
+        panel.hasShadow = false
         panel.isReleasedWhenClosed = false
         buildContent(in: panel, size: full.size)
         opensInProcess += 1
@@ -169,9 +172,11 @@ final class OverlayController: NSObject {
     private func buildContent(in panel: NSPanel, size: CGSize) {
         let root = NSView(frame: CGRect(origin: .zero, size: size))
         root.wantsLayer = true
+        // No rounded mask on the root: the panel is opaque, so the corners were never
+        // visible, and masking a layer tree forces an offscreen pass on every composite.
         root.layer?.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1).cgColor
-        root.layer?.cornerRadius = 26
-        root.layer?.masksToBounds = true
+        root.layer?.borderWidth = 1
+        root.layer?.borderColor = NSColor(calibratedWhite: 1, alpha: 0.12).cgColor
         panel.contentView = root
 
         let title = NSTextField(labelWithString: "DROPY")
@@ -220,12 +225,15 @@ final class OverlayController: NSObject {
         previewShell.wantsLayer = true
         previewShell.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
         previewShell.layer?.cornerRadius = 16
-        previewShell.layer?.masksToBounds = true
         root.addSubview(previewShell)
         do {
             let view = try MetalFrameView.make(frame: previewShell.bounds)
             view.autoresizingMask = [.width, .height]
             view.contentMode = preferences.value.contentMode
+            // Clip the Metal layer itself: it has no sublayers, so rounding it does
+            // not need an offscreen pass the way masking the shell's tree did.
+            view.layer?.cornerRadius = 16
+            view.layer?.masksToBounds = true
             previewShell.addSubview(view)
             renderer = view
         } catch {

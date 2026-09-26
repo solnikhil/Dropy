@@ -14,6 +14,10 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private var visibilityGeneration = UUID()
     /// Timestamps for the frame not yet drawn; attached to exactly one drawable.
     private var pendingStamp: FrameStamp?
+    /// Increments per presented frame so a late callback can tell whether it is stale.
+    private var frameSequence = 0
+    private var presentRetries = 0
+    private static let maximumPresentRetries = 3
     /// One-shot callback on the main thread with the Core Animation media time at
     /// which the next captured frame reached the screen.
     var onNextPresented: (@MainActor (CFTimeInterval) -> Void)?
@@ -48,6 +52,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0.045, green: 0.05, blue: 0.07, alpha: 1)
         framebufferOnly = true
+        // Two drawables keep presentation from queueing an extra refresh behind.
+        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
         enableSetNeedsDisplay = true
         isPaused = true
         delegate = self
@@ -56,13 +62,22 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
     required init(coder: NSCoder) { fatalError("Use init(frame:)") }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
+    }
+
     func present(_ pixelBuffer: CVPixelBuffer, stamp: FrameStamp? = nil) {
         precondition(Thread.isMainThread)
         // A frame replaced before any draw never reaches the screen.
         pendingStamp?.recorder.recordNotPresented()
         pendingStamp = stamp
+        frameSequence += 1
+        presentRetries = 0
         currentPixelBuffer = pixelBuffer
-        setNeedsDisplay(bounds)
+        // Draw now instead of waiting for the next display cycle; the deferred
+        // path showed about two refreshes of avoidable frame age.
+        draw()
     }
 
     /// Keep the old drawable invisible even when no new drawable is available.
@@ -72,8 +87,17 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         currentPixelBuffer = nil
         pendingStamp?.recorder.recordNotPresented()
         pendingStamp = nil
+        frameSequence += 1
         visibilityGeneration = UUID()
         alphaValue = 0
+        setNeedsDisplay(bounds)
+    }
+
+    private func retryPresent(_ stamp: FrameStamp, sequence: Int) {
+        guard sequence == frameSequence, pendingStamp == nil, currentPixelBuffer != nil,
+              presentRetries < Self.maximumPresentRetries else { return }
+        presentRetries += 1
+        pendingStamp = stamp
         setNeedsDisplay(bounds)
     }
 
@@ -135,9 +159,16 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         pendingStamp = nil
         let generation = visibilityGeneration
         let armed = onNextPresented != nil
+        let sequence = frameSequence
         drawable.addPresentedHandler { [weak self] drawable in
             let presentedTime = drawable.presentedTime
             if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime) }
+            if presentedTime == 0 {
+                if let stamp {
+                    Task { @MainActor [weak self] in self?.retryPresent(stamp, sequence: sequence) }
+                }
+                return
+            }
             guard presentedTime > 0 else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.visibilityGeneration == generation,
