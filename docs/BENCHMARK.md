@@ -61,7 +61,7 @@ Setup: M2 MacBook Air (`Mac14,2`), macOS 27.0 (26A428), built-in 2560×1664 Reti
 
 **The system was not idle.** WindowServer used about 44% CPU with or without Dropy. Cloudflare WARP (about 31%), `mediaanalysisd` (about 18%) and browser helper processes playing media were running. Swapping the Aerial wallpaper for a still one changed nothing measurable. Treat these results as a loaded-system baseline.
 
-**Dropy CPU figures in these two reports are invalid.** The sampler treated `proc_pid_rusage` nanoseconds as mach ticks and multiplied them by this Mac's 125/3 timebase. The sampler is fixed in this PR; rerun the workloads before using Dropy CPU for a budget or comparison. WindowServer CPU came from `ps` and is unaffected.
+**Dropy CPU figures in these reports and the follow-up checks below are invalid.** The sampler treated `proc_pid_rusage` nanoseconds as mach ticks and multiplied them by this Mac's 125/3 timebase. The sampler was fixed after these runs; rerun the workloads before using Dropy CPU for a budget or comparison. WindowServer CPU came from `ps` and is unaffected.
 
 | Workload | Run | GPU util without → with Dropy | Complete frames/s | Not presented | Frame age p50 / p95 / p99 (ms) | Cold reveal |
 |---|---|---|---|---|---|---|
@@ -90,6 +90,17 @@ Open/close cycles (static TextEdit, 20 cycles, 800 ms hold): all 20 reached a li
 4. **The GPU cost is significant.** Dropy added 22–36 points of system GPU utilization. Some of it is the 60 Hz redraw of the preview itself, so fixing findings 1 and 3 should also reduce it.
 5. **Start dominates reveal.** About 250–440 ms of a cold reveal is the stream start. Warm opens are about 240 ms.
 
+## Follow-up measurements, 2026-09-26/27
+
+Same Mac and display, same loaded background. These were controlled A/B checks rather than full benchmark runs.
+
+- **Title bars make static windows look busy.** A borderless opaque test window captured `complete=2`, then only `idle` frames. The same window with a standard title bar produced a complete, fully dirty frame on every refresh, even over a static backdrop. For TextEdit, 291 of 294 of those frames were byte-identical to the previous one, so the dirty rects give Dropy no signal. Dropy now compares each frame's bytes on the capture queue (about 0.6 ms at the medium stream size) and drops identical frames before the main thread. After 30 unchanged frames it captures at 10 fps, and the first change restores 60 fps.
+  - Static TextEdit: 855 of 857 frames were skipped before the adaptive rate was added. The recorded CPU percentages are invalid because of the sampler bug. TextEdit's blinking caret legitimately switches it back to full rate about once a second.
+- **Most of the GPU cost was the panel's shadow.** With the overlay open and nothing captured, system GPU utilization was 31%. Without the panel shadow it was **4%**, and it was also low when Dropy did not activate itself. Plain test windows added nothing. The panel now has no shadow, a hairline border instead, and no tree masks.
+- **Closed overlay recorded low wakeups:** 0.3 wakeups/s and 11 MB, measured with the pointer still. Its recorded CPU percentage is invalid. Hover and click now use a tracking-area panel over the notch instead of global event monitors, so pointer movement elsewhere no longer wakes Dropy on notched screens. Its cost while the pointer moves has not been measured yet.
+- **Presentation latency did not move.** Drawing immediately instead of through `setNeedsDisplay`, and using two drawables, left callback-to-screen at about 25–42 ms p50. That looks like the window compositor's floor for a windowed app, not Dropy's queueing.
+- **Not yet re-measured:** a full benchmark after these changes. The only run attempted had the screen lock during the static and scroll phases (streams reported `suspended`), so those results were discarded.
+
 ## Provisional budgets
 
 These come from the baseline above and are **not yet release gates**. They should be confirmed with at least five runs per workload on an idle system and on a second Mac model before they gate anything.
@@ -103,8 +114,9 @@ These come from the baseline above and are **not yet release gates**. They shoul
 | Warm reveal p95 | ≤ 300 ms | Pass (261 ms) |
 | Cold reveal | ≤ 600 ms | Mixed (426–775 ms) |
 | Dropy CPU mean while previewing at 60 fps | ≤ 12% | Not assessed; sampler CPU bug |
-| Dropy CPU when the source is unchanged | ≤ 2% | Not measurable yet (finding 3) |
-| Added system GPU utilization | ≤ 20 points | Fails (22–36) |
+| Dropy CPU when the source is unchanged | ≤ 2% | Not assessed; sampler CPU bug |
+| Added system GPU utilization | ≤ 20 points | Panel alone now ≈ 0 (was +25); with capture: to be re-measured |
 | Dropy footprint | ≤ 64 MB | Pass (≤ 37 MB) |
+| Dropy CPU with the overlay closed | ≈ 0% | Not assessed; 0.3 wakeups/s with pointer still |
 
 Not covered yet: input-to-updated-frame (M3), WindowServer wakeups and footprint (need `powermetrics`), energy impact, a real media-decoder workload, and multi-display or full-screen placements.
