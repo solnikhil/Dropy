@@ -29,6 +29,7 @@ final class OverlayController: NSObject {
     private var startInFlight = false
     private var overlaySession = UUID()
     private var opensInProcess = 0
+    private var requestedScreenCaptureAccess = false
     /// Changes on open, close, every selection and every failure. Async work
     /// continues only while its captured generation is still current.
     private var generation = UUID()
@@ -137,7 +138,14 @@ final class OverlayController: NSObject {
                 if shouldAutoSelect { startDebugAlternationIfRequested() }
             } catch {
                 guard request == generation, state != .closed, !state.isCapturing else { return }
-                setState(.failed(catalogFailure(for: error)))
+                let failure = catalogFailure(for: error)
+                setState(.failed(failure))
+                // Ask once per launch so macOS lists Dropy under Screen Recording and
+                // shows its own prompt; without a request the app never appears there.
+                if failure == .permissionDenied, !requestedScreenCaptureAccess {
+                    requestedScreenCaptureAccess = true
+                    _ = CGRequestScreenCaptureAccess()
+                }
             }
         }
     }
@@ -521,6 +529,10 @@ final class OverlayController: NSObject {
     }
 
     @objc private func privacyClicked() {
+        // Asking through the system registers Dropy's current signature in the
+        // Screen Recording list and shows macOS's own prompt. Adding the app by
+        // hand with + did not produce a grant that matched on macOS 27.
+        if CGRequestScreenCaptureAccess() { return }
         guard let url = URL(string:
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         else { return }
