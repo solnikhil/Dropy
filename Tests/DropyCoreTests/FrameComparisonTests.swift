@@ -28,4 +28,13 @@ final class FrameComparisonTests: XCTestCase {
         let bytes = [UInt8](repeating: 0, count: 16)
         XCTAssertFalse(compare(bytes, stride: 8, bytes, stride: 8, bytesPerRow: 12, rows: 1))
     }
+
+    func testRejectsNegativeSizesAndOverflow() {
+        let bytes = [UInt8](repeating: 0, count: 16)
+        XCTAssertFalse(compare(bytes, stride: 8, bytes, stride: 8, bytesPerRow: -1, rows: 1))
+        XCTAssertFalse(compare(bytes, stride: -8, bytes, stride: 8, bytesPerRow: 4, rows: 1))
+        XCTAssertFalse(compare(bytes, stride: 8, bytes, stride: 8, bytesPerRow: 4, rows: -1))
+        XCTAssertFalse(compare(bytes, stride: 8, bytes, stride: 8,
+                               bytesPerRow: 4, rows: Int.max))
+    }
 }

@@ -20,11 +20,12 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     static let idleThreshold = 30
     private var consecutiveUnchanged = 0
     private var sourceIdle = false
+    private var activitySequence = 0
     /// Called on the capture queue when the source becomes idle (true) or changes again.
-    private let onActivityChange: @Sendable (Bool) -> Void
+    private let onActivityChange: @Sendable (Bool, Int) -> Void
 
     init(renderer: MetalFrameView, metrics: CaptureMetricsRecorder,
-         onActivityChange: @escaping @Sendable (Bool) -> Void) {
+         onActivityChange: @escaping @Sendable (Bool, Int) -> Void) {
         self.renderer = renderer
         self.metrics = metrics
         self.onActivityChange = onActivityChange
@@ -49,14 +50,16 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
             consecutiveUnchanged += 1
             if consecutiveUnchanged == Self.idleThreshold, !sourceIdle {
                 sourceIdle = true
-                onActivityChange(true)
+                activitySequence += 1
+                onActivityChange(true, activitySequence)
             }
             return
         }
         consecutiveUnchanged = 0
         if sourceIdle {
             sourceIdle = false
-            onActivityChange(false)
+            activitySequence += 1
+            onActivityChange(false, activitySequence)
         }
         lock.lock()
         guard !invalidated else { lock.unlock(); return }
@@ -92,7 +95,8 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
 extension FrameMailbox {
     static func identical(_ first: CVPixelBuffer, _ second: CVPixelBuffer) -> Bool {
         let width = CVPixelBufferGetWidth(first), height = CVPixelBufferGetHeight(first)
-        guard width == CVPixelBufferGetWidth(second), height == CVPixelBufferGetHeight(second),
+        guard width <= Int.max / 4,
+              width == CVPixelBufferGetWidth(second), height == CVPixelBufferGetHeight(second),
               CVPixelBufferGetPixelFormatType(first) == CVPixelBufferGetPixelFormatType(second),
               CVPixelBufferGetPixelFormatType(first) == kCVPixelFormatType_32BGRA else { return false }
         guard CVPixelBufferLockBaseAddress(first, .readOnly) == kCVReturnSuccess else { return false }
@@ -128,8 +132,14 @@ final class CaptureController {
     /// Retaining a failed stop also keeps it available for diagnosis.
     private var runningStreams: [ObjectIdentifier: (stream: SCStream, windowID: UInt32)] = [:]
     private var recorders: [ObjectIdentifier: CaptureMetricsRecorder] = [:]
-    private var activeConfiguration: SCStreamConfiguration?
+    private var activeWindow: SCWindow?
+    private weak var activeRenderer: MetalFrameView?
     private var captureIdle = false
+    private var desiredIdle = false
+    private var latestActivitySequence = 0
+    private var rateRetryScheduled = false
+    private var configurationBusy = false
+    private var configurationWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Starts one stream. `onUnexpectedStop` runs on the main actor only while this
     /// stream is still the active one; a stop Dropy requested is never reported.
@@ -157,8 +167,10 @@ final class CaptureController {
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
                               configuration: configuration, delegate: observer)
         let recorder = CaptureMetricsRecorder(windowID: window.windowID, requestedAt: requestedAt)
-        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder) { [weak self] idle in
-            Task { @MainActor [weak self] in await self?.setSourceIdle(idle, request: request) }
+        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder) { [weak self] idle, sequence in
+            Task { @MainActor [weak self] in
+                await self?.setSourceIdle(idle, sequence: sequence, request: request)
+            }
         }
         do {
             try stream.addStreamOutput(mailbox, type: .screen,
@@ -174,7 +186,8 @@ final class CaptureController {
         self.mailbox = mailbox
         self.stopObserver = observer
         self.outputSize = CGSize(width: configuration.width, height: configuration.height)
-        self.activeConfiguration = configuration
+        self.activeWindow = window
+        self.activeRenderer = renderer
         do {
             try await stream.startCapture()
             recorder.startReturned()
@@ -201,32 +214,91 @@ final class CaptureController {
     func updateWindow(_ window: SCWindow, renderer: MetalFrameView) async throws {
         guard let stream else { return }
         let request = requestID
+        await acquireConfiguration()
+        defer { releaseConfiguration() }
+        guard request == requestID, self.stream === stream else { return }
         let configuration = makeConfiguration(window: window, renderer: renderer)
         let nextSize = CGSize(width: configuration.width, height: configuration.height)
-        guard nextSize != outputSize else { return }
+        guard nextSize != outputSize else {
+            activeWindow = window
+            activeRenderer = renderer
+            return
+        }
         try await stream.updateConfiguration(configuration)
         guard request == requestID else { return }
         outputSize = nextSize
-        activeConfiguration = configuration
+        activeWindow = window
+        activeRenderer = renderer
     }
 
     /// While the source is unchanged, capture at a low rate; the first changed frame
     /// restores the full rate. ScreenCaptureKit keeps producing identical frames for
     /// titled windows, so without this an idle source costs as much as a live one.
-    private func setSourceIdle(_ idle: Bool, request: UUID) async {
-        guard request == requestID, let stream, let configuration = activeConfiguration,
-              idle != captureIdle else { return }
-        captureIdle = idle
-        configuration.minimumFrameInterval = Self.frameInterval(idle: idle)
-        mailbox?.metrics.recordRateChange(idle: idle)
-        try? await stream.updateConfiguration(configuration)
+    private func setSourceIdle(_ idle: Bool, sequence: Int, request: UUID) async {
+        guard request == requestID, stream != nil,
+              sequence > latestActivitySequence else { return }
+        latestActivitySequence = sequence
+        desiredIdle = idle
+        await reconcileRate(request: request)
+    }
+
+    private func reconcileRate(request: UUID) async {
+        await acquireConfiguration()
+        defer { releaseConfiguration() }
+        guard request == requestID, let stream, let window = activeWindow,
+              let renderer = activeRenderer, desiredIdle != captureIdle else { return }
+        let targetIdle = desiredIdle
+        let configuration = makeConfiguration(window: window, renderer: renderer, idle: targetIdle)
+        do {
+            try await stream.updateConfiguration(configuration)
+        } catch {
+            guard request == requestID else { return }
+            NSLog("Dropy capture rate update failed: code=%ld", (error as NSError).code)
+            scheduleRateRetry(request: request)
+            return
+        }
+        guard request == requestID, self.stream === stream else { return }
+        captureIdle = targetIdle
+        outputSize = CGSize(width: configuration.width, height: configuration.height)
+        mailbox?.metrics.recordRateChange(idle: targetIdle)
+        if desiredIdle != targetIdle {
+            Task { await reconcileRate(request: request) }
+        }
+    }
+
+    private func scheduleRateRetry(request: UUID) {
+        guard !rateRetryScheduled else { return }
+        rateRetryScheduled = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, request == self.requestID else { return }
+            self.rateRetryScheduled = false
+            await self.reconcileRate(request: request)
+        }
+    }
+
+    private func acquireConfiguration() async {
+        if !configurationBusy {
+            configurationBusy = true
+            return
+        }
+        await withCheckedContinuation { configurationWaiters.append($0) }
+    }
+
+    private func releaseConfiguration() {
+        if configurationWaiters.isEmpty {
+            configurationBusy = false
+        } else {
+            configurationWaiters.removeFirst().resume()
+        }
     }
 
     private static func frameInterval(idle: Bool) -> CMTime {
         CMTime(value: 1, timescale: idle ? 10 : 60)
     }
 
-    private func makeConfiguration(window: SCWindow, renderer: MetalFrameView) -> SCStreamConfiguration {
+    private func makeConfiguration(window: SCWindow, renderer: MetalFrameView,
+                                   idle: Bool? = nil) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         let backingScale = renderer.window?.backingScaleFactor ?? 2
         let sourceWidth = max(window.frame.width, 1)
@@ -243,7 +315,7 @@ final class CaptureController {
         configuration.width = max(64, Int(sourceWidth * captureScale))
         configuration.height = max(64, Int(sourceHeight * captureScale))
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.minimumFrameInterval = Self.frameInterval(idle: captureIdle)
+        configuration.minimumFrameInterval = Self.frameInterval(idle: idle ?? captureIdle)
         // One surface stays retained for unchanged-frame comparison, so allow one
         // more than the renderer and mailbox need.
         configuration.queueDepth = 4
@@ -287,8 +359,12 @@ final class CaptureController {
     /// Forget the active stream synchronously, so no later callback treats it as current.
     private func detachActiveStream() -> SCStream? {
         outputSize = nil
-        activeConfiguration = nil
+        activeWindow = nil
+        activeRenderer = nil
         captureIdle = false
+        desiredIdle = false
+        latestActivitySequence = 0
+        rateRetryScheduled = false
         mailbox?.invalidate()
         mailbox = nil
         stopObserver = nil
