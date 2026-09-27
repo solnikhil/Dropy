@@ -61,14 +61,16 @@ Setup: M2 MacBook Air (`Mac14,2`), macOS 27.0 (26A428), built-in 2560×1664 Reti
 
 **The system was not idle.** WindowServer used about 44% CPU with or without Dropy. Cloudflare WARP (about 31%), `mediaanalysisd` (about 18%) and browser helper processes playing media were running. Swapping the Aerial wallpaper for a still one changed nothing measurable. Treat these results as a loaded-system baseline.
 
-| Workload | Run | Dropy CPU mean | GPU util without → with Dropy | Complete frames/s | Not presented | Frame age p50 / p95 / p99 (ms) | Cold reveal |
-|---|---|---|---|---|---|---|---|
-| static | 1 | 9.7% | 11 → 44% | 57.6 | 1 of 1427 | 26.9 / 36.0 / 41.0 | 468 ms |
-| static | 2 | 11.2% | 12 → 45% | 57.5 | 2 of 1429 | 42.1 / 51.9 / 52.7 | 440 ms |
-| scroll | 1 | 10.0% | 18 → 47% | 57.7 | 2 of 1434 | 28.4 / 35.4 / 37.3 | 505 ms |
-| scroll | 2 | 11.7% | 18 → 48% | 57.7 | 2 of 1423 | 40.2 / 51.9 / 53.0 | 559 ms |
-| animation | 1 | 9.1% | 33 → 55% | 56.0 | **697 of 1361** | 48.0 / 59.1 / 65.5 | 775 ms |
-| animation | 2 | 12.0% | 32 → 58% | 57.8 | 4 of 1426 | 29.8 / 36.4 / 41.1 | 673 ms |
+**Dropy CPU figures in these two reports are invalid.** The sampler treated `proc_pid_rusage` nanoseconds as mach ticks and multiplied them by this Mac's 125/3 timebase. The sampler is fixed in this PR; rerun the workloads before using Dropy CPU for a budget or comparison. WindowServer CPU came from `ps` and is unaffected.
+
+| Workload | Run | GPU util without → with Dropy | Complete frames/s | Not presented | Frame age p50 / p95 / p99 (ms) | Cold reveal |
+|---|---|---|---|---|---|---|
+| static | 1 | 11 → 44% | 57.6 | 1 of 1427 | 26.9 / 36.0 / 41.0 | 468 ms |
+| static | 2 | 12 → 45% | 57.5 | 2 of 1429 | 42.1 / 51.9 / 52.7 | 440 ms |
+| scroll | 1 | 18 → 47% | 57.7 | 2 of 1434 | 28.4 / 35.4 / 37.3 | 505 ms |
+| scroll | 2 | 18 → 48% | 57.7 | 2 of 1423 | 40.2 / 51.9 / 53.0 | 559 ms |
+| animation | 1 | 33 → 55% | 56.0 | **697 of 1361** | 48.0 / 59.1 / 65.5 | 775 ms |
+| animation | 2 | 32 → 58% | 57.8 | 4 of 1426 | 29.8 / 36.4 / 41.1 | 673 ms |
 
 Held steady in every run:
 
@@ -100,7 +102,7 @@ These come from the baseline above and are **not yet release gates**. They shoul
 | Frames presented | ≥ 95% of those sent to the renderer | Fails once (animation run 1) |
 | Warm reveal p95 | ≤ 300 ms | Pass (261 ms) |
 | Cold reveal | ≤ 600 ms | Mixed (426–775 ms) |
-| Dropy CPU mean while previewing at 60 fps | ≤ 12% | Borderline (9–12%) |
+| Dropy CPU mean while previewing at 60 fps | ≤ 12% | Not assessed; sampler CPU bug |
 | Dropy CPU when the source is unchanged | ≤ 2% | Not measurable yet (finding 3) |
 | Added system GPU utilization | ≤ 20 points | Fails (22–36) |
 | Dropy footprint | ≤ 64 MB | Pass (≤ 37 MB) |

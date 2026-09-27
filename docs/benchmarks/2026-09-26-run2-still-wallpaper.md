@@ -1,5 +1,7 @@
 # Dropy capture benchmark
 
+The Dropy CPU percentages below are invalid: this run's sampler incorrectly rescaled `proc_pid_rusage` nanoseconds by the Mac's 125/3 mach timebase. Other measurements remain as recorded. Rerun before using Dropy CPU as a baseline.
+
 - Date: 2026-09-26 01:11 IST
 - Dropy: 18ad4dd
 - macOS: 27.0 (26A428); hardware: Mac14,2
@@ -51,4 +53,3 @@ gpu: utilMean=57.8% utilP95=59.0% samples=20
 Dropy reveal: firstFrame=673.2ms open=1 warm=no
 Dropy capture metrics: window=3721 duration=24.8s start=299.5ms firstFrame=302.1ms output=1176x705/BGRA status=[complete=1436] completeRate=57.8/s mailboxDrops=9 presented=1422 notPresented=4 captureToCallback=[n=1436 p50=0.7 p95=2.2 p99=4.9 max=67.0] callbackToPresent=[n=1422 p50=28.5 p95=35.5 p99=39.7 max=51.8] frameAge=[n=1422 p50=29.8 p95=36.4 p99=41.1 max=54.2] clockOffset=0.000ms stop=closed
 ```
-
