@@ -27,6 +27,7 @@ final class OverlayController: NSObject {
     }
     private var pendingStart: PendingStart?
     private var startInFlight = false
+    private var overlaySession = UUID()
     /// Changes on open, close, every selection and every failure. Async work
     /// continues only while its captured generation is still current.
     private var generation = UUID()
@@ -51,6 +52,7 @@ final class OverlayController: NSObject {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
                 ?? NSScreen.main else { return }
         generation = UUID()
+        overlaySession = UUID()
         let full = OverlayGeometry.frame(on: screen.frame,
                                          preferredSize: preferences.value.sizePreset.dimensions)
         let compact = CGRect(x: screen.frame.midX - 104, y: screen.frame.maxY - 38,
@@ -80,6 +82,7 @@ final class OverlayController: NSObject {
     func close() {
         guard state != .closed else { return }
         generation = UUID()
+        overlaySession = UUID()
         setState(.closed)
         selectedIdentity = nil
         identityTask?.cancel()
@@ -261,9 +264,10 @@ final class OverlayController: NSObject {
             return
         }
         NSLog("Dropy debug alternate: windows=%u,%u switches=%ld", pair[0], pair[1], switches)
+        let session = overlaySession
         Task {
             for step in 0..<switches {
-                guard state != .closed,
+                guard session == overlaySession, state != .closed,
                       let index = available.firstIndex(where: { $0.window.windowID == pair[step % 2] })
                 else { return }
                 selectWindow(at: index)
@@ -272,6 +276,7 @@ final class OverlayController: NSObject {
             NSLog("Dropy debug alternate done: expected=%u", pair[(switches - 1) % 2])
             guard parts.count > 3, parts[3] == "close" else { return }
             try? await Task.sleep(for: .seconds(3))
+            guard session == overlaySession, state != .closed else { return }
             close()
         }
     }
