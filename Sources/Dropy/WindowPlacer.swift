@@ -65,7 +65,7 @@ enum WindowPlacer {
         guard let original = found else { throw PlacementError.windowNotFound }
         var expected = original
         switch mode {
-        case .offscreen:
+        case .offscreen, .parked:
             expected.frame = PlacementGeometry.offscreenFrame(for: original.frame, displays: displayBounds())
         case .minimize: expected.isMinimized = true
         case .hideApp: expected.isAppHidden = true
@@ -74,7 +74,7 @@ enum WindowPlacer {
                                    applied: expected, createdAt: Date(), applicationConfirmed: false)
         try journal.upsert(entry)
         switch mode {
-        case .offscreen:
+        case .offscreen, .parked:
             try setPosition(expected.frame.origin, of: requireWindow(identity))
         case .minimize:
             try setMinimized(true, window: requireWindow(identity))
@@ -82,7 +82,7 @@ enum WindowPlacer {
             NSRunningApplication(processIdentifier: identity.processID)?.hide()
         }
         switch mode {
-        case .offscreen:
+        case .offscreen, .parked:
             // AppKit may clamp the position; record where the window really went so
             // a restore compares against reality rather than the request.
             if let observed = try state(of: identity) {

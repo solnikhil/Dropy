@@ -11,6 +11,12 @@ public enum PlacementMode: String, Codable, CaseIterable, Sendable {
     case minimize
     /// Hide the whole application (all of its windows).
     case hideApp
+    /// Move off-screen, then cover whatever strip AppKit keeps visible with a small
+    /// Dropy tab. Covered windows keep capturing, so the source stays live.
+    case parked
+
+    /// Modes that move the window rather than minimizing or hiding it.
+    public var movesWindow: Bool { self == .offscreen || self == .parked }
 }
 
 /// The source window facts needed to put it back. Frames use global display
@@ -126,6 +132,17 @@ public enum PlacementGeometry {
             return overlap.isNull ? total : total + Double(overlap.width * overlap.height)
         }
         return min(visible / area, 1)
+    }
+
+    /// The pieces of `frame` that lie on each display, in the same coordinates.
+    public static func visibleParts(of frame: CGRect, on displays: [CGRect]) -> [CGRect] {
+        displays.map { frame.intersection($0) }.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+    }
+
+    /// Converts global top-left coordinates (Accessibility, CGWindowList) to AppKit's
+    /// bottom-left screen coordinates, given the height of the main display.
+    public static func appKitRect(fromGlobal rect: CGRect, mainDisplayHeight: CGFloat) -> CGRect {
+        CGRect(x: rect.minX, y: mainDisplayHeight - rect.maxY, width: rect.width, height: rect.height)
     }
 
     /// Keeps the size where it fits and moves the frame fully inside `display`.

@@ -10,6 +10,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     private var trigger: NotchTrigger?
     private var hotKey: GlobalHotKey?
     private let placementJournal = PlacementJournal()
+    private let parkingTabs = ParkingTabs()
 
     static func main() {
         let app = NSApplication.shared
@@ -23,6 +24,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         overlay = OverlayController(preferences: preferences)
         // Undo placements left behind by a crash or forced quit before anything else.
         if !placementJournal.entries.isEmpty { placementJournal.restoreAll() }
+        parkingTabs.onRestoreRequest = { [weak self] identity in
+            guard let self,
+                  let entry = self.placementJournal.entries.first(where: { $0.identity == identity }) else { return }
+            let decision = WindowPlacer.restore(entry, journal: self.placementJournal)
+            self.parkingTabs.remove(identity)
+            NSLog("Dropy placement: tab clicked restore=%@", decision.map(PlacementJournal.name) ?? "pending")
+        }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "◆"
         item.button?.toolTip = "Dropy"
@@ -163,10 +171,11 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         trigger?.stop()
         hotKey?.unregister()
         placementJournal.restoreAll()
+        parkingTabs.removeAll()
     }
 
     /// Development-only M2 experiment:
-    /// `DROPY_DEBUG_PLACEMENT=<offscreen|minimize|hideApp>[,<hold-seconds>]`. Once a
+    /// `DROPY_DEBUG_PLACEMENT=<offscreen|minimize|hideApp|parked>[,<hold-seconds>]`. Once a
     /// preview is live, place the source window, hold, restore, and log capture
     /// continuity, how much of the window stayed visible, and whether the restore
     /// matched the original. Logs modes, counts and fractions only.
@@ -201,12 +210,22 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             let server = WindowPlacer.windowServerInfo(identity.windowID)
             // A hidden or minimized window can drop out of the window-server list;
             // not being listed or not on screen both mean nothing is visible.
-            let leak = server.map { $0.onScreen ? PlacementGeometry.visibleFraction(of: $0.bounds, on: displays) : 0 } ?? 0
+            var leak = server.map { $0.onScreen ? PlacementGeometry.visibleFraction(of: $0.bounds, on: displays) : 0 } ?? 0
+            if mode == .parked, let server {
+                // Whatever the tabs cover is out of sight; report only the remainder.
+                let covered = self.parkingTabs.show(for: entry)
+                let area = Double(server.bounds.width * server.bounds.height)
+                let coveredArea = covered.reduce(0.0) { $0 + Double($1.width * $1.height) }
+                leak = area > 0 ? max(leak - coveredArea / area, 0) : leak
+                NSLog("Dropy placement: parked tabs=%ld coveredFraction=%.3f", covered.count,
+                      area > 0 ? coveredArea / area : 0)
+            }
             let placed = self.overlay.captureCounts() ?? before
             try? await Task.sleep(for: .seconds(hold))
             let held = self.overlay.captureCounts() ?? placed
             let stateDuringHold = self.overlay.state.diagnosticName
             let decision = WindowPlacer.restore(entry, journal: self.placementJournal)
+            self.parkingTabs.remove(identity)
             try? await Task.sleep(for: .milliseconds(500))
             let restored = try? WindowPlacer.state(of: identity)
             let verified = restored.map { $0.approximatelyEquals(entry.original) }
