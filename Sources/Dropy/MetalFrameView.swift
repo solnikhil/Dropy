@@ -18,7 +18,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     /// Increments per presented frame so a late callback can tell whether it is stale.
     private var frameSequence = 0
     private var presentRetries = 0
-    private static let maximumPresentRetries = 3
+    private static let fastPresentRetries = 3
     private var drawableRetryTask: Task<Void, Never>?
     private var drawableRetryDelayMilliseconds = 16
     /// One-shot callback on the main thread with the Core Animation media time at
@@ -132,11 +132,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     private func retryPresent(_ stamp: FrameStamp, sequence: Int) {
-        guard sequence == frameSequence, pendingStamp == nil, currentPixelBuffer != nil,
-              presentRetries < Self.maximumPresentRetries else { return }
+        guard sequence == frameSequence, pendingStamp == nil,
+              currentPixelBuffer != nil else { return }
         presentRetries += 1
         pendingStamp = stamp
-        setNeedsDisplay(bounds)
+        if presentRetries <= Self.fastPresentRetries { setNeedsDisplay(bounds) }
         scheduleDrawableRetry()
     }
 
@@ -162,6 +162,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
+        guard window?.occlusionState.contains(.visible) == true else { return }
         guard let drawable = currentDrawable,
               let pass = currentRenderPassDescriptor,
               let buffer = commandQueue.makeCommandBuffer(),
