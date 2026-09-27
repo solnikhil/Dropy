@@ -324,6 +324,9 @@ final class CaptureController {
         return configuration
     }
 
+    /// Totals for the active stream, if any.
+    func currentCounts() -> CaptureCounts? { mailbox?.metrics.counts() }
+
     /// `reason` is a log-safe label such as `closed` or a failure's diagnostic name.
     func stop(reason: String = "requested") async {
         requestID = UUID()

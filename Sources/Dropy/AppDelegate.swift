@@ -9,6 +9,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var trigger: NotchTrigger?
     private var hotKey: GlobalHotKey?
+    private let placementJournal = PlacementJournal()
 
     static func main() {
         let app = NSApplication.shared
@@ -20,6 +21,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         overlay = OverlayController(preferences: preferences)
+        // Undo placements left behind by a crash or forced quit before anything else.
+        if !placementJournal.entries.isEmpty { placementJournal.restoreAll() }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "◆"
         item.button?.toolTip = "Dropy"
@@ -143,6 +146,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
                 NSLog("Dropy debug cycles done")
             }
         }
+        if let spec = environment["DROPY_DEBUG_PLACEMENT"] { runPlacementExperiment(spec) }
         if let seconds = environment["DROPY_DEBUG_QUIT_AFTER"].flatMap(Double.init) {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(seconds))
@@ -156,6 +160,64 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         trigger?.stop()
         hotKey?.unregister()
+        placementJournal.restoreAll()
+    }
+
+    /// Development-only M2 experiment:
+    /// `DROPY_DEBUG_PLACEMENT=<offscreen|minimize|hideApp>[,<hold-seconds>]`. Once a
+    /// preview is live, place the source window, hold, restore, and log capture
+    /// continuity, how much of the window stayed visible, and whether the restore
+    /// matched the original. Logs modes, counts and fractions only.
+    private func runPlacementExperiment(_ spec: String) {
+        let parts = spec.split(separator: ",").map(String.init)
+        guard let mode = parts.first.flatMap(PlacementMode.init(rawValue:)) else {
+            NSLog("Dropy placement: unknown mode")
+            return
+        }
+        let hold = parts.count > 1 ? max(Double(parts[1]) ?? 10, 1) : 10
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var waited = 0
+            while self.overlay.state != .viewing, waited < 15_000 {
+                try? await Task.sleep(for: .milliseconds(100))
+                waited += 100
+            }
+            guard let identity = self.overlay.currentSelection,
+                  let before = self.overlay.captureCounts() else {
+                NSLog("Dropy placement: mode=%@ skipped=noLivePreview", mode.rawValue)
+                return
+            }
+            let entry: PlacementEntry
+            do {
+                entry = try await WindowPlacer.apply(mode, to: identity, journal: self.placementJournal)
+            } catch {
+                NSLog("Dropy placement: mode=%@ failed=%@", mode.rawValue, String(describing: error))
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+            let displays = WindowPlacer.displayBounds()
+            let server = WindowPlacer.windowServerInfo(identity.windowID)
+            // A hidden or minimized window can drop out of the window-server list;
+            // not being listed or not on screen both mean nothing is visible.
+            let leak = server.map { $0.onScreen ? PlacementGeometry.visibleFraction(of: $0.bounds, on: displays) : 0 } ?? 0
+            let placed = self.overlay.captureCounts() ?? before
+            try? await Task.sleep(for: .seconds(hold))
+            let held = self.overlay.captureCounts() ?? placed
+            let stateDuringHold = self.overlay.state.diagnosticName
+            let decision = WindowPlacer.restore(entry, journal: self.placementJournal)
+            try? await Task.sleep(for: .milliseconds(500))
+            let restored = try? WindowPlacer.state(of: identity)
+            let verified = restored.map { $0.approximatelyEquals(entry.original) }
+            NSLog("Dropy placement: mode=%@ placedFrameLeak=%.3f windowServerLeak=%@ windowOnScreen=%@ overlay=%@ capture=%@ restore=%@ verified=%@",
+                  mode.rawValue,
+                  entry.applied.isMinimized || entry.applied.isAppHidden
+                      ? 0 : PlacementGeometry.visibleFraction(of: entry.applied.frame, on: displays),
+                  String(format: "%.3f", leak),
+                  server.map { $0.onScreen ? "yes" : "no" } ?? "notListed",
+                  stateDuringHold, held.delta(since: placed),
+                  decision.map(PlacementJournal.name) ?? "pending",
+                  verified.map { $0 ? "yes" : "no" } ?? "unknown")
+        }
     }
 
     @objc private func toggleOverlay() { overlay.toggle() }

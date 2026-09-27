@@ -115,4 +115,22 @@ check(DismissBehavior.allCases.allSatisfy { $0.closes(on: .escape) }, "escape al
 check(DismissBehavior.pointerLeave.closes(on: .pointerLeft) && !DismissBehavior.clickOutside.closes(on: .pointerLeft),
       "pointer leave closes only in pointer-leave mode")
 check(!DismissBehavior.manual.closes(on: .clickOutside), "manual ignores outside clicks")
+let placementDisplay = CGRect(x: 0, y: 0, width: 1710, height: 1112)
+let placedOriginal = WindowPlacementState(frame: CGRect(x: 80, y: 560, width: 800, height: 440),
+                                          isMinimized: false, isAppHidden: false)
+let placedAway = WindowPlacementState(frame: PlacementGeometry.offscreenFrame(for: placedOriginal.frame,
+                                                                             displays: [placementDisplay]),
+                                      isMinimized: false, isAppHidden: false)
+let placement = PlacementEntry(identity: source, mode: .offscreen, original: placedOriginal,
+                               applied: placedAway, createdAt: Date(timeIntervalSince1970: 2))
+check(PlacementGeometry.visibleFraction(of: placedAway.frame, on: [placementDisplay]) == 0, "offscreen frame is invisible")
+check(PlacementRestorer.decide(placement, current: placedAway, displays: [placementDisplay]) == .restore(placedOriginal),
+      "restore an untouched placement")
+var userMoved = placedAway
+userMoved.frame.origin = CGPoint(x: 300, y: 300)
+check(PlacementRestorer.decide(placement, current: userMoved, displays: [placementDisplay]) == .keepUserChange,
+      "a later user move wins")
+check(PlacementRestorer.decide(placement, current: nil, displays: [placementDisplay]) == .sourceGone, "gone source")
+let roundTrip = try JSONDecoder().decode(PlacementEntry.self, from: JSONEncoder().encode(placement))
+check(roundTrip == placement, "journal entry round trip")
 print("DropyCore checks passed")
