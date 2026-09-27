@@ -46,7 +46,7 @@ ScreenCaptureKit documents capture of covered and off-screen windows, with minim
 1. **Correctness:** exact source window, correct fit/fill pixel geometry, menu-bar overlap and dismissal, source survival on Dropy close, recovery from source quit and stream failure.
 2. **Interaction:** passing matrix above before the word *interactive* is used in the UI or release notes.
 3. **Placement:** out-of-sight source with no leaked controls, dialogs or duplicate UI, or an honest compatibility level when containment cannot be delivered.
-4. **Performance:** warm reveal, first frame, frame age, input-to-updated-frame, stale/dropped frames, idle and active CPU/GPU, memory, wakeups, WindowServer cost and battery on dated hardware/OS/workloads.
+4. **Performance:** warm reveal, first frame, frame age, input-to-updated-frame, stale/dropped frames, idle and active CPU/GPU, memory, wakeups, WindowServer cost and battery on dated hardware/OS/workloads. The [benchmark page](docs/BENCHMARK.md) defines the in-app metrics and clock checks, the reproducible workloads, the first baseline and provisional budgets.
 5. **Platform:** menu bar crowding, full-screen Spaces, Stage Manager, mixed-DPI displays, unplug/rearrangement, notchless Macs, permission denial/revocation and protected content.
 6. **Open source:** choose and publish a license, audit dependency notices, reproducible build and a versioned compatibility matrix before public release. Windows will need a separate platform backend.
 

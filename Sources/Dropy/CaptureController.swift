@@ -8,36 +8,30 @@ import ScreenCaptureKit
 /// on the main thread; an overloaded UI drops stale frames instead of queueing them.
 final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
-    private var latest: CVPixelBuffer?
+    private var latest: (image: CVPixelBuffer, stamp: FrameStamp)?
     private var scheduled = false
     private var invalidated = false
-    private var loggedFormat = false
     private weak var renderer: MetalFrameView?
-    private(set) var receivedFrames = 0
-    private(set) var droppedFrames = 0
+    let metrics: CaptureMetricsRecorder
 
-    init(renderer: MetalFrameView) { self.renderer = renderer }
+    init(renderer: MetalFrameView, metrics: CaptureMetricsRecorder) {
+        self.renderer = renderer
+        self.metrics = metrics
+    }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                 of type: SCStreamOutputType) {
-        guard type == .screen,
-              let image = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard type == .screen else { return }
         lock.lock()
         guard !invalidated else { lock.unlock(); return }
-        if !loggedFormat {
-            loggedFormat = true
-            let surface = CVPixelBufferGetIOSurface(image)?.takeUnretainedValue()
-            NSLog("Dropy frame: pixel=%ldx%ld format=%u row=%ld surface=%ldx%ld format=%u row=%ld",
-                  CVPixelBufferGetWidth(image), CVPixelBufferGetHeight(image),
-                  CVPixelBufferGetPixelFormatType(image), CVPixelBufferGetBytesPerRow(image),
-                  surface.map { IOSurfaceGetWidth($0) } ?? 0,
-                  surface.map { IOSurfaceGetHeight($0) } ?? 0,
-                  surface.map { IOSurfaceGetPixelFormat($0) } ?? 0,
-                  surface.map { IOSurfaceGetBytesPerRow($0) } ?? 0)
+        guard let stamp = metrics.recordFrame(sampleBuffer,
+                                              image: CMSampleBufferGetImageBuffer(sampleBuffer)),
+              let image = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            lock.unlock()
+            return
         }
-        receivedFrames += 1
-        if latest != nil { droppedFrames += 1 }
-        latest = image
+        if latest != nil { metrics.recordMailboxDrop() }
+        latest = (image, stamp)
         let shouldSchedule = !scheduled
         if shouldSchedule { scheduled = true }
         lock.unlock()
@@ -55,11 +49,11 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
 
     @MainActor private func deliverLatest() {
         lock.lock()
-        let image = invalidated ? nil : latest
+        let frame = invalidated ? nil : latest
         latest = nil
         scheduled = false
         lock.unlock()
-        if let image { renderer?.present(image) }
+        if let frame { renderer?.present(frame.image, stamp: frame.stamp) }
     }
 }
 
@@ -83,6 +77,7 @@ final class CaptureController {
     /// Keep stopped streams in the count until ScreenCaptureKit confirms a stop.
     /// Retaining a failed stop also keeps it available for diagnosis.
     private var runningStreams: [ObjectIdentifier: (stream: SCStream, windowID: UInt32)] = [:]
+    private var recorders: [ObjectIdentifier: CaptureMetricsRecorder] = [:]
 
     /// Starts one stream. `onUnexpectedStop` runs on the main actor only while this
     /// stream is still the active one; a stop Dropy requested is never reported.
@@ -91,8 +86,9 @@ final class CaptureController {
     func start(window: SCWindow, renderer: MetalFrameView,
                onUnexpectedStop: @escaping @MainActor (Error) -> Void) async throws -> Bool {
         let request = UUID()
+        let requestedAt = HostClock.nowMilliseconds()
         requestID = request
-        await stopActiveStream()
+        await stopActiveStream(reason: "replaced")
         guard request == requestID else { return false }
         let configuration = makeConfiguration(window: window, renderer: renderer)
         let observer = StreamStopObserver { [weak self] error in
@@ -103,14 +99,21 @@ final class CaptureController {
                       (error as NSError).domain, code)
                 let stopped = self.detachActiveStream()
                 onUnexpectedStop(error)
-                await self.stopCapture(stopped)
+                await self.stopCapture(stopped, reason: "unexpected(\(code))")
             }
         }
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
                               configuration: configuration, delegate: observer)
-        let mailbox = FrameMailbox(renderer: renderer)
-        try stream.addStreamOutput(mailbox, type: .screen,
-                                   sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
+        let recorder = CaptureMetricsRecorder(windowID: window.windowID, requestedAt: requestedAt)
+        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder)
+        do {
+            try stream.addStreamOutput(mailbox, type: .screen,
+                                       sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
+        } catch {
+            recorder.finish(reason: "startFailed(\((error as NSError).code))")
+            throw error
+        }
+        recorders[ObjectIdentifier(stream)] = recorder
         // The delegate can stop a stream before startCapture returns. Publish
         // this session first so that an early stop is not silently discarded.
         self.stream = stream
@@ -119,15 +122,18 @@ final class CaptureController {
         self.outputSize = CGSize(width: configuration.width, height: configuration.height)
         do {
             try await stream.startCapture()
+            recorder.startReturned()
         } catch {
             mailbox.invalidate()
+            recorders.removeValue(forKey: ObjectIdentifier(stream))?
+                .finish(reason: "startFailed(\((error as NSError).code))")
             guard request == requestID, self.stream === stream else { return false }
             _ = detachActiveStream()
             throw error
         }
         guard request == requestID, self.stream === stream else {
             mailbox.invalidate()
-            await stopCapture(stream)
+            await stopCapture(stream, reason: "replaced")
             return false
         }
         runningStreams[ObjectIdentifier(stream)] = (stream, window.windowID)
@@ -172,26 +178,29 @@ final class CaptureController {
         return configuration
     }
 
-    func stop() async {
+    /// `reason` is a log-safe label such as `closed` or a failure's diagnostic name.
+    func stop(reason: String = "requested") async {
         requestID = UUID()
-        await stopActiveStream()
+        await stopActiveStream(reason: reason)
     }
 
-    private func stopActiveStream() async {
-        await stopCapture(detachActiveStream())
+    private func stopActiveStream(reason: String) async {
+        await stopCapture(detachActiveStream(), reason: reason)
     }
 
-    private func stopCapture(_ stream: SCStream?) async {
+    private func stopCapture(_ stream: SCStream?, reason: String) async {
         guard let stream else { return }
         let id = ObjectIdentifier(stream)
         do {
             try await stream.stopCapture()
+            recorders.removeValue(forKey: id)?.finish(reason: reason)
             if let stopped = runningStreams.removeValue(forKey: id) {
                 NSLog("Dropy capture stopped: window=%u running=%ld",
                       stopped.windowID, runningStreams.count)
             }
         } catch {
             let code = (error as NSError).code
+            recorders.removeValue(forKey: id)?.finish(reason: "stopFailed(\(code))")
             if let entry = runningStreams[id] {
                 NSLog("Dropy capture stop failed: window=%u code=%ld running=%ld",
                       entry.windowID, code, runningStreams.count)
