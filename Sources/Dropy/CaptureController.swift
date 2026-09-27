@@ -80,6 +80,9 @@ final class CaptureController {
     private var stopObserver: StreamStopObserver?
     private var requestID = UUID()
     private var outputSize: CGSize?
+    /// Keep stopped streams in the count until ScreenCaptureKit confirms a stop.
+    /// Retaining a failed stop also keeps it available for diagnosis.
+    private var runningStreams: [ObjectIdentifier: (stream: SCStream, windowID: UInt32)] = [:]
 
     /// Starts one stream. `onUnexpectedStop` runs on the main actor only while this
     /// stream is still the active one; a stop Dropy requested is never reported.
@@ -100,7 +103,7 @@ final class CaptureController {
                       (error as NSError).domain, code)
                 let stopped = self.detachActiveStream()
                 onUnexpectedStop(error)
-                try? await stopped?.stopCapture()
+                await self.stopCapture(stopped)
             }
         }
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
@@ -124,9 +127,11 @@ final class CaptureController {
         }
         guard request == requestID, self.stream === stream else {
             mailbox.invalidate()
-            try? await stream.stopCapture()
+            await stopCapture(stream)
             return false
         }
+        runningStreams[ObjectIdentifier(stream)] = (stream, window.windowID)
+        NSLog("Dropy capture started: window=%u running=%ld", window.windowID, runningStreams.count)
         return true
     }
 
@@ -173,7 +178,27 @@ final class CaptureController {
     }
 
     private func stopActiveStream() async {
-        try? await detachActiveStream()?.stopCapture()
+        await stopCapture(detachActiveStream())
+    }
+
+    private func stopCapture(_ stream: SCStream?) async {
+        guard let stream else { return }
+        let id = ObjectIdentifier(stream)
+        do {
+            try await stream.stopCapture()
+            if let stopped = runningStreams.removeValue(forKey: id) {
+                NSLog("Dropy capture stopped: window=%u running=%ld",
+                      stopped.windowID, runningStreams.count)
+            }
+        } catch {
+            let code = (error as NSError).code
+            if let entry = runningStreams[id] {
+                NSLog("Dropy capture stop failed: window=%u code=%ld running=%ld",
+                      entry.windowID, code, runningStreams.count)
+            } else {
+                NSLog("Dropy capture stop failed: code=%ld running=%ld", code, runningStreams.count)
+            }
+        }
     }
 
     /// Forget the active stream synchronously, so no later callback treats it as current.

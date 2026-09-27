@@ -11,6 +11,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private var currentPixelBuffer: CVPixelBuffer?
+    private var visibilityGeneration = UUID()
     var contentMode: DropyCore.ContentMode = .fit {
         didSet { setNeedsDisplay(bounds) }
     }
@@ -45,6 +46,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         enableSetNeedsDisplay = true
         isPaused = true
         delegate = self
+        alphaValue = 0
     }
 
     required init(coder: NSCoder) { fatalError("Use init(frame:)") }
@@ -55,9 +57,13 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         setNeedsDisplay(bounds)
     }
 
+    /// Keep the old drawable invisible even when no new drawable is available.
+    /// A new frame makes the view visible only after Metal presents it.
     func clear() {
         precondition(Thread.isMainThread)
         currentPixelBuffer = nil
+        visibilityGeneration = UUID()
+        alphaValue = 0
         setNeedsDisplay(bounds)
     }
 
@@ -115,6 +121,16 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         encoder.setFragmentTexture(texture, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
+        if alphaValue == 0 {
+            let generation = visibilityGeneration
+            drawable.addPresentedHandler { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.visibilityGeneration == generation,
+                          self.currentPixelBuffer != nil else { return }
+                    self.alphaValue = 1
+                }
+            }
+        }
         buffer.present(drawable)
         buffer.commit()
     }
