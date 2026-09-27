@@ -46,4 +46,13 @@ final class CaptureMetricsTests: XCTestCase {
         XCTAssertTrue(line.contains("frameAge=[n=1 p50=31.0"))
         XCTAssertTrue(line.hasSuffix("stop=failed.targetQuit"))
     }
+
+    func testMissingDisplayTimestampDoesNotBecomeFrameAge() {
+        var metrics = CaptureSessionMetrics(windowID: 42)
+        metrics.recordPresented(callbackToPresent: 30, frameAge: nil)
+        let line = metrics.summary(durationSeconds: 1, stopReason: "closed")
+        XCTAssertTrue(line.contains("presented=1"))
+        XCTAssertTrue(line.contains("callbackToPresent=[n=1"))
+        XCTAssertTrue(line.contains("frameAge=[none]"))
+    }
 }

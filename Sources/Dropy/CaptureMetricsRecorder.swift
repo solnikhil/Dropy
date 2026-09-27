@@ -97,7 +97,7 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
             let presented = presentedTime * 1_000 - metrics.presentClockOffsetMilliseconds
             metrics.recordPresented(
                 callbackToPresent: presented - stamp.callbackMilliseconds,
-                frameAge: presented - (stamp.displayMilliseconds ?? stamp.callbackMilliseconds))
+                frameAge: stamp.displayMilliseconds.map { presented - $0 })
         }
     }
 

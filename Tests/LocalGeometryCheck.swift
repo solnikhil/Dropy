@@ -97,4 +97,7 @@ sessionMetrics.recordPresented(callbackToPresent: 30, frameAge: 31)
 let metricsLine = sessionMetrics.summary(durationSeconds: 1, stopReason: "closed")
 check(metricsLine.contains("/BGRA") && metricsLine.contains("frameAge=[n=1") && metricsLine.hasSuffix("stop=closed"),
       "metrics summary")
+sessionMetrics.recordPresented(callbackToPresent: 40, frameAge: nil)
+check(sessionMetrics.summary(durationSeconds: 1, stopReason: "closed").contains("frameAge=[n=1"),
+      "missing display time does not become frame age")
 print("DropyCore checks passed")

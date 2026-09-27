@@ -25,10 +25,9 @@ func rusageReading(_ pid: pid_t) -> Reading? {
         }
     }
     guard result == 0 else { return nil }
-    var timebase = mach_timebase_info_data_t()
-    mach_timebase_info(&timebase)
-    let ticks = Double(info.ri_user_time + info.ri_system_time)
-    return Reading(cpuNanoseconds: ticks * Double(timebase.numer) / Double(timebase.denom),
+    // proc_pid_rusage reports nanoseconds, unlike mach_absolute_time ticks.
+    let nanoseconds = Double(info.ri_user_time) + Double(info.ri_system_time)
+    return Reading(cpuNanoseconds: nanoseconds,
                    memoryBytes: Double(info.ri_phys_footprint),
                    idleWakeups: Double(info.ri_pkg_idle_wkups),
                    interruptWakeups: Double(info.ri_interrupt_wkups))

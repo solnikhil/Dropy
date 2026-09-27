@@ -24,7 +24,7 @@ report="$build_dir/benchmark-$(date +%Y%m%d-%H%M%S).md"
 prefs_domain="org.dropy.app"
 prefs_key="org.dropy.preferences.v1"
 
-for app in TextEdit Safari; do
+for app in TextEdit Safari Dropy; do
   if pgrep -xq "$app"; then
     print -u2 "Quit $app first; the benchmark opens and closes its own $app windows."
     exit 1
@@ -35,13 +35,19 @@ done
 swiftc -O -swift-version 6 -o "$build_dir/Sampler" "$repo_dir/Scripts/bench/Sampler.swift"
 
 defaults export "$prefs_domain" "$work_dir/prefs.plist" 2>/dev/null || true
+dropy_pid=""
 cleanup() {
-  pkill -x Dropy 2>/dev/null || true
+  if [[ -n "$dropy_pid" ]]; then
+    kill "$dropy_pid" 2>/dev/null || true
+    wait "$dropy_pid" 2>/dev/null || true
+  fi
   for app in TextEdit Safari; do
     pgrep -xq "$app" && osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1 || true
   done
   if [[ -f "$work_dir/prefs.plist" ]]; then
     defaults import "$prefs_domain" "$work_dir/prefs.plist"
+  else
+    defaults delete "$prefs_domain" "$prefs_key" 2>/dev/null || true
   fi
   rm -rf "$work_dir"
 }
@@ -107,12 +113,12 @@ for workload in $workloads; do
   baseline="$("$build_dir/Sampler" "$seconds" "windowserver=$windowserver")"
 
   set_direct_open "$bundle"
-  pkill -x Dropy 2>/dev/null || true
   DROPY_DEBUG_QUIT_AFTER=$(( seconds + 5 )) "$dropy" --show > "$work_dir/$workload.log" 2>&1 &
   dropy_pid=$!
   sleep 3
   with_dropy="$("$build_dir/Sampler" "$seconds" "dropy=$dropy_pid" "windowserver=$windowserver")"
   wait "$dropy_pid" || true
+  dropy_pid=""
   finish_app "$app_name"
 
   {

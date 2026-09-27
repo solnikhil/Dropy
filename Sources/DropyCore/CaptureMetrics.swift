@@ -84,11 +84,14 @@ public struct CaptureSessionMetrics: Sendable {
         if captureToCallback.count < Self.sampleLimit { captureToCallback.append(milliseconds) }
     }
 
-    public mutating func recordPresented(callbackToPresent: Double, frameAge: Double) {
+    public mutating func recordPresented(callbackToPresent: Double, frameAge: Double?) {
         presented += 1
-        guard self.callbackToPresent.count < Self.sampleLimit else { return }
-        self.callbackToPresent.append(callbackToPresent)
-        self.frameAge.append(frameAge)
+        if self.callbackToPresent.count < Self.sampleLimit {
+            self.callbackToPresent.append(callbackToPresent)
+        }
+        if let frameAge, self.frameAge.count < Self.sampleLimit {
+            self.frameAge.append(frameAge)
+        }
     }
 
     /// Percentiles are reported only for intervals whose clock domains passed the check.
