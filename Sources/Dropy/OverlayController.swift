@@ -29,6 +29,7 @@ final class OverlayController: NSObject {
     private var startInFlight = false
     private var overlaySession = UUID()
     private var opensInProcess = 0
+    private var requestedScreenCaptureAccess = false
     /// Changes on open, close, every selection and every failure. Async work
     /// continues only while its captured generation is still current.
     private var generation = UUID()
@@ -64,7 +65,10 @@ final class OverlayController: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
         panel.isOpaque = true
-        panel.hasShadow = true
+        // An active window's shadow was re-rendered on every composite while content
+        // behind it changed, adding about 25 points of GPU utilization with nothing
+        // captured. A hairline border separates the panel instead.
+        panel.hasShadow = false
         panel.isReleasedWhenClosed = false
         buildContent(in: panel, size: full.size)
         opensInProcess += 1
@@ -134,7 +138,14 @@ final class OverlayController: NSObject {
                 if shouldAutoSelect { startDebugAlternationIfRequested() }
             } catch {
                 guard request == generation, state != .closed, !state.isCapturing else { return }
-                setState(.failed(catalogFailure(for: error)))
+                let failure = catalogFailure(for: error)
+                setState(.failed(failure))
+                // Ask once per launch so macOS lists Dropy under Screen Recording and
+                // shows its own prompt; without a request the app never appears there.
+                if failure == .permissionDenied, !requestedScreenCaptureAccess {
+                    requestedScreenCaptureAccess = true
+                    _ = CGRequestScreenCaptureAccess()
+                }
             }
         }
     }
@@ -169,9 +180,11 @@ final class OverlayController: NSObject {
     private func buildContent(in panel: NSPanel, size: CGSize) {
         let root = NSView(frame: CGRect(origin: .zero, size: size))
         root.wantsLayer = true
+        // No rounded mask on the root: the panel is opaque, so the corners were never
+        // visible, and masking a layer tree forces an offscreen pass on every composite.
         root.layer?.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1).cgColor
-        root.layer?.cornerRadius = 26
-        root.layer?.masksToBounds = true
+        root.layer?.borderWidth = 1
+        root.layer?.borderColor = NSColor(calibratedWhite: 1, alpha: 0.12).cgColor
         panel.contentView = root
 
         let title = NSTextField(labelWithString: "DROPY")
@@ -220,12 +233,15 @@ final class OverlayController: NSObject {
         previewShell.wantsLayer = true
         previewShell.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
         previewShell.layer?.cornerRadius = 16
-        previewShell.layer?.masksToBounds = true
         root.addSubview(previewShell)
         do {
             let view = try MetalFrameView.make(frame: previewShell.bounds)
             view.autoresizingMask = [.width, .height]
             view.contentMode = preferences.value.contentMode
+            // Clip the Metal layer itself: it has no sublayers, so rounding it does
+            // not need an offscreen pass the way masking the shell's tree did.
+            view.layer?.cornerRadius = 16
+            view.layer?.masksToBounds = true
             previewShell.addSubview(view)
             renderer = view
         } catch {
@@ -513,6 +529,10 @@ final class OverlayController: NSObject {
     }
 
     @objc private func privacyClicked() {
+        // Asking through the system registers Dropy's current signature in the
+        // Screen Recording list and shows macOS's own prompt. Adding the app by
+        // hand with + did not produce a grant that matched on macOS 27.
+        if CGRequestScreenCaptureAccess() { return }
         guard let url = URL(string:
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         else { return }

@@ -7,11 +7,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     private let preferences = PreferenceStore()
     private var overlay: OverlayController!
     private var statusItem: NSStatusItem?
-    private var globalMouseMonitor: Any?
-    private var localMouseMonitor: Any?
-    private var globalClickMonitor: Any?
-    private var localClickMonitor: Any?
-    private var pendingHover: DispatchWorkItem?
+    private var trigger: NotchTrigger?
 
     static func main() {
         let app = NSApplication.shared
@@ -84,22 +80,11 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
         statusItem = item
 
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) {
-            [weak self] event in self?.handleMouseMove(event.locationInWindow)
-        }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) {
-            [weak self] event in
-            self?.handleMouseMove(NSEvent.mouseLocation)
-            return event
-        }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) {
-            [weak self] _ in self?.handleNotchClick()
-        }
-        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
-            [weak self] event in
-            self?.handleNotchClick()
-            return event
-        }
+        let trigger = NotchTrigger(mode: { [weak self] in self?.preferences.value.trigger ?? .notchHover },
+                                   isArmed: { [weak self] in self?.overlay.state == .closed },
+                                   open: { [weak self] in self?.overlay.open() })
+        trigger.start()
+        self.trigger = trigger
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.async { [weak self] in self?.overlay.open() }
         }
@@ -145,57 +130,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
-        if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
-        if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
-        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
-    }
-
-    private func handleMouseMove(_ ignored: CGPoint) {
-        guard preferences.value.trigger == .notchHover,
-              overlay.state == .closed,
-              let zone = notchZone() else {
-            pendingHover?.cancel(); pendingHover = nil
-            return
-        }
-        guard zone.contains(NSEvent.mouseLocation) else {
-            pendingHover?.cancel(); pendingHover = nil
-            return
-        }
-        guard pendingHover == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self,
-                  self.overlay.state == .closed,
-                  zone.contains(NSEvent.mouseLocation) else { return }
-            self.pendingHover = nil
-            self.overlay.open()
-        }
-        pendingHover = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
-    }
-
-    private func handleNotchClick() {
-        guard preferences.value.trigger == .notchClick,
-              overlay.state == .closed,
-              let zone = notchZone(),
-              zone.contains(NSEvent.mouseLocation) else { return }
-        overlay.open()
-    }
-
-    private func notchZone() -> CGRect? {
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) else {
-            return nil
-        }
-        let notchWidth: CGFloat
-        if let left = screen.auxiliaryTopLeftArea,
-           let right = screen.auxiliaryTopRightArea {
-            notchWidth = right.minX - left.maxX
-        } else {
-            notchWidth = 208
-        }
-        return OverlayGeometry.notchTrigger(on: screen.frame,
-                                            notchWidth: notchWidth,
-                                            bandHeight: max(screen.safeAreaInsets.top, 38))
+        trigger?.stop()
     }
 
     @objc private func toggleOverlay() { overlay.toggle() }

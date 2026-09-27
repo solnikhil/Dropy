@@ -11,9 +11,16 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private var currentPixelBuffer: CVPixelBuffer?
+    private let concealmentView = NSView()
     private var visibilityGeneration = UUID()
     /// Timestamps for the frame not yet drawn; attached to exactly one drawable.
     private var pendingStamp: FrameStamp?
+    /// Increments per presented frame so a late callback can tell whether it is stale.
+    private var frameSequence = 0
+    private var presentRetries = 0
+    private static let fastPresentRetries = 3
+    private var drawableRetryTask: Task<Void, Never>?
+    private var drawableRetryDelayMilliseconds = 16
     /// One-shot callback on the main thread with the Core Animation media time at
     /// which the next captured frame reached the screen.
     var onNextPresented: (@MainActor (CFTimeInterval) -> Void)?
@@ -48,33 +55,106 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0.045, green: 0.05, blue: 0.07, alpha: 1)
         framebufferOnly = true
+        // Two drawables keep presentation from queueing an extra refresh behind.
+        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
         enableSetNeedsDisplay = true
         isPaused = true
         delegate = self
-        alphaValue = 0
+        concealmentView.frame = bounds
+        concealmentView.autoresizingMask = [.width, .height]
+        concealmentView.wantsLayer = true
+        concealmentView.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
+        addSubview(concealmentView)
     }
 
     required init(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification,
+                                                  object: nil)
+        if let window {
+            NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged),
+                                                   name: NSWindow.didChangeOcclusionStateNotification,
+                                                   object: window)
+        }
+        if currentPixelBuffer != nil {
+            setNeedsDisplay(bounds)
+            scheduleDrawableRetry()
+        }
+    }
+
+    @objc private func occlusionChanged() {
+        if currentPixelBuffer != nil {
+            setNeedsDisplay(bounds)
+            scheduleDrawableRetry()
+        }
+    }
 
     func present(_ pixelBuffer: CVPixelBuffer, stamp: FrameStamp? = nil) {
         precondition(Thread.isMainThread)
         // A frame replaced before any draw never reaches the screen.
         pendingStamp?.recorder.recordNotPresented()
         pendingStamp = stamp
+        frameSequence += 1
+        presentRetries = 0
+        drawableRetryTask?.cancel()
+        drawableRetryTask = nil
+        drawableRetryDelayMilliseconds = 16
         currentPixelBuffer = pixelBuffer
-        setNeedsDisplay(bounds)
+        // Draw now instead of waiting for the next display cycle; the deferred
+        // path showed about two refreshes of avoidable frame age.
+        draw()
+        // If no drawable was available, keep the frame pending for AppKit's next
+        // display pass. Identical capture frames may all be skipped from here on.
+        if pendingStamp != nil {
+            setNeedsDisplay(bounds)
+            scheduleDrawableRetry()
+        }
     }
 
-    /// Keep the old drawable invisible even when no new drawable is available.
-    /// A new frame makes the view visible only after Metal presents it.
+    /// Cover the old drawable even when no new drawable is available. Keeping the
+    /// Metal layer visible lets it obtain drawables while the cover conceals it.
     func clear() {
         precondition(Thread.isMainThread)
         currentPixelBuffer = nil
         pendingStamp?.recorder.recordNotPresented()
         pendingStamp = nil
+        frameSequence += 1
+        drawableRetryTask?.cancel()
+        drawableRetryTask = nil
         visibilityGeneration = UUID()
-        alphaValue = 0
+        concealmentView.isHidden = false
         setNeedsDisplay(bounds)
+    }
+
+    private func retryPresent(_ stamp: FrameStamp, sequence: Int) {
+        guard sequence == frameSequence, pendingStamp == nil,
+              currentPixelBuffer != nil else { return }
+        presentRetries += 1
+        pendingStamp = stamp
+        if presentRetries <= Self.fastPresentRetries { setNeedsDisplay(bounds) }
+        scheduleDrawableRetry()
+    }
+
+    /// A drawable can be unavailable while the panel is covered or still opening.
+    /// Identical capture frames are skipped, so this frame must retry on its own.
+    private func scheduleDrawableRetry() {
+        guard pendingStamp != nil, drawableRetryTask == nil else { return }
+        let sequence = frameSequence
+        let delay = drawableRetryDelayMilliseconds
+        drawableRetryDelayMilliseconds = min(delay * 2, 1_000)
+        drawableRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard let self else { return }
+            self.drawableRetryTask = nil
+            guard self.frameSequence == sequence, self.pendingStamp != nil else { return }
+            self.draw()
+            self.scheduleDrawableRetry()
+        }
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -82,6 +162,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
+        guard window?.occlusionState.contains(.visible) == true else { return }
         guard let drawable = currentDrawable,
               let pass = currentRenderPassDescriptor,
               let buffer = commandQueue.makeCommandBuffer(),
@@ -135,14 +216,21 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         pendingStamp = nil
         let generation = visibilityGeneration
         let armed = onNextPresented != nil
+        let sequence = frameSequence
         drawable.addPresentedHandler { [weak self] drawable in
             let presentedTime = drawable.presentedTime
             if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime) }
+            if presentedTime == 0 {
+                if let stamp {
+                    Task { @MainActor [weak self] in self?.retryPresent(stamp, sequence: sequence) }
+                }
+                return
+            }
             guard presentedTime > 0 else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.visibilityGeneration == generation,
                       self.currentPixelBuffer != nil else { return }
-                self.alphaValue = 1
+                self.concealmentView.isHidden = true
                 if armed, let reveal = self.onNextPresented {
                     self.onNextPresented = nil
                     reveal(presentedTime)

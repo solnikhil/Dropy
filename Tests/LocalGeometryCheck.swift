@@ -100,4 +100,14 @@ check(metricsLine.contains("/BGRA") && metricsLine.contains("frameAge=[n=1") && 
 sessionMetrics.recordPresented(callbackToPresent: 40, frameAge: nil)
 check(sessionMetrics.summary(durationSeconds: 1, stopReason: "closed").contains("frameAge=[n=1"),
       "missing display time does not become frame age")
+
+let paddedRows: [UInt8] = [1, 2, 3, 4, 9, 9, 5, 6, 7, 8, 0, 0]
+let tightRows: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8]
+func rowsMatch(_ a: [UInt8], _ sa: Int, _ b: [UInt8], _ sb: Int) -> Bool {
+    a.withUnsafeBytes { pa in b.withUnsafeBytes { pb in
+        FrameComparison.identical(pa.baseAddress!, rowStride: sa, pb.baseAddress!, rowStride: sb,
+                                  bytesPerRow: 4, rows: 2) } }
+}
+check(rowsMatch(paddedRows, 6, tightRows, 4), "row padding is ignored")
+check(!rowsMatch(paddedRows, 6, [1, 2, 3, 4, 5, 6, 7, 0], 4), "one changed byte is detected")
 print("DropyCore checks passed")
