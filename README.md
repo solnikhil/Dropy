@@ -25,7 +25,7 @@ swift test
 open .build/local/Dropy.app
 ```
 
-On the original development machine, the Command Line Tools installation lacks a SwiftPM framework, so `swift build` and `swift test` fail before compilation. The direct `swiftc` build script and `./Scripts/test-local.sh` work there. The script assembles an ad-hoc-signed development `.app`; it is not a signed public release. macOS may request Screen Recording permission when a window is selected.
+On the original development machine, the Command Line Tools installation lacks a SwiftPM framework, so `swift build` and `swift test` fail before compilation. The direct `swiftc` build script and `./Scripts/test-local.sh` work there; the local script also runs the XCTest suite through a minimal stand-in. The script assembles an ad-hoc-signed development `.app`; it is not a signed public release. macOS may request Screen Recording permission when a window is selected.
 
 Dropy appears as a diamond in the menu bar. Use **Open Dropy** or the selected notch trigger, choose a running window, and close the panel from its **Close** button. Settings are in the menu-bar menu.
 

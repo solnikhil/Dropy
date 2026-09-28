@@ -31,6 +31,29 @@ struct JournalChecks {
         let blocked = PlacementJournal(url: blocker.appendingPathComponent("journal.json"))
         do { try blocked.upsert(entry); fatalError("must reject persistence failure") } catch { }
         precondition(blocked.entries.isEmpty)
-        print("Placement journal checks passed")
+
+        // Recovery for a window whose exact process is gone (PID 7 with a 1970 launch
+        // date never matches). With Accessibility, that is final and the record goes.
+        // Without it the window cannot be checked, so the record must stay and retry.
+        let recoveryURL = root.appendingPathComponent("recovery.json")
+        let recoveryJournal = PlacementJournal(url: recoveryURL)
+        try recoveryJournal.upsert(PlacementEntry(identity: entry.identity, mode: .parked, original: state,
+                                                  applied: state, createdAt: entry.createdAt, applicationConfirmed: true))
+        let recovery = PlacementRecovery(journal: recoveryJournal)
+        var settled: [WindowIdentity] = []
+        recovery.onSettled = { settled.append($0) }
+        let results = recovery.run(resetBackoff: true)
+        precondition(results.count == 1)
+        if WindowPlacer.isTrusted {
+            precondition(results[0].outcome == .decided(.sourceGone), "\(results[0].outcome)")
+            precondition(recoveryJournal.entries.isEmpty && settled == [entry.identity] && recovery.deferred.isEmpty)
+            precondition(!FileManager.default.fileExists(atPath: recoveryURL.path))
+        } else {
+            precondition(results[0].outcome == .deferred(.accessibilityNotTrusted), "\(results[0].outcome)")
+            precondition(recoveryJournal.entries.count == 1 && settled.isEmpty && recovery.deferred.count == 1)
+            precondition(PlacementJournal(url: recoveryURL).entries.count == 1, "record must survive on disk")
+        }
+        recovery.stop()
+        print("Placement journal checks passed (recovery with Accessibility \(WindowPlacer.isTrusted ? "trusted" : "not trusted"))")
     }
 }

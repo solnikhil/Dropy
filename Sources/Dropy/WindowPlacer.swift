@@ -16,7 +16,8 @@ enum WindowPlacer {
     enum PlacementError: Error, CustomStringConvertible {
         case accessibilityNotTrusted
         case exactWindowLookupUnavailable
-        case windowNotFound
+        case windowNotFound(WindowLookupDiagnosis)
+        case windowNotOnScreen
         case processGone
         case pendingPlacement
         case attribute(String, AXError)
@@ -25,7 +26,8 @@ enum WindowPlacer {
             switch self {
             case .accessibilityNotTrusted: "accessibilityNotTrusted"
             case .exactWindowLookupUnavailable: "exactWindowLookupUnavailable"
-            case .windowNotFound: "windowNotInAccessibilityTree"
+            case .windowNotFound(let diagnosis): "windowNotInAccessibilityTree(\(diagnosis))"
+            case .windowNotOnScreen: "windowNotOnScreen"
             case .processGone: "processGone"
             case .pendingPlacement: "pendingPlacement"
             case .attribute(let name, let error): "attribute(\(name),\(error.rawValue))"
@@ -47,6 +49,10 @@ enum WindowPlacer {
 
     /// Moves, minimizes or hides the window, journaling first. Returns the entry,
     /// whose `applied` state is what was observed after placing.
+    ///
+    /// The window must be on screen: placing a window that is on another Space or
+    /// already minimized hides nothing, and its restore would depend on a Space the
+    /// person may never return to.
     static func apply(_ mode: PlacementMode, to identity: WindowIdentity,
                       journal: PlacementJournal) async throws -> PlacementEntry {
         guard !journal.entries.contains(where: { $0.identity == identity }) else {
@@ -55,14 +61,27 @@ enum WindowPlacer {
         let needsAccessibility = mode != .hideApp
         if needsAccessibility, !isTrusted { throw PlacementError.accessibilityNotTrusted }
         guard WindowCatalog.isRunning(identity) else { throw PlacementError.processGone }
-        // The Accessibility window list is occasionally empty or partial for a moment;
-        // retry briefly before calling the exact window missing.
-        var found = try state(of: identity)
-        for _ in 0..<5 where found == nil {
-            try await Task.sleep(for: .milliseconds(100))
-            found = try state(of: identity)
+        guard windowServerInfo(identity.windowID)?.onScreen == true else { throw PlacementError.windowNotOnScreen }
+        // An app can answer with a partial windows list for a moment; retry briefly,
+        // and only for causes that can clear on their own. Hiding an app needs no
+        // Accessibility, so without it the window server supplies the frame.
+        var window: AXUIElement?
+        if isTrusted {
+            var lookup = try find(identity)
+            for _ in 0..<5 {
+                guard case .missing(let diagnosis) = lookup, diagnosis.mayBecomeReachable else { break }
+                try await Task.sleep(for: .milliseconds(100))
+                lookup = try find(identity)
+            }
+            switch lookup {
+            case .found(let element): window = element
+            case .missing(let diagnosis): throw PlacementError.windowNotFound(diagnosis)
+            }
         }
-        guard let original = found else { throw PlacementError.windowNotFound }
+        func observe() throws -> WindowPlacementState? {
+            try window.map { try readState($0, identity: identity) } ?? state(of: identity)
+        }
+        guard let original = try observe() else { throw PlacementError.processGone }
         var expected = original
         switch mode {
         case .offscreen, .parked:
@@ -75,9 +94,11 @@ enum WindowPlacer {
         try journal.upsert(entry)
         switch mode {
         case .offscreen, .parked:
-            try setPosition(expected.frame.origin, of: requireWindow(identity))
+            guard let window else { throw PlacementError.accessibilityNotTrusted }
+            try setPosition(expected.frame.origin, of: window)
         case .minimize:
-            try setMinimized(true, window: requireWindow(identity))
+            guard let window else { throw PlacementError.accessibilityNotTrusted }
+            try setMinimized(true, window: window)
         case .hideApp:
             NSRunningApplication(processIdentifier: identity.processID)?.hide()
         }
@@ -85,7 +106,7 @@ enum WindowPlacer {
         case .offscreen, .parked:
             // AppKit may clamp the position; record where the window really went so
             // a restore compares against reality rather than the request.
-            if let observed = try state(of: identity) {
+            if let observed = try? observe() {
                 entry.applied = observed
                 entry.applicationConfirmed = true
                 try journal.upsert(entry)
@@ -96,7 +117,7 @@ enum WindowPlacer {
             // treated the minimized window as a user change and left it minimized.
             // Keep the expected state and wait for the system to reach it.
             for _ in 0..<20 {
-                if let observed = try state(of: identity),
+                if let observed = try? observe(),
                    observed.isMinimized == expected.isMinimized,
                    observed.isAppHidden == expected.isAppHidden {
                     entry.applied = observed
@@ -111,76 +132,87 @@ enum WindowPlacer {
     }
 
     /// Undoes a placement if the window is still where Dropy left it. The journal
-    /// entry is removed once the outcome is final; it stays when Accessibility is
-    /// unavailable so a later launch can finish the job.
+    /// entry is removed once the outcome is final. It stays, with the reason, when the
+    /// window cannot be reached yet (no Accessibility, another Space, a busy app), so
+    /// automatic recovery or a later launch can finish the job.
     @discardableResult
-    static func restore(_ entry: PlacementEntry, journal: PlacementJournal) -> RestoreDecision? {
-        if entry.mode != .hideApp, !isTrusted { return nil }
-        let current: WindowPlacementState?
-        do {
-            if entry.mode == .hideApp, !isTrusted, WindowCatalog.isRunning(entry.identity),
-               let application = NSRunningApplication(processIdentifier: entry.identity.processID) {
-                var appState = entry.applied
-                appState.isAppHidden = application.isHidden
-                current = appState
-            } else {
-                current = try state(of: entry.identity)
-            }
-            if current == nil, WindowCatalog.isRunning(entry.identity),
-               windowServerInfo(entry.identity.windowID) != nil { return nil }
-        }
-        catch {
-            // A transient AX failure is not proof that the source disappeared.
-            NSLog("Dropy placement recovery deferred: %@", String(describing: error))
-            return nil
-        }
-        let decision = PlacementRestorer.decide(entry, current: current, displays: displayBounds())
-        switch decision {
-        case .restore(let target), .restoreOnFallbackDisplay(let target):
+    static func restore(_ entry: PlacementEntry, journal: PlacementJournal) -> RestoreOutcome {
+        if entry.mode != .hideApp, !isTrusted { return .deferred(.accessibilityNotTrusted) }
+        let (read, window) = readForRestore(entry)
+        let plan = RestorePlan.make(for: entry, read: read, displays: displayBounds())
+        let decision: RestoreDecision
+        switch plan {
+        case .deferral(let reason):
+            return .deferred(reason)
+        case .settle(let settled):
+            decision = settled
+        case .restore(let planned, let unhide, let unminimize, let frame, let resize):
+            decision = planned
             do {
-                if current?.isAppHidden == true, !target.isAppHidden {
-                    NSRunningApplication(processIdentifier: entry.identity.processID)?.unhide()
-                }
-                if entry.mode != .hideApp {
-                    let window = try requireWindow(entry.identity)
-                    if current?.isMinimized == true, !target.isMinimized {
-                        try setMinimized(false, window: window)
-                    }
-                    try setFrame(target.frame, of: window,
-                                 resize: decision != .restore(target))
+                if unhide { NSRunningApplication(processIdentifier: entry.identity.processID)?.unhide() }
+                if unminimize || frame != nil {
+                    guard let window else { return .deferred(.applyFailed("windowElementUnavailable")) }
+                    if unminimize { try setMinimized(false, window: window) }
+                    if let frame { try setFrame(frame, of: window, resize: resize) }
                 }
             } catch {
-                NSLog("Dropy placement restore failed: mode=%@ error=%@", entry.mode.rawValue,
-                      String(describing: error))
-                return nil
+                return .deferred(.applyFailed(String(describing: error)))
             }
-        case .pending: return decision
-        case .keepUserChange, .sourceGone:
-            break
         }
+        // An unconfirmed move stays for explicit recovery.
+        if decision == .pending { return .decided(decision) }
         do { try journal.remove(entry.identity) }
-        catch {
-            NSLog("Dropy placement journal removal failed: %@", String(describing: error))
-            return nil
-        }
-        return decision
+        catch { return .deferred(.journalWriteFailed(String(describing: error))) }
+        return .decided(decision)
     }
 
-    /// Current placement facts for the exact window, or nil when it is gone.
-    static func state(of identity: WindowIdentity, assumeHidden: Bool? = nil) throws -> WindowPlacementState? {
-        guard WindowCatalog.isRunning(identity),
-              let application = NSRunningApplication(processIdentifier: identity.processID) else { return nil }
-        let hidden = assumeHidden ?? application.isHidden
-        if !isTrusted {
-            // Without Accessibility only the app's hidden state is observable.
-            guard let bounds = windowServerBounds(identity.windowID) else { return nil }
-            return WindowPlacementState(frame: bounds, isMinimized: false, isAppHidden: hidden)
+    /// Reads the source for a restore. A hidden app's windows can be unreachable while
+    /// it stays hidden; for `hideApp` only the app's hidden state was changed, so the
+    /// exact process is enough to decide and undo it.
+    private static func readForRestore(_ entry: PlacementEntry) -> (SourceWindowRead, AXUIElement?) {
+        let identity = entry.identity
+        func appOnly() -> SourceWindowRead? {
+            guard entry.mode == .hideApp, WindowCatalog.isRunning(identity),
+                  let application = NSRunningApplication(processIdentifier: identity.processID) else { return nil }
+            var state = entry.applied
+            state.isAppHidden = application.isHidden
+            return .state(state)
         }
-        guard let window = try axWindow(for: identity) else { return nil }
+        guard isTrusted else {
+            return (appOnly() ?? .unreachable(.accessibilityNotTrusted), nil)
+        }
+        do {
+            switch try find(identity) {
+            case .found(let window):
+                return (.state(try readState(window, identity: identity)), window)
+            case .missing(let diagnosis):
+                if diagnosis != .processGone, let state = appOnly() { return (state, nil) }
+                return (.unreachable(diagnosis), nil)
+            }
+        } catch {
+            return (.failed(String(describing: error)), nil)
+        }
+    }
+
+    /// Current placement facts for the exact window, or nil when it is unreachable.
+    static func state(of identity: WindowIdentity) throws -> WindowPlacementState? {
+        guard isTrusted else {
+            // Without Accessibility only the window server and the app's hidden state are observable.
+            guard WindowCatalog.isRunning(identity),
+                  let application = NSRunningApplication(processIdentifier: identity.processID),
+                  let bounds = windowServerInfo(identity.windowID)?.bounds else { return nil }
+            return WindowPlacementState(frame: bounds, isMinimized: false, isAppHidden: application.isHidden)
+        }
+        guard case .found(let window) = try find(identity) else { return nil }
+        return try readState(window, identity: identity)
+    }
+
+    private static func readState(_ window: AXUIElement, identity: WindowIdentity) throws -> WindowPlacementState {
         let position = try pointValue(window, kAXPositionAttribute)
         let size = try sizeValue(window, kAXSizeAttribute)
         var minimized: CFTypeRef?
         AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized)
+        let hidden = NSRunningApplication(processIdentifier: identity.processID)?.isHidden ?? false
         return WindowPlacementState(frame: CGRect(origin: position, size: size),
                                     isMinimized: (minimized as? Bool) ?? false, isAppHidden: hidden)
     }
@@ -194,11 +226,12 @@ enum WindowPlacer {
         return (bounds, (info[kCGWindowIsOnscreen as String] as? Bool) ?? false)
     }
 
-    private static func windowServerBounds(_ windowID: UInt32) -> CGRect? {
-        windowServerInfo(windowID)?.bounds
-    }
+    // MARK: Exact window lookup
 
-    // MARK: Accessibility
+    enum Lookup {
+        case found(AXUIElement)
+        case missing(WindowLookupDiagnosis)
+    }
 
     private typealias GetWindowFunction = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
 
@@ -209,34 +242,64 @@ enum WindowPlacer {
         return unsafeBitCast(symbol, to: GetWindowFunction.self)
     }()
 
-    private static func requireWindow(_ identity: WindowIdentity) throws -> AXUIElement {
-        guard let window = try axWindow(for: identity) else { throw PlacementError.windowNotFound }
-        return window
+    /// Finds the exact window by CGWindowID. The app's windows list covers only the
+    /// active Space, so the main and focused windows, which the app reports on any
+    /// Space, are candidates too; each must still match the exact window ID.
+    /// On a miss, the facts are gathered once and diagnosed, and the result is logged.
+    static func find(_ identity: WindowIdentity) throws -> Lookup {
+        guard let getWindow else { throw PlacementError.exactWindowLookupUnavailable }
+        guard isTrusted else { return .missing(.accessibilityNotTrusted) }
+        guard WindowCatalog.isRunning(identity) else { return .missing(.processGone) }
+        let application = AXUIElementCreateApplication(identity.processID)
+        var listed: CFTypeRef?
+        let listResult = AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &listed)
+        let list = (listed as? [AXUIElement]) ?? []
+        var candidates = list
+        for attribute in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(application, attribute as CFString, &value) == .success,
+               let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+                candidates.append(value as! AXUIElement)
+            }
+        }
+        var ids: [UInt32?] = []
+        for element in candidates {
+            var windowID: CGWindowID = 0
+            let found = getWindow(element, &windowID) == .success
+            if found, windowID == identity.windowID { return .found(element) }
+            ids.append(found ? windowID : nil)
+        }
+        let server = windowServerInfo(identity.windowID)
+        let facts = WindowLookupFacts(
+            trusted: true, processRunning: true,
+            windowsListError: listResult == .success ? nil : listResult.rawValue,
+            listedRoles: list.map { stringValue($0, kAXRoleAttribute) ?? "?" },
+            candidateWindowIDs: ids,
+            staleCandidates: candidates.filter { element in
+                var value: CFTypeRef?
+                return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .invalidUIElement
+            }.count,
+            windowServerListed: server != nil, windowServerOnScreen: server?.onScreen ?? false,
+            windowSpaces: Spaces.of(identity.windowID), activeSpaces: Spaces.current())
+        let diagnosis = WindowLookupDiagnosis.diagnose(facts, windowID: identity.windowID)
+        NSLog("Dropy placement lookup: wanted=%u diagnosis=%@ axWindows=%@ roles=[%@] candidates=[%@] server=%@ spaces=%@ active=%@",
+              identity.windowID, diagnosis.description,
+              listResult == .success ? "ok" : "err\(listResult.rawValue)",
+              facts.listedRoles.joined(separator: ","),
+              ids.map { $0.map(String.init) ?? "err" }.joined(separator: ","),
+              server.map { $0.onScreen ? "onScreen" : "offScreen" } ?? "notListed",
+              facts.windowSpaces.map { $0.map(String.init).joined(separator: ",") } ?? "unknown",
+              facts.activeSpaces.map { $0.map(String.init).joined(separator: ",") } ?? "unknown")
+        return .missing(diagnosis)
     }
 
-    private static func axWindow(for identity: WindowIdentity) throws -> AXUIElement? {
-        guard let getWindow else { throw PlacementError.exactWindowLookupUnavailable }
-        let application = AXUIElementCreateApplication(identity.processID)
-        var windows: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &windows)
-        guard result == .success, let list = windows as? [AXUIElement] else {
-            throw PlacementError.attribute(kAXWindowsAttribute, result)
-        }
-        let match = list.first { element in
-            var windowID: CGWindowID = 0
-            return getWindow(element, &windowID) == .success && windowID == identity.windowID
-        }
-        if match == nil {
-            let ids = list.map { element -> String in
-                var windowID: CGWindowID = 0
-                let result = getWindow(element, &windowID)
-                return result == .success ? String(windowID) : "err\(result.rawValue)"
-            }
-            NSLog("Dropy placement lookup: wanted=%u axWindows=[%@]", identity.windowID,
-                  ids.joined(separator: ","))
-        }
-        return match
+    private static func stringValue(_ element: AXUIElement, _ attribute: String) -> String? {
+        var value: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        return value as? String
     }
+
+    // MARK: Accessibility values
 
     private static func pointValue(_ element: AXUIElement, _ attribute: String) throws -> CGPoint {
         var value: CFTypeRef?
@@ -280,5 +343,36 @@ enum WindowPlacer {
         let result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString,
                                                   minimized as CFBoolean)
         guard result == .success else { throw PlacementError.attribute(kAXMinimizedAttribute, result) }
+    }
+}
+
+/// Space facts for diagnostics only. These are private SkyLight calls looked up at
+/// runtime; when they are unavailable the diagnosis falls back to on-screen state.
+/// Nothing decides identity or ownership from them.
+enum Spaces {
+    private typealias MainConnection = @convention(c) () -> Int32
+    private typealias CopySpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+    private typealias CopyDisplaySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
+
+    private static func symbol<T>(_ name: String, as type: T.Type) -> T? {
+        dlsym(UnsafeMutableRawPointer(bitPattern: -2), name).map { unsafeBitCast($0, to: type) }
+    }
+
+    /// Spaces holding the window; all Spaces for a window that joins every Space.
+    static func of(_ windowID: UInt32) -> [UInt64]? {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopySpacesForWindows", as: CopySpacesForWindows.self),
+              let spaces = copy(connection, 0x7, [NSNumber(value: windowID)] as CFArray)?
+                .takeRetainedValue() as? [NSNumber] else { return nil }
+        return spaces.map(\.uint64Value)
+    }
+
+    /// The current Space of each display.
+    static func current() -> [UInt64]? {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopyManagedDisplaySpaces", as: CopyDisplaySpaces.self),
+              let displays = copy(connection)?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let spaces = displays.compactMap { ($0["Current Space"] as? [String: Any])?["id64"] as? UInt64 }
+        return spaces.isEmpty ? nil : spaces
     }
 }

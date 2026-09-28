@@ -11,6 +11,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: GlobalHotKey?
     private let placementJournal = PlacementJournal()
     private let parkingTabs = ParkingTabs()
+    private lazy var recovery = PlacementRecovery(journal: placementJournal)
 
     static func main() {
         let app = NSApplication.shared
@@ -23,15 +24,18 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         overlay = OverlayController(preferences: preferences)
         // Undo placements left behind by a crash or forced quit before anything else.
-        if !placementJournal.entries.isEmpty { placementJournal.restoreAll() }
+        // Entries that cannot be reached yet (another Space, a busy app) are retried.
+        recovery.onSettled = { [weak self] identity in self?.parkingTabs.remove(identity) }
+        recovery.start()
         parkingTabs.onRestoreRequest = { [weak self] identity in
             guard let self,
                   let entry = self.placementJournal.entries.first(where: { $0.identity == identity }) else { return }
-            let decision = WindowPlacer.restore(entry, journal: self.placementJournal)
+            let outcome = WindowPlacer.restore(entry, journal: self.placementJournal)
             if !self.placementJournal.entries.contains(where: { $0.identity == identity }) {
                 self.parkingTabs.remove(identity)
             }
-            NSLog("Dropy placement: tab clicked restore=%@", decision.map(PlacementJournal.name) ?? "pending")
+            if outcome.retriesAutomatically { self.recovery.schedule() }
+            NSLog("Dropy placement: tab clicked restore=%@", PlacementJournal.name(outcome))
         }
         for entry in placementJournal.entries where entry.mode == .parked && entry.applicationConfirmed != false {
             parkingTabs.show(for: entry)
@@ -175,6 +179,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         trigger?.stop()
         hotKey?.unregister()
+        recovery.stop()
+        // A deferred entry stays in the journal; the next launch keeps trying.
         placementJournal.restoreAll()
         parkingTabs.removeAll()
     }
@@ -198,9 +204,12 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(for: .milliseconds(100))
                 waited += 100
             }
-            guard let identity = self.overlay.currentSelection,
+            // Only a live preview can show whether a placement keeps capture alive.
+            // A paused preview means the source is minimized, hidden or on another Space.
+            guard self.overlay.state == .viewing, let identity = self.overlay.currentSelection,
                   let before = self.overlay.captureCounts() else {
-                NSLog("Dropy placement: mode=%@ skipped=noLivePreview", mode.rawValue)
+                NSLog("Dropy placement: mode=%@ skipped=noLivePreview(%@)", mode.rawValue,
+                      self.overlay.state.diagnosticName)
                 return
             }
             let entry: PlacementEntry
@@ -230,10 +239,11 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(for: .seconds(hold))
             let held = self.overlay.captureCounts() ?? placed
             let stateDuringHold = self.overlay.state.diagnosticName
-            let decision = WindowPlacer.restore(entry, journal: self.placementJournal)
+            let outcome = WindowPlacer.restore(entry, journal: self.placementJournal)
             if !self.placementJournal.entries.contains(where: { $0.identity == identity }) {
                 self.parkingTabs.remove(identity)
             }
+            if outcome.retriesAutomatically { self.recovery.schedule() }
             try? await Task.sleep(for: .milliseconds(500))
             let restored = try? WindowPlacer.state(of: identity)
             let verified = restored.map { $0.approximatelyEquals(entry.original) }
@@ -244,7 +254,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
                   String(format: "%.3f", leak),
                   server.map { $0.onScreen ? "yes" : "no" } ?? "notListed",
                   stateDuringHold, held.delta(since: placed),
-                  decision.map(PlacementJournal.name) ?? "pending",
+                  PlacementJournal.name(outcome),
                   verified.map { $0 ? "yes" : "no" } ?? "unknown")
         }
     }
@@ -257,7 +267,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             alert.runModal()
             return
         }
-        placementJournal.restoreAll()
+        recovery.run(resetBackoff: true)
         for entry in placementJournal.entries where entry.applicationConfirmed == false {
             let alert = NSAlert()
             alert.messageText = "Restore an interrupted window move?"
@@ -276,6 +286,20 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("Dropy explicit recovery journal failed: %@", String(describing: error))
                 }
             }
+        }
+        recovery.run(resetBackoff: true)
+        let waiting = recovery.deferred
+        if !waiting.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = waiting.count == 1 ? "A window is still waiting to be restored"
+                : "\(waiting.count) windows are still waiting to be restored"
+            let apps = waiting.map { NSRunningApplication(processIdentifier: $0.entry.identity.processID)?
+                .localizedName ?? "An app" }
+            let advice = Set(waiting.map(\.reason.advice)).sorted()
+            alert.informativeText = (Set(apps).sorted().joined(separator: ", ") + ". " + advice.joined(separator: " "))
+            alert.runModal()
+        } else if placementJournal.entries.isEmpty {
+            parkingTabs.removeAll()
         }
     }
 

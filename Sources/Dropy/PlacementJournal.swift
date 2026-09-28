@@ -59,13 +59,22 @@ final class PlacementJournal {
         }
     }
 
-    /// Restores every pending entry, e.g. at launch after a crash or on quit. Entries
-    /// that cannot be decided yet (no Accessibility) stay for a later attempt.
-    func restoreAll() {
-        for entry in entries {
-            let decision = WindowPlacer.restore(entry, journal: self)
-            NSLog("Dropy placement recovery: mode=%@ outcome=%@", entry.mode.rawValue,
-                  decision.map(Self.name) ?? "pending(accessibilityUnavailable)")
+    /// Tries to restore every pending entry once, e.g. at launch after a crash or on
+    /// quit. Entries that cannot be decided or reached yet stay, with the reason.
+    @discardableResult
+    func restoreAll() -> [(entry: PlacementEntry, outcome: RestoreOutcome)] {
+        entries.map { entry in
+            let outcome = WindowPlacer.restore(entry, journal: self)
+            NSLog("Dropy placement recovery: mode=%@ window=%u outcome=%@", entry.mode.rawValue,
+                  entry.identity.windowID, Self.name(outcome))
+            return (entry, outcome)
+        }
+    }
+
+    static func name(_ outcome: RestoreOutcome) -> String {
+        switch outcome {
+        case .decided(let decision): name(decision)
+        case .deferred(let reason): "deferred(\(reason))"
         }
     }
 
