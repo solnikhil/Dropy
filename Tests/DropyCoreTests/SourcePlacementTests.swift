@@ -24,7 +24,10 @@ final class SourcePlacementTests: XCTestCase {
         var nudged = placed.applied
         nudged.frame.origin.x += 1.5
         XCTAssertEqual(PlacementRestorer.decide(placed, current: nudged, displays: [main]),
-                       .restore(placed.original))
+                       .keepUserChange)
+        var resized = placed.applied
+        resized.frame.size.width += 0.5
+        XCTAssertEqual(PlacementRestorer.decide(placed, current: resized, displays: [main]), .keepUserChange)
     }
 
     func testALaterMoveByTheUserWins() {
@@ -58,6 +61,16 @@ final class SourcePlacementTests: XCTestCase {
         XCTAssertEqual(PlacementGeometry.visibleFraction(of: away, on: [main, second]), 0)
         let clampedByAppKit = CGRect(x: 1670, y: 560, width: 800, height: 440)
         XCTAssertEqual(PlacementGeometry.visibleFraction(of: clampedByAppKit, on: [main]), 0.05, accuracy: 0.0001)
+    }
+
+    func testUnconfirmedClampedMoveRetainsRecoveryRecord() {
+        var prepared = entry()
+        prepared.applicationConfirmed = false
+        var clamped = prepared.applied
+        clamped.frame.origin = CGPoint(x: 1670, y: 994)
+        XCTAssertEqual(PlacementRestorer.decide(prepared, current: clamped, displays: [main]), .pending)
+        XCTAssertEqual(PlacementRestorer.decide(prepared, current: prepared.original, displays: [main]), .keepUserChange)
+        XCTAssertEqual(PlacementRestorer.decide(prepared, current: prepared.applied, displays: [main]), .restore(prepared.original))
     }
 
     func testJournalEntryRoundTrips() throws {

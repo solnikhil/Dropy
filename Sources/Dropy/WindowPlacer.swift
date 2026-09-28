@@ -66,8 +66,8 @@ enum WindowPlacer {
         case .hideApp: expected.isAppHidden = true
         }
         var entry = PlacementEntry(identity: identity, mode: mode, original: original,
-                                   applied: expected, createdAt: Date())
-        journal.upsert(entry)
+                                   applied: expected, createdAt: Date(), applicationConfirmed: false)
+        try journal.upsert(entry)
         switch mode {
         case .offscreen:
             try setPosition(expected.frame.origin, of: requireWindow(identity))
@@ -81,8 +81,9 @@ enum WindowPlacer {
             // AppKit may clamp the position; record where the window really went so
             // a restore compares against reality rather than the request.
             if let observed = try state(of: identity) {
-                entry.applied.frame = observed.frame
-                journal.upsert(entry)
+                entry.applied = observed
+                entry.applicationConfirmed = true
+                try journal.upsert(entry)
             }
         case .minimize, .hideApp:
             // Minimizing and hiding animate. Reading the state immediately returned the
@@ -92,7 +93,12 @@ enum WindowPlacer {
             for _ in 0..<20 {
                 if let observed = try state(of: identity),
                    observed.isMinimized == expected.isMinimized,
-                   observed.isAppHidden == expected.isAppHidden { break }
+                   observed.isAppHidden == expected.isAppHidden {
+                    entry.applied = observed
+                    entry.applicationConfirmed = true
+                    try journal.upsert(entry)
+                    break
+                }
                 try await Task.sleep(for: .milliseconds(100))
             }
         }
@@ -105,7 +111,24 @@ enum WindowPlacer {
     @discardableResult
     static func restore(_ entry: PlacementEntry, journal: PlacementJournal) -> RestoreDecision? {
         if entry.mode != .hideApp, !isTrusted { return nil }
-        let current = try? state(of: entry.identity)
+        let current: WindowPlacementState?
+        do {
+            if entry.mode == .hideApp, !isTrusted, WindowCatalog.isRunning(entry.identity),
+               let application = NSRunningApplication(processIdentifier: entry.identity.processID) {
+                var appState = entry.applied
+                appState.isAppHidden = application.isHidden
+                current = appState
+            } else {
+                current = try state(of: entry.identity)
+            }
+            if current == nil, WindowCatalog.isRunning(entry.identity),
+               windowServerInfo(entry.identity.windowID) != nil { return nil }
+        }
+        catch {
+            // A transient AX failure is not proof that the source disappeared.
+            NSLog("Dropy placement recovery deferred: %@", String(describing: error))
+            return nil
+        }
         let decision = PlacementRestorer.decide(entry, current: current, displays: displayBounds())
         switch decision {
         case .restore(let target), .restoreOnFallbackDisplay(let target):
@@ -124,12 +147,17 @@ enum WindowPlacer {
             } catch {
                 NSLog("Dropy placement restore failed: mode=%@ error=%@", entry.mode.rawValue,
                       String(describing: error))
-                return decision
+                return nil
             }
+        case .pending: return decision
         case .keepUserChange, .sourceGone:
             break
         }
-        journal.remove(entry.identity)
+        do { try journal.remove(entry.identity) }
+        catch {
+            NSLog("Dropy placement journal removal failed: %@", String(describing: error))
+            return nil
+        }
         return decision
     }
 

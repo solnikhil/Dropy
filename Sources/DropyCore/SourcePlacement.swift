@@ -47,15 +47,19 @@ public struct PlacementEntry: Codable, Equatable, Sendable {
     /// What Dropy expects to observe after placing. A different current state means
     /// someone moved the window since, and that later move wins.
     public var applied: WindowPlacementState
+    /// Nil in older records means the placement was already observed.
+    /// False means a crash may have interrupted the move or its journal update.
+    public var applicationConfirmed: Bool?
     public let createdAt: Date
 
     public init(identity: WindowIdentity, mode: PlacementMode, original: WindowPlacementState,
-                applied: WindowPlacementState, createdAt: Date) {
+                applied: WindowPlacementState, createdAt: Date, applicationConfirmed: Bool? = nil) {
         self.identity = identity
         self.mode = mode
         self.original = original
         self.applied = applied
         self.createdAt = createdAt
+        self.applicationConfirmed = applicationConfirmed
     }
 }
 
@@ -68,6 +72,8 @@ public enum RestoreDecision: Equatable, Sendable {
     case keepUserChange
     /// The exact window or process no longer exists; nothing to restore.
     case sourceGone
+    /// The write-ahead request was never confirmed; retain it for explicit recovery.
+    case pending
 }
 
 public enum PlacementRestorer {
@@ -78,7 +84,13 @@ public enum PlacementRestorer {
     public static func decide(_ entry: PlacementEntry, current: WindowPlacementState?,
                               displays: [CGRect]) -> RestoreDecision {
         guard let current else { return .sourceGone }
-        guard current.approximatelyEquals(entry.applied) else { return .keepUserChange }
+        if entry.applicationConfirmed == false, current != entry.applied {
+            // The system may have clamped the move before a crash. It cannot be
+            // distinguished from a later user move, so never discard the record
+            // or overwrite that move automatically.
+            return current == entry.original ? .keepUserChange : .pending
+        }
+        guard current == entry.applied else { return .keepUserChange }
         let original = entry.original
         guard !displays.isEmpty,
               PlacementGeometry.visibleFraction(of: original.frame, on: displays) == 0 else {

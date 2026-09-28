@@ -31,6 +31,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         let openTitle = hotKey == nil ? "Open Dropy" : "Open Dropy (\(GlobalHotKey.defaultDisplay))"
         menu.addItem(NSMenuItem(title: openTitle, action: #selector(toggleOverlay), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Refresh windows", action: #selector(refresh), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Recover pending source windows…",
+                                action: #selector(recoverPlacements), keyEquivalent: ""))
         menu.addItem(.separator())
         let triggers = NSMenu(title: "Notch trigger")
         for trigger in Trigger.allCases {
@@ -217,6 +219,36 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
                   stateDuringHold, held.delta(since: placed),
                   decision.map(PlacementJournal.name) ?? "pending",
                   verified.map { $0 ? "yes" : "no" } ?? "unknown")
+        }
+    }
+
+    @objc private func recoverPlacements() {
+        if placementJournal.loadError != nil {
+            let alert = NSAlert()
+            alert.messageText = "Window recovery journal could not be read"
+            alert.informativeText = "The original file has been preserved at \(PlacementJournal.defaultURL.path). New placements are blocked until it can be read."
+            alert.runModal()
+            return
+        }
+        placementJournal.restoreAll()
+        for entry in placementJournal.entries where entry.applicationConfirmed == false {
+            let alert = NSAlert()
+            alert.messageText = "Restore an interrupted window move?"
+            alert.informativeText = "Dropy stopped before confirming this move. Restoring the original position may replace a later move you made."
+            alert.addButton(withTitle: "Keep current position")
+            alert.addButton(withTitle: "Restore original position")
+            if alert.runModal() == .alertSecondButtonReturn,
+               let current = try? WindowPlacer.state(of: entry.identity) {
+                var confirmed = entry
+                confirmed.applied = current
+                confirmed.applicationConfirmed = true
+                do {
+                    try placementJournal.upsert(confirmed)
+                    WindowPlacer.restore(confirmed, journal: placementJournal)
+                } catch {
+                    NSLog("Dropy explicit recovery journal failed: %@", String(describing: error))
+                }
+            }
         }
     }
 

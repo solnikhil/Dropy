@@ -33,3 +33,5 @@ Each stream logs a `Dropy capture metrics:` summary when it stops. `Scripts/benc
 - Keep dependencies minimal and record their license before adding one.
 
 The project uses the [MIT license](LICENSE). By submitting a contribution, you agree that it can be distributed under that license.
+
+Placement recovery retains unreadable journals and blocks new moves when a journal cannot be written. If a crash interrupts the move before its actual position is confirmed, the record stays pending: use **Recover pending source windows…** in the status menu to explicitly choose whether to restore the original position. Automatic recovery never guesses over a possible later user move.

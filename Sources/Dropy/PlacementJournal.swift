@@ -8,11 +8,20 @@ import Foundation
 final class PlacementJournal {
     private let url: URL
     private(set) var entries: [PlacementEntry]
+    private(set) var loadError: Error?
 
     init(url: URL = PlacementJournal.defaultURL) {
         self.url = url
-        entries = (try? Data(contentsOf: url))
-            .flatMap { try? JSONDecoder().decode([PlacementEntry].self, from: $0) } ?? []
+        entries = []
+        do {
+            let data = try Data(contentsOf: url)
+            entries = try JSONDecoder().decode([PlacementEntry].self, from: data)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // No pending placement.
+        } catch {
+            loadError = error
+            NSLog("Dropy placement journal unreadable; preserving file and blocking new placements: %@", String(describing: error))
+        }
     }
 
     static var defaultURL: URL {
@@ -23,28 +32,30 @@ final class PlacementJournal {
 
     /// Records or replaces the entry for this exact window and writes it to disk
     /// before returning, so the file is ahead of any change to the window.
-    func upsert(_ entry: PlacementEntry) {
-        entries.removeAll { $0.identity == entry.identity }
-        entries.append(entry)
-        save()
+    func upsert(_ entry: PlacementEntry) throws {
+        var next = entries.filter { $0.identity != entry.identity }
+        next.append(entry)
+        try save(next)
+        entries = next
     }
 
-    func remove(_ identity: WindowIdentity) {
-        entries.removeAll { $0.identity == identity }
-        save()
+    func remove(_ identity: WindowIdentity) throws {
+        let next = entries.filter { $0.identity != identity }
+        try save(next)
+        entries = next
     }
 
-    private func save() {
-        do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true)
-            if entries.isEmpty {
-                try? FileManager.default.removeItem(at: url)
-            } else {
-                try JSONEncoder().encode(entries).write(to: url, options: .atomic)
-            }
-        } catch {
-            NSLog("Dropy placement journal write failed: %@", String(describing: error))
+    private func save(_ next: [PlacementEntry]) throws {
+        if let loadError { throw loadError }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        // Persist even an empty journal atomically. A failed write leaves the
+        // previous records intact, and never authorizes a source mutation.
+        if next.isEmpty {
+            do { try FileManager.default.removeItem(at: url) }
+            catch let error as CocoaError where error.code == .fileNoSuchFile { }
+        } else {
+            try JSONEncoder().encode(next).write(to: url, options: .atomic)
         }
     }
 
@@ -64,6 +75,7 @@ final class PlacementJournal {
         case .restoreOnFallbackDisplay: "restoredOnFallbackDisplay"
         case .keepUserChange: "keptUserChange"
         case .sourceGone: "sourceGone"
+        case .pending: "pending(unconfirmedPlacement)"
         }
     }
 }
