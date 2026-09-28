@@ -8,6 +8,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     private var overlay: OverlayController!
     private var statusItem: NSStatusItem?
     private var trigger: NotchTrigger?
+    private var hotKey: GlobalHotKey?
 
     static func main() {
         let app = NSApplication.shared
@@ -23,12 +24,19 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = "◆"
         item.button?.toolTip = "Dropy"
         let menu = NSMenu(title: "Dropy")
-        menu.addItem(NSMenuItem(title: "Open Dropy", action: #selector(toggleOverlay), keyEquivalent: ""))
+        hotKey = GlobalHotKey { [weak self] in self?.overlay.toggle() }
+        let openTitle = hotKey == nil ? "Open Dropy" : "Open Dropy (\(GlobalHotKey.defaultDisplay))"
+        menu.addItem(NSMenuItem(title: openTitle, action: #selector(toggleOverlay), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Refresh windows", action: #selector(refresh), keyEquivalent: ""))
         menu.addItem(.separator())
         let triggers = NSMenu(title: "Notch trigger")
-        for trigger in [Trigger.notchHover, .notchClick] {
-            let entry = NSMenuItem(title: trigger == .notchHover ? "Hover" : "Click",
+        for trigger in Trigger.allCases {
+            let title = switch trigger {
+            case .notchHover: "Hover"
+            case .notchClick: "Click"
+            case .shortcut: "Shortcut only"
+            }
+            let entry = NSMenuItem(title: title,
                                    action: #selector(changeTrigger(_:)), keyEquivalent: "")
             entry.representedObject = trigger.rawValue
             entry.state = preferences.value.trigger == trigger ? .on : .off
@@ -37,6 +45,22 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         let triggerItem = NSMenuItem(title: "Notch trigger", action: nil, keyEquivalent: "")
         triggerItem.submenu = triggers
         menu.addItem(triggerItem)
+        let dismissals = NSMenu(title: "Dismiss")
+        for behavior in [DismissBehavior.manual, .clickOutside, .pointerLeave] {
+            let title = switch behavior {
+            case .manual: "Esc or Close button only"
+            case .clickOutside: "Click outside"
+            case .pointerLeave: "Pointer leaves the overlay"
+            }
+            let entry = NSMenuItem(title: title, action: #selector(changeDismissBehavior(_:)), keyEquivalent: "")
+            entry.representedObject = behavior.rawValue
+            entry.state = preferences.value.dismissBehavior == behavior ? .on : .off
+            entry.target = self
+            dismissals.addItem(entry)
+        }
+        let dismissItem = NSMenuItem(title: "Dismiss", action: nil, keyEquivalent: "")
+        dismissItem.submenu = dismissals
+        menu.addItem(dismissItem)
         let sizes = NSMenu(title: "Overlay size")
         for preset in SizePreset.allCases {
             let entry = NSMenuItem(title: preset.rawValue.capitalized,
@@ -131,6 +155,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         trigger?.stop()
+        hotKey?.unregister()
     }
 
     @objc private func toggleOverlay() { overlay.toggle() }
@@ -149,6 +174,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         guard let raw = sender.representedObject as? String,
               let trigger = Trigger(rawValue: raw) else { return }
         preferences.update { $0.trigger = trigger }
+        updateChecks(in: sender.menu, selected: sender)
+    }
+
+    @objc private func changeDismissBehavior(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let behavior = DismissBehavior(rawValue: raw) else { return }
+        preferences.update { $0.dismissBehavior = behavior }
         updateChecks(in: sender.menu, selected: sender)
     }
 
