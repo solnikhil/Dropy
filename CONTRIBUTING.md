@@ -5,7 +5,6 @@ Dropy is early-stage macOS software. The most valuable contributions establish *
 ## Build and verify
 
 Use a macOS machine with Xcode and a Swift 6 toolchain:
-
 ```sh
 swift build
 swift test
