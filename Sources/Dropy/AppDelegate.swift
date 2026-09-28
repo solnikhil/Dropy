@@ -210,6 +210,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
                 NSLog("Dropy placement: mode=%@ failed=%@", mode.rawValue, String(describing: error))
                 return
             }
+            NSLog("Dropy placement applied: window=%u mode=%@", identity.windowID, mode.rawValue)
             try? await Task.sleep(for: .seconds(1))
             let displays = WindowPlacer.displayBounds()
             let server = WindowPlacer.windowServerInfo(identity.windowID)

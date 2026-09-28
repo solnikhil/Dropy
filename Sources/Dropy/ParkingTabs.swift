@@ -27,6 +27,7 @@ final class ParkingTabs {
             let panel = TabPanel(frame: frame, icon: icon) { [weak self] in
                 self?.onRestoreRequest?(entry.identity)
             }
+            panel.title = "Dropy parking:\(entry.identity.windowID)"
             panel.orderFrontRegardless()
             return panel
         }

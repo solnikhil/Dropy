@@ -6,6 +6,8 @@
 - Displays: 2560 x 1664 Retina
 - TextEdit 1.21; Safari 27.0
 
+This historical run used the original checker. Its restoration checks omitted application-hidden state, and coverage came from Dropy’s logs rather than an independent window-server query. Treat its results as exploratory evidence; the revised checker must confirm them.
+
 ## Placement and recovery
 
 | App | Check | Capture while placed | Driver result | Independent check |
