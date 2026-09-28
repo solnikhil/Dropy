@@ -28,8 +28,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             guard let self,
                   let entry = self.placementJournal.entries.first(where: { $0.identity == identity }) else { return }
             let decision = WindowPlacer.restore(entry, journal: self.placementJournal)
-            self.parkingTabs.remove(identity)
+            if !self.placementJournal.entries.contains(where: { $0.identity == identity }) {
+                self.parkingTabs.remove(identity)
+            }
             NSLog("Dropy placement: tab clicked restore=%@", decision.map(PlacementJournal.name) ?? "pending")
+        }
+        for entry in placementJournal.entries where entry.mode == .parked && entry.applicationConfirmed != false {
+            parkingTabs.show(for: entry)
         }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "◆"
@@ -225,7 +230,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             let held = self.overlay.captureCounts() ?? placed
             let stateDuringHold = self.overlay.state.diagnosticName
             let decision = WindowPlacer.restore(entry, journal: self.placementJournal)
-            self.parkingTabs.remove(identity)
+            if !self.placementJournal.entries.contains(where: { $0.identity == identity }) {
+                self.parkingTabs.remove(identity)
+            }
             try? await Task.sleep(for: .milliseconds(500))
             let restored = try? WindowPlacer.state(of: identity)
             let verified = restored.map { $0.approximatelyEquals(entry.original) }

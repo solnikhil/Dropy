@@ -59,7 +59,7 @@ private final class TabPanel: NSPanel {
         isOpaque = true
         hasShadow = false
         isReleasedWhenClosed = false
-        collectionBehavior = [.ignoresCycle, .fullScreenAuxiliary]
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         let view = TabView(frame: CGRect(origin: .zero, size: frame.size), icon: icon)
         view.onClick = { [weak self] in self?.onClick() }
         contentView = view
