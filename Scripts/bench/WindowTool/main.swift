@@ -6,6 +6,8 @@
 //   WindowTool frame <pid> <window-id>       prints "x y w h minimized appHidden"
 //   WindowTool move <pid> <window-id> <x> <y>
 //   WindowTool server <window-id>            prints "x y w h onscreen" from the window server
+//   WindowTool snapshot <pid> [window-id]    prints one JSON line of AX and window-server state,
+//                                            classifying why the window is missing (AXSnapshot.swift)
 import AppKit
 import ApplicationServices
 
@@ -25,13 +27,23 @@ func axWindows(_ pid: pid_t) -> [AXUIElement] {
     return value as? [AXUIElement] ?? []
 }
 
+/// The app's windows list covers only the active Space; main and focused windows are
+/// reported on any Space. Every candidate must match the exact window ID.
 func window(_ pid: pid_t, _ id: CGWindowID) -> AXUIElement {
     guard let getWindow else { fail("exact window lookup unavailable") }
-    for element in axWindows(pid) {
+    let application = AXUIElementCreateApplication(pid)
+    var candidates = axWindows(pid)
+    for attribute in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(application, attribute as CFString, &value) == .success, let value,
+           CFGetTypeID(value) == AXUIElementGetTypeID() { candidates.append(value as! AXUIElement) }
+    }
+    for element in candidates {
         var found: CGWindowID = 0
         if getWindow(element, &found) == .success, found == id { return element }
     }
-    fail("window \(id) not found in the Accessibility tree")
+    let snapshot = Snapshot.take(pid: pid, focus: id, getWindow: getWindow)
+    fail("window \(id) not found in the Accessibility tree: \(snapshot["classification"] ?? "?")")
 }
 
 func point(_ element: AXUIElement, _ name: String) -> CGPoint {
@@ -56,8 +68,15 @@ let args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else { fail("usage: WindowTool axcheck|frame|move|server ...") }
 switch command {
 case "axcheck":
-    guard AXIsProcessTrusted() else { fail("Accessibility not granted to this terminal") }
-    guard let pid = args.dropFirst().first.flatMap(pid_t.init) else { fail("usage: axcheck <pid>") }
+    // axcheck <pid> [window-id]: exit 0 when Accessibility is usable for the app, or for
+    // that exact window. Failure output names the classification from AXSnapshot.
+    guard AXIsProcessTrusted() else { fail("permission:notTrusted") }
+    guard let pid = args.dropFirst().first.flatMap(pid_t.init) else { fail("usage: axcheck <pid> [window-id]") }
+    if args.count > 2, let id = CGWindowID(args[2]) {
+        _ = window(pid, id)
+        print("ok window \(id)")
+        break
+    }
     let roles = axWindows(pid).map { element -> String in
         var role: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
@@ -132,6 +151,45 @@ case "visibility":
     }
     let total = max(area(bounds), 1)
     print(String(format: "onscreen=%d visible=%.6f uncovered=%.6f tabs=%d", onScreen ? 1 : 0, visible / total, remaining.reduce(0.0) { $0 + area($1) } / total, covers.count))
+case "snapshot":
+    // snapshot <pid> [window-id]: one JSON line describing the AX tree and window server.
+    guard args.count >= 2, let pid = pid_t(args[1]) else { fail("usage: snapshot <pid> [window-id]") }
+    let focus = args.count > 2 ? CGWindowID(args[2]) : nil
+    let json = Snapshot.take(pid: pid, focus: focus, getWindow: getWindow)
+    let data = try! JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+    print(String(decoding: data, as: UTF8.self))
+case "watch":
+    // watch <pid> <window-id> <seconds>: poll every 100 ms and print a JSON line whenever
+    // the active Space, the frontmost app or the window's classification changes.
+    guard args.count == 4, let pid = pid_t(args[1]), let id = CGWindowID(args[2]),
+          let seconds = Double(args[3]) else { fail("usage: watch <pid> <window-id> <seconds>") }
+    var last = ""
+    let end = Date().addingTimeInterval(seconds)
+    while Date() < end {
+        let snapshot = Snapshot.take(pid: pid, focus: id, getWindow: getWindow)
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
+        let key = "\(snapshot["activeSpaces"] ?? "")|\(front)|\(snapshot["classification"] ?? "")"
+        if key != last {
+            var line = snapshot
+            line["frontmost"] = front
+            let data = try! JSONSerialization.data(withJSONObject: line, options: [.sortedKeys])
+            print(String(decoding: data, as: UTF8.self))
+            fflush(stdout)
+            last = key
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+case "fixture":
+    // fixture <command>: send a command to the Dropy fixture app (Scripts/bench/Fixture).
+    guard args.count == 2 else { fail("usage: fixture space:other|space:home|space:<id>|second|quit") }
+    DistributedNotificationCenter.default().postNotificationName(
+        .init("org.dropy.fixture.command"), object: args[1], userInfo: nil, deliverImmediately: true)
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+case "spaces":
+    // spaces: the current Space of each display and the frontmost app, to detect a
+    // person switching desktops or apps while a check runs.
+    let current = Snapshot.currentSpaces()?.map(String.init).joined(separator: ",") ?? "unknown"
+    print("active=\(current) frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?")")
 case "server":
     guard args.count == 2, let id = CGWindowID(args[1]),
           let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]])?.first,
