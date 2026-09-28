@@ -78,4 +78,18 @@ final class SourcePlacementTests: XCTestCase {
         let decoded = try JSONDecoder().decode(PlacementEntry.self, from: JSONEncoder().encode(placed))
         XCTAssertEqual(decoded, placed)
     }
+
+    func testParkedStripAndCoordinateConversion() {
+        // A window clamped into the bottom-right corner keeps a 40 x 118 pt strip.
+        let clamped = CGRect(x: 1670, y: 994, width: 800, height: 440)
+        let parts = PlacementGeometry.visibleParts(of: clamped, on: [main])
+        XCTAssertEqual(parts, [CGRect(x: 1670, y: 994, width: 40, height: 118)])
+        XCTAssertTrue(PlacementGeometry.visibleParts(of: CGRect(x: 5000, y: 0, width: 10, height: 10),
+                                                     on: [main]).isEmpty)
+        // Global top-left to AppKit bottom-left: the strip sits at the bottom edge.
+        XCTAssertEqual(PlacementGeometry.appKitRect(fromGlobal: parts[0], mainDisplayHeight: 1112),
+                       CGRect(x: 1670, y: 0, width: 40, height: 118))
+        XCTAssertTrue(PlacementMode.parked.movesWindow)
+        XCTAssertFalse(PlacementMode.minimize.movesWindow)
+    }
 }

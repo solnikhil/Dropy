@@ -141,4 +141,10 @@ var interrupted = placement
 interrupted.applicationConfirmed = false
 check(PlacementRestorer.decide(interrupted, current: userMoved, displays: [placementDisplay]) == .pending,
       "ambiguous interrupted placement remains pending")
+
+let parkedStrip = PlacementGeometry.visibleParts(of: CGRect(x: 1670, y: 994, width: 800, height: 440),
+                                                 on: [placementDisplay])
+check(parkedStrip == [CGRect(x: 1670, y: 994, width: 40, height: 118)], "parked strip geometry")
+check(PlacementGeometry.appKitRect(fromGlobal: parkedStrip[0], mainDisplayHeight: 1112)
+      == CGRect(x: 1670, y: 0, width: 40, height: 118), "global to AppKit coordinates")
 print("DropyCore checks passed")
