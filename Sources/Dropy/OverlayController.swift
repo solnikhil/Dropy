@@ -3,7 +3,14 @@ import DropyCore
 import ScreenCaptureKit
 
 final class OverlayPanel: NSPanel {
+    var onEscape: (() -> Void)?
     override var canBecomeKey: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) { onEscape?() }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { onEscape?() } else { super.keyDown(with: event) }
+    }
 }
 
 @MainActor
@@ -34,6 +41,11 @@ final class OverlayController: NSObject {
     /// continues only while its captured generation is still current.
     private var generation = UUID()
     private(set) var state: CapturePhase = .closed
+    private var sessionMonitors: [Any] = []
+    private var trackingArea: NSTrackingArea?
+    private var pointerHasEntered = false
+    private var pendingPointerLeave: DispatchWorkItem?
+    private var previousApplication: NSRunningApplication?
 
     init(preferences: PreferenceStore) {
         self.preferences = preferences
@@ -47,6 +59,12 @@ final class OverlayController: NSObject {
 
     func toggle() {
         state == .closed ? open() : close()
+    }
+
+    /// Closes the overlay if the dismiss preference treats `event` as an exit.
+    func dismiss(_ event: DismissEvent) {
+        guard state != .closed, preferences.value.dismissBehavior.closes(on: event) else { return }
+        close()
     }
 
     func open() {
@@ -81,6 +99,10 @@ final class OverlayController: NSObject {
                   (presentedTime - openedAt) * 1_000, openNumber, openNumber > 1 ? "yes" : "no")
         }
         self.panel = panel
+        panel.onEscape = { [weak self] in self?.dismiss(.escape) }
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        previousApplication = frontmost?.processIdentifier == getpid() ? nil : frontmost
+        installSessionWatchers(on: panel, finalFrame: full)
         panel.orderFrontRegardless()
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
@@ -101,6 +123,7 @@ final class OverlayController: NSObject {
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
+        removeSessionWatchers()
         panel?.orderOut(nil)
         panel = nil
         list = nil
@@ -109,6 +132,71 @@ final class OverlayController: NSObject {
         renderer?.clear()
         renderer = nil
         Task { await capture.stop(reason: "closed") }
+        // Hand focus back to the app that was in front before the overlay opened.
+        if NSApplication.shared.isActive, let previousApplication, !previousApplication.isTerminated {
+            previousApplication.activate()
+        }
+        previousApplication = nil
+    }
+
+    // MARK: Dismissal while open
+    //
+    // These watchers exist only while the overlay is open, so a closed overlay
+    // still costs nothing.
+
+    private func installSessionWatchers(on panel: OverlayPanel, finalFrame: CGRect) {
+        removeSessionWatchers()
+        // Global monitors see only other apps' events, so any click they report is
+        // outside Dropy's panel.
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown],
+                                                           handler: { [weak self] _ in
+            self?.dismiss(.clickOutside)
+        }) { sessionMonitors.append(monitor) }
+        // Other Dropy windows (including the status menu) are invisible to the
+        // global monitor. Keep those events flowing after checking the panel.
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self, weak panel] event in
+            if let panel, event.window !== panel { self?.dismiss(.clickOutside) }
+            return event
+        }) { sessionMonitors.append(monitor) }
+        // Pointer-leave arms only once the pointer has been inside, so opening from
+        // the menu or the shortcut with the pointer elsewhere does not close at once.
+        pointerHasEntered = finalFrame.contains(NSEvent.mouseLocation)
+        if let root = panel.contentView {
+            let area = NSTrackingArea(rect: .zero,
+                                      options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                      owner: self)
+            root.addTrackingArea(area)
+            trackingArea = area
+        }
+    }
+
+    private func removeSessionWatchers() {
+        sessionMonitors.forEach(NSEvent.removeMonitor)
+        sessionMonitors = []
+        if let trackingArea { panel?.contentView?.removeTrackingArea(trackingArea) }
+        trackingArea = nil
+        pendingPointerLeave?.cancel()
+        pendingPointerLeave = nil
+        pointerHasEntered = false
+    }
+
+    @objc func mouseEntered(with event: NSEvent) {
+        pointerHasEntered = true
+        pendingPointerLeave?.cancel()
+        pendingPointerLeave = nil
+    }
+
+    @objc func mouseExited(with event: NSEvent) {
+        guard pointerHasEntered, preferences.value.dismissBehavior.closes(on: .pointerLeft) else { return }
+        pendingPointerLeave?.cancel()
+        let session = overlaySession
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.overlaySession == session, let panel = self.panel,
+                  !panel.frame.contains(NSEvent.mouseLocation) else { return }
+            self.dismiss(.pointerLeft)
+        }
+        pendingPointerLeave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + DismissBehavior.pointerLeaveGrace, execute: work)
     }
 
     /// Person-initiated refresh: reload the list and leave any failure state.

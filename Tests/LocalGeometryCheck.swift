@@ -110,4 +110,9 @@ func rowsMatch(_ a: [UInt8], _ sa: Int, _ b: [UInt8], _ sb: Int) -> Bool {
 }
 check(rowsMatch(paddedRows, 6, tightRows, 4), "row padding is ignored")
 check(!rowsMatch(paddedRows, 6, [1, 2, 3, 4, 5, 6, 7, 0], 4), "one changed byte is detected")
+
+check(DismissBehavior.allCases.allSatisfy { $0.closes(on: .escape) }, "escape always closes")
+check(DismissBehavior.pointerLeave.closes(on: .pointerLeft) && !DismissBehavior.clickOutside.closes(on: .pointerLeft),
+      "pointer leave closes only in pointer-leave mode")
+check(!DismissBehavior.manual.closes(on: .clickOutside), "manual ignores outside clicks")
 print("DropyCore checks passed")
