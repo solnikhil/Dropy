@@ -11,3 +11,12 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -o "$build_dir/DropyCoreTests" \
   "$repo_dir/Tests/LocalGeometryCheck.swift"
 "$build_dir/DropyCoreTests"
+
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" \
+  -o "$build_dir/PlacementJournalTests" \
+  "$repo_dir/Tests/LocalPlacementJournalCheck.swift" \
+  "$repo_dir/Sources/Dropy/PlacementJournal.swift" \
+  "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
+  "$repo_dir/Sources/Dropy/WindowCatalog.swift"
+"$build_dir/PlacementJournalTests"

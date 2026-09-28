@@ -32,6 +32,20 @@ enum HostClock {
     }
 }
 
+struct CaptureCounts {
+    var statuses: [String: Int]
+    var presented: Int
+    var unchanged: Int
+
+    /// Differences from an earlier snapshot, as a log-safe string.
+    func delta(since earlier: CaptureCounts) -> String {
+        let keys = Set(statuses.keys).union(earlier.statuses.keys).sorted()
+        let status = keys.map { "\($0)=+\((statuses[$0] ?? 0) - (earlier.statuses[$0] ?? 0))" }
+            .joined(separator: ",")
+        return "[\(status)] presented=+\(presented - earlier.presented) unchanged=+\(unchanged - earlier.unchanged)"
+    }
+}
+
 /// Carries one complete frame's timestamps from the capture callback to presentation.
 struct FrameStamp: Sendable {
     let displayMilliseconds: Double?
@@ -87,6 +101,14 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
     func recordMailboxDrop() { lock.withLock { metrics.mailboxDrops += 1 } }
 
     func recordUnchanged() { lock.withLock { metrics.unchanged += 1 } }
+
+    /// Running totals for experiments that compare before and after an action.
+    func counts() -> CaptureCounts {
+        lock.withLock {
+            CaptureCounts(statuses: metrics.statusCounts, presented: metrics.presented,
+                          unchanged: metrics.unchanged)
+        }
+    }
 
     func recordRateChange(idle: Bool) {
         lock.withLock {

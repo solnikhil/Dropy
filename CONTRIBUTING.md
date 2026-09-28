@@ -19,6 +19,8 @@ Each rebuild changes the ad-hoc signature, so macOS may treat it as a new app fo
 
 To stress rapid switching without input automation, set `DROPY_DEBUG_ALTERNATE=<bundle-id>[,<switches>[,<max-interval-ms>[,close]]]`. Dropy alternates between that app's first two picker windows with random gaps, logs the window that should end up showing, and with `close` closes the overlay afterwards. `Dropy capture started/stopped ... running=N` log lines show whether any stream leaked.
 
+For M2 placement experiments, set `DROPY_DEBUG_PLACEMENT=<offscreen|minimize|hideApp>[,<hold-seconds>]` with direct-open pointing at a test app. Dropy places the previewed window, holds, restores it, and logs capture continuity, the visible fraction and whether the restore matched. Moving and minimizing need Accessibility permission. Every placement is journaled in `~/Library/Application Support/Dropy/placement-journal.json` first and undone on quit or at the next launch. Use test windows, not your own documents.
+
 Each stream logs a `Dropy capture metrics:` summary when it stops. `Scripts/benchmark.sh` runs the repeatable workloads; see [docs/BENCHMARK.md](docs/BENCHMARK.md) for the method, the clock-domain rules and how to report results. Include the report's header (date, revision, hardware, macOS, displays) with any performance claim.
 
 ## Issues and pull requests
@@ -31,3 +33,5 @@ Each stream logs a `Dropy capture metrics:` summary when it stops. `Scripts/benc
 - Keep dependencies minimal and record their license before adding one.
 
 The project uses the [MIT license](LICENSE). By submitting a contribution, you agree that it can be distributed under that license.
+
+Placement recovery retains unreadable journals and blocks new moves when a journal cannot be written. If a crash interrupts the move before its actual position is confirmed, the record stays pending: use **Recover pending source windows…** in the status menu to explicitly choose whether to restore the original position. Automatic recovery never guesses over a possible later user move.

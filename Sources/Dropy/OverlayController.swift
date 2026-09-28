@@ -47,6 +47,10 @@ final class OverlayController: NSObject {
     private var pendingPointerLeave: DispatchWorkItem?
     private var previousApplication: NSRunningApplication?
 
+    /// The exact window being previewed, for development drivers.
+    var currentSelection: WindowIdentity? { selectedIdentity }
+    func captureCounts() -> CaptureCounts? { capture.currentCounts() }
+
     init(preferences: PreferenceStore) {
         self.preferences = preferences
         super.init()
