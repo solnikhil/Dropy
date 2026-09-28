@@ -223,7 +223,15 @@ final class OverlayController: NSObject {
                 case .lastUsed: preferredBundleID = preferences.value.lastUsedBundleIdentifier
                 case .picker: preferredBundleID = nil
                 }
-                if shouldAutoSelect, let bundleID = preferredBundleID,
+                if shouldAutoSelect,
+                   let requested = ProcessInfo.processInfo.environment["DROPY_DEBUG_WINDOW_ID"],
+                   let windowID = UInt32(requested) {
+                    if let index = windows.firstIndex(where: { $0.window.windowID == windowID && $0.bundleIdentifier == preferredBundleID }) {
+                        selectWindow(at: index)
+                    } else {
+                        NSLog("Dropy device check: requested exact window unavailable")
+                    }
+                } else if shouldAutoSelect, let bundleID = preferredBundleID,
                    let index = windows.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
                     selectWindow(at: index)
                 }
