@@ -50,6 +50,32 @@ Device checks (`ONLY=fixture Scripts/device-checks.sh`, [report](device-checks/2
 
 `parked` remains experimental. A window that is neither main nor focused and sits on a desktop the person never revisits stays recorded, with advice in **Recover pending source windows…**.
 
+## Exact-window input, first harness results (M3 #8, 2026-09-29)
+
+`Scripts/input-probe.sh` drives a disposable two-window fixture (`Scripts/bench/InputFixture`). It sends typing, a click, a scroll and a menu shortcut to window A through each route while window B of the same app is key, or while another app is frontmost, with A visible, covered by B, parked beyond the displays, on another desktop or minimized. Each trial is judged from the fixture's own log: an effect in B, or an event delivered to B, is a wrong-window failure. `Scripts/input-probe-apps.sh` repeats typing and scrolling on TextEdit (two temp documents) and Safari (two local pages), judged from each window's Accessibility state. Reports: [fixture](input-probe/2026-09-29-fixture.md), [apps](input-probe/2026-09-29-apps.md).
+
+| Route | Typing | Click | Scroll | Menu shortcut |
+|---|---|---|---|---|
+| Accessibility actions on A's elements (public) | **Pass in every condition** incl. parked, other desktop, minimized; TextEdit too | **Pass everywhere** (AXPress) | **Pass everywhere** (scroll bar value); TextEdit, Safari too | **Wrong window**: menu items act on the key window |
+| `postToPid` (public) | **Wrong window**: keys go to the app's key window (fixture, TextEdit) | No effect (no window) | No effect | **Wrong window** |
+| `postToPid` naming A (event fields 51/91/92 + private `CGEventSetWindowLocation`) | **Wrong window**: keys still go to the key window | **Pass** except minimized; makes A key within its app | **Pass** except minimized; TextEdit, Safari too | **Wrong window** |
+| Activate app, raise A, post, hand focus back (public) | Pass on screen | Pass when the point is on a display (not parked) | Same | Pass |
+
+Conclusions so far, on one fixture and two apps:
+
+- **No route delivers keyboard events to a non-key window.** Keys always follow the app's key window, so exact-window typing needs either Accessibility text insertion (committed text only; no IME composition, no key bindings) or making A key first, which changes the app's own focus.
+- **Pointer events can target the exact window without activation** through the window-targeted event, including parked and other-desktop windows, but it relies on undocumented event fields and a private SPI. It is gated by policy in the model below.
+- **Accessibility semantic actions are the reliable public baseline** for button presses, text insertion and scrolling while the source is out of sight, and they need no pointer or focus change. Their reach depends on each app's Accessibility tree.
+- **Menu shortcuts are app-scoped to the key window by design.** Sending one for a non-key window is refused.
+- The activate route works on screen but moves the pointer, switches the frontmost app and, for other-desktop windows, switches desktops, so it conflicts with parking.
+- Safari typing was inconclusive: neither AX insertion nor key events changed the page's `textarea` as read through Accessibility. Notion was not probed: only one window was open, and the probe does not create windows in a personal workspace.
+- Setting focus on an element of a window on another desktop switched the active desktop once. That side effect needs a follow-up before AX focus is used for off-desktop sources.
+- Incident: an early harness revision posted a Command-flagged key to the system event tap without a matching Command key-up, which left Command logically held for the session until it was released. The harness now sets explicit flags on every event, sends modifier up events and verifies that no modifier is held after each trial.
+
+`DropyCore/InputCapability.swift` (issue #10) turns trials like these into decisions: a route is verified for an input kind and source condition only when it passed with another window key *and* with the app inactive; any wrong-window trial disqualifies it. `InputPlanner` refuses to send when the target is ambiguous, unreachable or changed, prefers exact-element Accessibility actions, uses the private window-targeted route or focus-changing routes only when the policy allows them, and labels a source view-only unless some kinds are verified.
+
+Not yet covered: IME, dead keys, context menus, sheets and file dialogs, drag and drop, hover, momentum scrolling, Electron/Chromium, and wiring input into Dropy's preview.
+
 ## Platform facts and open questions
 
 Apple documents desktop-independent window capture and its behavior when a window is occluded, off-screen or minimized. The stream can deliver GPU-backed frames, but it does not give Dropy ownership of another app's views or native event loop. Apple documents `CGEvent.postToPid` as process-targeted, and Accessibility actions as requests on exposed UI elements. Research has not found a documented public API for sending a complete native event stream to the exact foreign window represented by an `SCWindow` while that window is mirrored inside Dropy. This is an unresolved engineering question, not a claim of impossibility. [ScreenCaptureKit sample](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos), [advanced capture session](https://developer.apple.com/videos/play/wwdc2022/10155/), [CGEvent posting](https://developer.apple.com/documentation/coregraphics/cgevent/posttopid(_:)), [Accessibility actions](https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction).
