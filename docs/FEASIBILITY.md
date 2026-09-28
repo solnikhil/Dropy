@@ -28,11 +28,27 @@ AppKit clamps a moved foreign window so part of it stays reachable: 40 pt when p
 - **TextEdit, `parked`: live and fully out of sight.** The window moved to the bottom-right corner, a Dropy tab covered the 40 × 118 pt strip AppKit kept on screen (0.000 visible), capture continued (29 frames, 9 changes shown), and the window was restored exactly. The corner `offscreen` target left 1.3% visible, as predicted.
 - TextEdit: a move made during a placement was kept (`keptUserChange`). Killing Dropy while the window was parked left a journal entry, and the next launch restored the window.
 - **Safari (WebKit): not yet usable.** While off-screen it rendered 3 frames and then went idle, although the page animates continuously, so WebKit appears to stop rendering off-screen windows. After that move, Safari's Accessibility tree returned the application element as its main, focused and only window, so every later placement was refused. A freshly launched Safari stayed in that state.
-- Moving windows fully off-screen may corrupt an app's Accessibility window list. TextEdit showed the same state earlier, after repeated off-screen probe moves. If confirmed, restores that depend on Accessibility are at risk, and this must be understood before `parked` is used beyond experiments.
+- *(Superseded below.)* The session suspected that off-screen moves corrupt an app's Accessibility window list.
 
 **Conclusion so far:** `parked` kept an AppKit window live and fully out of sight in one device run; WebKit did not keep rendering off-screen; and the Accessibility side effect of off-screen moves is unresolved. Next experiments: other toolkits (WebKit, Electron/Chromium, media), which may clamp differently, and a tiny Dropy window covering the leftover corner strip, since covered windows keep capturing.
 
-During the session, Accessibility began returning invalid window elements for every app (an `AXApplication` or `AXScrollArea` role in the windows list), even though `AXIsProcessTrusted` still reported true. The exact-window lookup then failed and Dropy refused to place anything, which is the intended behaviour. The cause is unknown.
+During the session, Accessibility began returning invalid window elements for every app (an `AXApplication` or `AXScrollArea` role in the windows list), even though `AXIsProcessTrusted` still reported true. The exact-window lookup then failed and Dropy refused to place anything, which is the intended behaviour.
+
+## Accessibility lookup failures are Space changes, not placement damage (2026-09-29)
+
+On macOS 27.0 an app's `AXWindows` list contains only its windows on the **active Space**. When the person switches desktops, a source window on the previous desktop drops out of that list, which is then often empty (Finder keeps only its desktop `AXScrollArea`). The window server still lists the window, `AXMainWindow`/`AXFocusedWindow` still return it with its exact window ID, and setting its position through Accessibility still works on the other Space.
+
+Evidence, from a disposable fixture app (`Scripts/bench/Fixture`) that moves its own window between Spaces and `WindowTool snapshot`, which classifies each miss (permission, non-window roles, stale elements, `_AXUIElementGetWindow` failure, other Space, unlisted on the active Space):
+
+- Moving the fixture window to another Space removed it from `AXWindows` immediately; moving it back restored it. Finder, WhatsApp, ChatGPT and Discord showed the same empty or `AXScrollArea`-only list for their windows on another desktop in the same session.
+- 105 attributed placement cycles (off-screen, corner, minimize, hide) on the fixture: 8 lookup failures, **every one** with the window's Space different from the active Space, because desktops were being switched during the run. There were no failures while the window was on the active Space, and no placement changed the window's Space.
+- The 2026-09-29 TextEdit failure (`axWindows=[]` before minimize) matches this signature. The Safari `AXApplication`-as-window state from 2026-09-28 has not been reproduced and remains unexplained.
+
+Changes: the exact lookup also considers the main and focused window (still matched by exact window ID, never by title or frame). A miss is diagnosed and logged, and only a closed window or an exited process settles a journal entry. Every other miss keeps the record, and `PlacementRecovery` retries with 1–30 s backoff and immediately on Space change, app activation and wake. Placement refuses windows that are not on screen, and the placement experiment requires a live preview.
+
+Device checks (`ONLY=fixture Scripts/device-checks.sh`, [report](device-checks/2026-09-29-space-recovery.md)): parking the fixture and moving it to another desktop restored it there. With a second window as main, the restore deferred as `windowUnreachable(onOtherSpace)`, kept the journal and restored automatically once the window returned, including after Dropy was killed while the window was away. The same three checks **fail on `82e8911`** (`restore=pending`, no retry). Safari and Notion restored in every placement run in this session. TextEdit's remaining checks, user-move and crash recovery were not completed because its window was on another desktop during the run; that is now reported rather than misread.
+
+`parked` remains experimental. A window that is neither main nor focused and sits on a desktop the person never revisits stays recorded, with advice in **Recover pending source windows…**.
 
 ## Platform facts and open questions
 
@@ -41,3 +57,5 @@ Apple documents desktop-independent window capture and its behavior when a windo
 Menus, sheets, IME candidate windows and drag/drop may use surfaces and system interactions outside a selected main-window image. Apple's stream configuration exposes `includeChildWindows`, but the exact behavior needs tests for the chosen filter and each target workflow. [ScreenCaptureKit child windows](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/includechildwindows), [AppKit dragging sessions](https://developer.apple.com/documentation/appkit/nsdraggingsession).
 
 Dropy therefore separates capture/presentation from input/focus and source placement. The [roadmap](../ROADMAP.md) defines the experiments and exit conditions before a broader compatibility claim.
+
+Review hardening for Space recovery: automatic retries target records loaded at launch or windows whose restoration was explicitly requested; they do not undo new active placements. Failed window-server queries and failed AX reads defer rather than proving closure. A restore is journaled as unconfirmed before it changes the source, so an interrupted partial restore remains pending instead of being discarded as a later user move.

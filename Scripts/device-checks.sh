@@ -10,17 +10,30 @@
 #   2. A later user move wins: the window is moved during a placement and must stay put.
 #   3. Crash recovery: Dropy is killed while a window is parked; the next launch
 #      must restore it from the journal.
-#   4. The capture benchmark (Scripts/benchmark.sh), unless --skip-benchmark.
+#   4. Space recovery, against a disposable fixture app (Scripts/bench/Fixture) that
+#      moves its own window to another desktop: a restore must still find the exact
+#      window there, or keep the journal entry and finish once the window is back,
+#      including after a crash. Needs at least two desktops in Mission Control.
+#   5. The capture benchmark (Scripts/benchmark.sh), unless --skip-benchmark.
 # Screen Recording revocation cannot be automated; the report lists the manual steps.
 #
+# Every step records the active Space and frontmost app before and after, so a
+# person switching desktops during a run is reported rather than misread as a
+# placement side effect, and a failed step saves an Accessibility snapshot
+# (WindowTool snapshot) to the logs.
+#
+#   ONLY=fixture Scripts/device-checks.sh --skip-benchmark   runs only the fixture checks.
+#
 # Needs a terminal with Screen Recording and Accessibility permission, the display
-# awake, and TextEdit and Safari not running. Every window is restored afterwards.
+# awake, and TextEdit, Safari and the fixture not running. Every window is restored afterwards.
 set -euo pipefail
 
 repo_dir="${0:A:h:h}"
 build_dir="$repo_dir/.build/local"
 dropy="$build_dir/Dropy.app/Contents/MacOS/Dropy"
 tool="$build_dir/WindowTool"
+fixture_app="$build_dir/DropyFixture.app"
+only="${ONLY:-all}"
 journal="$HOME/Library/Application Support/Dropy/placement-journal.json"
 run_benchmark=yes
 [[ "${1:-}" == "--skip-benchmark" ]] && run_benchmark=no
@@ -28,7 +41,7 @@ report="$build_dir/device-checks-$(date +%Y%m%d-%H%M%S).md"
 prefs_domain="org.dropy.app"
 prefs_key="org.dropy.preferences.v1"
 
-for app in Dropy TextEdit Safari; do
+for app in Dropy TextEdit Safari DropyFixture; do
   if pgrep -xq "$app"; then
     print -u2 "Quit $app first; the checks open and close their own $app windows."
     exit 1
@@ -41,12 +54,17 @@ if [[ -f "$journal" ]]; then
 fi
 work_dir="$(mktemp -d)"
 dropy_pid=""
+fixture_pid=""
 owned_apps=()
 rows=()
 prefs_touched=no
 
+cleaned_up=no
 cleanup() {
+  [[ "$cleaned_up" == no ]] || return 0
+  cleaned_up=yes
   stop_dropy
+  stop_fixture
   # A placement left behind by an interrupted check is undone by one Dropy launch.
   if [[ -f "$journal" ]]; then
     DROPY_DEBUG_QUIT_AFTER=3 "$dropy" >/dev/null 2>&1 || true
@@ -63,14 +81,31 @@ cleanup() {
   fi
   local logs="${report%.md}-logs"
   mkdir -p "$logs"
-  for logfile in "$work_dir"/*.log(N) "$work_dir"/ax.err(N); do
+  for logfile in "$work_dir"/*.log(N) "$work_dir"/*.jsonl(N) "$work_dir"/ax.err(N); do
     cp "$logfile" "$logs/"
   done
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# zsh 5.9 skips EXIT traps (and `always` blocks) when errexit fires inside a function,
+# which left a fixture window and test preferences behind. ZERR fires in the same cases.
+on_error() {
+  (( ZSH_SUBSHELL == 0 )) || return 0
+  print -u2 "device-checks: stopped by a failed command near line $1; restoring state"
+  cleanup
+  exit 1
+}
+trap 'on_error $LINENO' ZERR
+# A signal also interrupts the command being waited on; restore state and report the
+# signal instead of the interrupted command.
+on_signal() {
+  trap - ZERR
+  print -u2 "device-checks: stopped by $1; restoring state"
+  cleanup
+  exit "$2"
+}
+trap 'on_signal SIGINT 130' INT
+trap 'on_signal SIGTERM 143' TERM
 
 stop_dropy() {
   if [[ -n "$dropy_pid" ]]; then
@@ -78,6 +113,38 @@ stop_dropy() {
     wait "$dropy_pid" 2>/dev/null || true
     dropy_pid=""
   fi
+}
+
+stop_fixture() {
+  if [[ -n "$fixture_pid" ]]; then
+    # Bring the window home first, so no fixture window is left on another desktop.
+    "$tool" fixture space:home 2>/dev/null || true
+    "$tool" fixture quit 2>/dev/null || true
+    for i in {1..20}; do kill -0 "$fixture_pid" 2>/dev/null || break; sleep 0.1; done
+    kill "$fixture_pid" 2>/dev/null || true
+    fixture_pid=""
+  fi
+}
+
+# Active Space and frontmost app, e.g. "active=4 frontmost=com.apple.Terminal".
+desktop_state() { "$tool" spaces 2>/dev/null || print "active=unknown frontmost=unknown"; }
+
+# Describes a desktop change between two desktop_state readings, or nothing.
+interference() {
+  local before_space="${${1#active=}%% *}" after_space="${${2#active=}%% *}"
+  [[ "$before_space" == "$after_space" ]] || print -rn -- "; person switched desktop $before_space→$after_space during the step"
+}
+
+# Appends one Accessibility snapshot of the window to the logs.
+snapshot() {
+  local label="$1" pid="$2" window="$3"
+  { print -rn -- "{\"step\":\"$label\",\"snapshot\":"; "$tool" snapshot "$pid" "$window" 2>/dev/null || print -n null; print "}"; } \
+    >> "$work_dir/snapshots.jsonl"
+}
+
+# The classification from a fresh snapshot, e.g. "found" or "space:otherSpace".
+classification() {
+  "$tool" snapshot "$1" "$2" 2>/dev/null | grep -oE '"classification":"[^"]*"' | cut -d'"' -f4
 }
 
 start_placement() {
@@ -148,29 +215,33 @@ record() {
 }
 
 placement_checks() {
-  local bundle="$1" pid window before after log line
+  local bundle="$1" pid window before after log line observation desk_before desk_after captured independent driver
   pid="$(pid_of "$bundle")"
   [[ -n "$pid" ]] || { record "$bundle" all "-" "not running" "skipped"; return; }
-  if ! "$tool" axcheck "$pid" >/dev/null 2>"$work_dir/ax.err"; then
-    record "$bundle" all "-" "Accessibility unhealthy: $(cat "$work_dir/ax.err")" "skipped"
+  window="$("$tool" find "$pid" 2>/dev/null || true)"
+  if [[ -z "$window" ]] || ! "$tool" axcheck "$pid" "$window" >/dev/null 2>"$work_dir/ax.err"; then
+    [[ -n "$window" ]] && snapshot "$bundle-precheck" "$pid" "$window"
+    record "$bundle" all "-" "window not reachable: $(cat "$work_dir/ax.err" 2>/dev/null || true)" "skipped"
     return
   fi
-  window="$("$tool" find "$pid")"
   before="$("$tool" frame "$pid" "$window")"
   set_direct_open "$bundle"
   for mode in offscreen parked minimize hideApp; do
     log="$work_dir/$bundle-$mode.log"
-    local observation="placement not confirmed"
+    observation="placement not confirmed"
+    desk_before="$(desktop_state)"
+    snapshot "$bundle-$mode-before" "$pid" "$window"
     if start_placement "$mode" "$window" "$log" 6; then
       observation="$("$tool" visibility "$window" "$dropy_pid")"
     fi
     wait "$dropy_pid" 2>/dev/null || true
     dropy_pid=""
     sleep 1.5
+    desk_after="$(desktop_state)"
     line="$(grep -oE 'Dropy placement: mode=.*' "$log" | tail -1 || true)"
-    after="$("$tool" frame "$pid" "$window" 2>/dev/null || print gone)"
-    local captured="$(grep -oE 'capture started: window=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$' || true)"
-    local independent="restored; $observation"
+    after="$("$tool" frame "$pid" "$window" 2>/dev/null || print "gone:$(classification "$pid" "$window")")"
+    captured="$(grep -oE 'capture started: window=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$' || true)"
+    independent="restored; $observation"
     if [[ "$observation" == "placement not confirmed" ]]; then
       independent="NOT RUN: placement not confirmed"
     elif [[ "$mode" == parked && "$observation" != *"uncovered=0.000000"* ]]; then
@@ -178,9 +249,13 @@ placement_checks() {
     fi
     frames_match "$before" "$after" 2>/dev/null || independent="NOT restored ($after vs $before)"
     [[ "$captured" == "$window" && "$observation" != "placement not confirmed" ]] || independent="$independent; previewed window $captured, expected $window"
+    independent="$independent$(interference "$desk_before" "$desk_after")"
+    driver="$(print -r -- "$line" | grep -oE 'windowServerLeak=[0-9.]+|failed=[^ ]+|skipped=[^ ]+' || true)"
+    [[ -n "$driver" ]] || driver="$(grep -oE 'placement: mode=[a-zA-Z]+ (failed|skipped)=[^ ]+' "$log" | tail -1 | cut -d' ' -f3- || print 'no result')"
+    frames_match "$before" "$after" 2>/dev/null || snapshot "$bundle-$mode-after" "$pid" "$window"
     record "$bundle" "$mode" \
       "$(print -r -- "$line" | grep -oE 'capture=\[[^]]*\] presented=\+[0-9]+' || print '-')" \
-      "$(print -r -- "$line" | grep -oE 'windowServerLeak=[0-9.]+|failed=[A-Za-z]+' || print 'no result')" \
+      "$driver; $(print -r -- "$line" | grep -oE 'restore=[^ ]+' || print 'restore=none')" \
       "$independent"
     if ! frames_match "$before" "$after" 2>/dev/null; then
       record "$bundle" remaining "-" "source state changed" "stopped: recovery requires attention"
@@ -203,7 +278,7 @@ user_move_check() {
   dropy_pid=""
   sleep 1
   after="$("$tool" frame "$pid" "$window")"
-  local outcome="$(grep -oE 'restore=[A-Za-z]+' "$log" | tail -1 || true)"
+  local outcome="$(grep -oE 'restore=[^ ]+' "$log" | tail -1 || true)"
   local result="kept user move"
   local expected=(${=before}); expected[1]=200; expected[2]=200
   frames_match "${(j: :)expected}" "$after" && [[ "$outcome" == "restore=keptUserChange" ]] || result="FAILED: $outcome, window at $after"
@@ -228,14 +303,132 @@ crash_check() {
   local journaled=no; [[ -f "$journal" ]] && journaled=yes
   DROPY_DEBUG_QUIT_AFTER=4 "$dropy" > "$work_dir/recover.log" 2>&1 || true
   sleep 1; after="$("$tool" frame "$pid" "$window")"
-  local outcome="$(grep -oE 'placement recovery: mode=[a-zA-Z]+ outcome=[a-zA-Z()]+' "$work_dir/recover.log" | tail -1)"
+  local outcome="$(grep -oE 'placement recovery: mode=[a-zA-Z]+ window=[0-9]+ outcome=[^ ]+' "$work_dir/recover.log" | tail -1 || true)"
   local result="restored after crash"
-  frames_match "$before" "$after" && ! frames_match "$before" "$parked" && [[ "$journaled" == yes && "$outcome" == "placement recovery: mode=parked outcome=restored" && ! -f "$journal" ]] || result="FAILED: window at $after, journal present=$([[ -f $journal ]] && print yes || print no)"
+  frames_match "$before" "$after" && ! frames_match "$before" "$parked" && [[ "$journaled" == yes && "$outcome" == "placement recovery: mode=parked window=$window outcome=restored" && ! -f "$journal" ]] || result="FAILED: window at $after, journal present=$([[ -f $journal ]] && print yes || print no)"
   record "$bundle" "crash while parked" "parked at $parked; journal=$journaled" "${outcome:-no recovery logged}" "$result"
 }
 
+# Starts the fixture and sets fixture_window to its window ID.
+start_fixture() {
+  stop_fixture
+  : > "$work_dir/fixture.out"
+  # Launch through LaunchServices: a directly executed binary has no launch date, and
+  # Dropy rightly refuses to form an exact window identity without one.
+  open -n --stdout "$work_dir/fixture.out" --stderr "$work_dir/fixture.out" "$fixture_app"
+  fixture_window=""
+  for i in {1..40}; do
+    fixture_window="$(grep -oE 'window=[0-9]+' "$work_dir/fixture.out" | head -1 | cut -d= -f2)"
+    [[ -n "$fixture_window" ]] && break
+    sleep 0.25
+  done
+  fixture_pid="$(pid_of org.dropy.fixture)"
+  [[ -n "$fixture_window" && -n "$fixture_pid" ]]
+}
+
+# Moves the fixture window to another desktop and waits for it to report the move.
+# Returns 1 when there is no other desktop.
+fixture_to_other_space() {
+  local out="$work_dir/fixture.out" reports now active
+  reports="$(grep -c 'space=' "$out")"
+  "$tool" fixture space:other
+  for i in {1..30}; do
+    grep -q 'error=unsupported' "$out" && return 1
+    (( $(grep -c 'space=' "$out") > reports )) && break
+    sleep 0.1
+  done
+  now="$(grep -oE 'space=[0-9,]+' "$out" | tail -1 | cut -d= -f2)"
+  active="$(desktop_state | cut -d' ' -f1 | cut -d= -f2)"
+  [[ -n "$now" && ",$active," != *",$now,"* ]]
+}
+
+fixture_home() { "$tool" fixture space:home; sleep 0.8; }
+
+# Parks the fixture, then moves its window to another desktop while it is still the
+# app's main window. The restore must reach it there through the main window.
+fixture_space_main_check() {
+  local check="parked, moved to another desktop" log="$work_dir/fixture-space-main.log" before after outcome
+  start_fixture || { record fixture "$check" "-" "fixture did not start" "NOT RUN"; return; }
+  before="$("$tool" frame "$fixture_pid" "$fixture_window")"
+  set_direct_open org.dropy.fixture
+  if ! start_placement parked "$fixture_window" "$log" 6; then
+    stop_dropy; record fixture "$check" "-" "placement not confirmed" "FAILED"; return
+  fi
+  if ! fixture_to_other_space; then
+    stop_dropy; fixture_home; record fixture "$check" "-" "only one desktop" "NOT RUN: add a second desktop"; return
+  fi
+  local where="$(classification "$fixture_pid" "$fixture_window")"
+  snapshot "fixture-space-main-away" "$fixture_pid" "$fixture_window"
+  wait "$dropy_pid" 2>/dev/null || true
+  dropy_pid=""
+  outcome="$(grep -oE 'restore=[^ ]+' "$log" | tail -1 || true)"
+  fixture_home
+  after="$("$tool" frame "$fixture_pid" "$fixture_window" 2>/dev/null || print gone)"
+  local result="restored on the other desktop"
+  frames_match "$before" "$after" && [[ "$outcome" == restore=restored && ! -f "$journal" ]] || \
+    result="FAILED: $outcome, window at $after, journal present=$([[ -f $journal ]] && print yes || print no)"
+  record fixture "$check" "window while away: $where" "$outcome" "$result"
+}
+
+# Parks the fixture, opens a second fixture window (so the parked one is neither main
+# nor focused), then moves the parked window to another desktop. Its app no longer
+# lists it, so the restore must defer and keep the journal, then finish on its own
+# once the window is back on the active desktop. With crash=yes, Dropy is killed
+# while the window is away and a fresh launch must do the same from the journal.
+fixture_space_deferred_check() {
+  local crash="$1" check log before after outcome deferred_outcome retry="" journal_while_away=no
+  check="parked, moved to another desktop, not main"
+  [[ $crash == no ]] || check="$check, Dropy killed"
+  log="$work_dir/fixture-space-deferred-$crash.log"
+  start_fixture || { record fixture "$check" "-" "fixture did not start" "NOT RUN"; return; }
+  before="$("$tool" frame "$fixture_pid" "$fixture_window")"
+  set_direct_open org.dropy.fixture
+  local hold=6
+  [[ $crash == no ]] || hold=60
+  if ! start_placement parked "$fixture_window" "$log" "$hold"; then
+    stop_dropy; record fixture "$check" "-" "placement not confirmed" "FAILED"; return
+  fi
+  "$tool" fixture second; sleep 0.8
+  if ! fixture_to_other_space; then
+    stop_dropy; fixture_home; record fixture "$check" "-" "only one desktop" "NOT RUN: add a second desktop"; return
+  fi
+  local where="$(classification "$fixture_pid" "$fixture_window")"
+  snapshot "fixture-space-deferred-$crash-away" "$fixture_pid" "$fixture_window"
+  if [[ $crash == yes ]]; then
+    kill -9 "$dropy_pid" 2>/dev/null || true
+    wait "$dropy_pid" 2>/dev/null || true
+    dropy_pid=""
+    log="$work_dir/fixture-space-deferred-relaunch.log"
+    DROPY_DEBUG_QUIT_AFTER=20 "$dropy" > "$log" 2>&1 &
+    dropy_pid=$!
+  fi
+  # Wait for the deferred restore while the window is away.
+  for i in {1..60}; do
+    deferred_outcome="$(grep -oE '(restore|outcome)=deferred[^ ]*' "$log" | tail -1 || true)"
+    [[ -n "$deferred_outcome" ]] && break
+    kill -0 "$dropy_pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  [[ -f "$journal" ]] && journal_while_away=yes
+  fixture_home
+  # Automatic recovery retries within its backoff (1, 2, 4… seconds).
+  for i in {1..40}; do
+    retry="$(grep -oE "placement recovery: mode=parked window=$fixture_window outcome=[^ ]+" "$log" | grep -v deferred | tail -1 || true)"
+    [[ -n "$retry" && ! -f "$journal" ]] && break
+    sleep 0.25
+  done
+  stop_dropy
+  after="$("$tool" frame "$fixture_pid" "$fixture_window" 2>/dev/null || print gone)"
+  local result="kept the record while away, restored automatically on return"
+  frames_match "$before" "$after" && [[ -n "$deferred_outcome" && $journal_while_away == yes && \
+    "$retry" == *outcome=restored && ! -f "$journal" ]] || \
+    result="FAILED: deferred=${deferred_outcome:-none} journalWhileAway=$journal_while_away retry=${retry:-none} window at $after, journal present=$([[ -f $journal ]] && print yes || print no)"
+  record fixture "$check" "window while away: $where" "${deferred_outcome:-no deferral}; then ${retry##*outcome=}" "$result"
+}
+
 "$repo_dir/Scripts/build-local.sh" >/dev/null
-swiftc -O -swift-version 6 -o "$tool" "$repo_dir/Scripts/bench/WindowTool.swift"
+swiftc -O -swift-version 6 -o "$tool" "$repo_dir"/Scripts/bench/WindowTool/*.swift
+"$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 defaults export "$prefs_domain" "$work_dir/prefs.plist" 2>/dev/null || true
 mkdir -p "$build_dir"
 {
@@ -245,24 +438,34 @@ mkdir -p "$build_dir"
   print -r -- "| App | Check | Capture while placed | Driver result | Independent check |"
   print -r -- "|---|---|---|---|---|"
 } > "$report"
-print "Device checks: placement matrix"
-open_target com.apple.TextEdit
-placement_checks com.apple.TextEdit
-print "Device checks: user move and crash recovery"
-if [[ ! -f "$journal" ]] && "$tool" axcheck "$(pid_of com.apple.TextEdit)" >/dev/null 2>&1; then
-  user_move_check
-  crash_check
-else
-  record com.apple.TextEdit "user move and crash recovery" "-" "Accessibility unhealthy" "skipped"
+desktop_at_start="$(desktop_state)"
+print "Device checks: Space recovery (fixture)"
+start_fixture && placement_checks org.dropy.fixture
+stop_fixture
+fixture_space_main_check
+fixture_space_deferred_check no
+fixture_space_deferred_check yes
+stop_fixture
+if [[ "$only" != fixture ]]; then
+  print "Device checks: placement matrix"
+  open_target com.apple.TextEdit
+  placement_checks com.apple.TextEdit
+  print "Device checks: user move and crash recovery"
+  if [[ ! -f "$journal" ]] && "$tool" axcheck "$(pid_of com.apple.TextEdit)" >/dev/null 2>&1; then
+    user_move_check
+    crash_check
+  else
+    record com.apple.TextEdit "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
+  fi
+  osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
+  open_target com.apple.Safari
+  placement_checks com.apple.Safari
+  osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true
+  for bundle in ${=EXTRA_APPS:-}; do
+    open_target "$bundle"
+    placement_checks "$bundle"
+  done
 fi
-osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
-open_target com.apple.Safari
-placement_checks com.apple.Safari
-osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true
-for bundle in ${=EXTRA_APPS:-}; do
-  open_target "$bundle"
-  placement_checks "$bundle"
-done
 
 {
   print -r -- "# Dropy device checks"
@@ -272,6 +475,8 @@ done
   print -r -- "- macOS: $(sw_vers -productVersion) ($(sw_vers -buildVersion)); hardware: $(sysctl -n hw.model)"
   print -r -- "- Displays: $(system_profiler SPDisplaysDataType 2>/dev/null | awk -F': ' '/Resolution/ {print $2}' | paste -sd ';' -)"
   print -r -- "- TextEdit $(mdls -raw -name kMDItemVersion /System/Applications/TextEdit.app); Safari $(mdls -raw -name kMDItemVersion /Applications/Safari.app)"
+  print -r -- "- Checks: $only; extra apps: ${EXTRA_APPS:-none}"
+  print -r -- "- Desktop at start: $desktop_at_start; at end: $(desktop_state)"
   print
   print -r -- "## Placement and recovery"
   print

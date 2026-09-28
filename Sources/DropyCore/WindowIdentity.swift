@@ -4,7 +4,7 @@ import Foundation
 /// a saved app preference must never be treated as a saved window selection. The only
 /// place an identity is written to disk is the placement recovery journal, and it is
 /// valid there only while that exact process is still running.
-public struct WindowIdentity: Codable, Equatable, Sendable {
+public struct WindowIdentity: Codable, Hashable, Sendable {
     public let processID: Int32
     public let processLaunchDate: Date
     public let windowID: UInt32
