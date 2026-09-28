@@ -52,7 +52,16 @@ final class SourceRecoveryTests: XCTestCase {
         XCTAssertEqual(diagnose(disabled), .accessibilityDisabled)
         var busy = facts(); busy.windowsListError = -25204
         XCTAssertEqual(diagnose(busy), .appNotResponding(axError: -25204))
+        busy.windowServerListed = false
+        XCTAssertEqual(diagnose(busy), .appNotResponding(axError: -25204))
+        XCTAssertEqual(RestorePlan.make(for: parked(), read: .unreachable(diagnose(busy)), displays: [main]),
+                       .deferral(.windowUnreachable(.appNotResponding(axError: -25204))))
         XCTAssertEqual(diagnose(facts(listed: false)), .windowClosed)
+        var serverUnavailable = facts(listed: false)
+        serverUnavailable.windowServerQuerySucceeded = false
+        XCTAssertEqual(diagnose(serverUnavailable), .windowServerUnavailable)
+        XCTAssertEqual(RestorePlan.make(for: parked(), read: .unreachable(diagnose(serverUnavailable)), displays: [main]),
+                       .deferral(.windowUnreachable(.windowServerUnavailable)))
         XCTAssertEqual(diagnose(facts(ids: [nil], roles: ["AXScrollArea"])), .nonWindowElements)
         XCTAssertEqual(diagnose(facts(ids: [nil], roles: ["AXWindow"])), .lookupFailed)
         var stale = facts(ids: [12], roles: ["AXWindow"]); stale.staleCandidates = 1
@@ -69,7 +78,7 @@ final class SourceRecoveryTests: XCTestCase {
     func testUnreachableWindowKeepsItsRecoveryRecord() {
         let entry = parked()
         for diagnosis in [WindowLookupDiagnosis.onOtherSpace, .notOnScreen, .appNotResponding(axError: -25204),
-                          .nonWindowElements, .lookupFailed, .staleElements, .unlisted, .accessibilityDisabled] {
+                          .nonWindowElements, .lookupFailed, .staleElements, .unlisted, .accessibilityDisabled, .windowServerUnavailable] {
             XCTAssertEqual(RestorePlan.make(for: entry, read: .unreachable(diagnosis), displays: [main]),
                            .deferral(.windowUnreachable(diagnosis)), "\(diagnosis)")
         }
@@ -113,6 +122,20 @@ final class SourceRecoveryTests: XCTestCase {
         let hidden = parked(mode: .hideApp)
         XCTAssertEqual(RestorePlan.make(for: hidden, read: .state(hidden.applied), displays: [main]),
                        .restore(.restore(hidden.original), unhide: true, unminimize: false, frame: nil, resize: false))
+    }
+
+    func testPartialRestoreNeverSettlesAsAUserMove() {
+        var interrupted = parked(mode: .minimize)
+        interrupted.applicationConfirmed = false
+        var partiallyRestored = interrupted.applied
+        partiallyRestored.isMinimized = false
+        partiallyRestored.frame.origin.x += 20 // system repositioned during unminimize
+        XCTAssertEqual(RestorePlan.make(for: interrupted, read: .state(partiallyRestored), displays: [main]),
+                       .settle(.pending))
+        // A failed write that changed nothing can still be retried safely.
+        XCTAssertEqual(RestorePlan.make(for: interrupted, read: .state(interrupted.applied), displays: [main]),
+                       .restore(.restore(interrupted.original), unhide: false, unminimize: true,
+                                frame: interrupted.original.frame, resize: false))
     }
 
     func testAdviceNamesTheSpaceAndPermissionCases() {

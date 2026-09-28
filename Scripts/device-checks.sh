@@ -221,7 +221,7 @@ placement_checks() {
   window="$("$tool" find "$pid" 2>/dev/null || true)"
   if [[ -z "$window" ]] || ! "$tool" axcheck "$pid" "$window" >/dev/null 2>"$work_dir/ax.err"; then
     [[ -n "$window" ]] && snapshot "$bundle-precheck" "$pid" "$window"
-    record "$bundle" all "-" "window not reachable: $(cat "$work_dir/ax.err")" "skipped"
+    record "$bundle" all "-" "window not reachable: $(cat "$work_dir/ax.err" 2>/dev/null || true)" "skipped"
     return
   fi
   before="$("$tool" frame "$pid" "$window")"
@@ -303,7 +303,7 @@ crash_check() {
   local journaled=no; [[ -f "$journal" ]] && journaled=yes
   DROPY_DEBUG_QUIT_AFTER=4 "$dropy" > "$work_dir/recover.log" 2>&1 || true
   sleep 1; after="$("$tool" frame "$pid" "$window")"
-  local outcome="$(grep -oE 'placement recovery: mode=[a-zA-Z]+ window=[0-9]+ outcome=[^ ]+' "$work_dir/recover.log" | tail -1)"
+  local outcome="$(grep -oE 'placement recovery: mode=[a-zA-Z]+ window=[0-9]+ outcome=[^ ]+' "$work_dir/recover.log" | tail -1 || true)"
   local result="restored after crash"
   frames_match "$before" "$after" && ! frames_match "$before" "$parked" && [[ "$journaled" == yes && "$outcome" == "placement recovery: mode=parked window=$window outcome=restored" && ! -f "$journal" ]] || result="FAILED: window at $after, journal present=$([[ -f $journal ]] && print yes || print no)"
   record "$bundle" "crash while parked" "parked at $parked; journal=$journaled" "${outcome:-no recovery logged}" "$result"

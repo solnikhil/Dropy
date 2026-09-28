@@ -34,7 +34,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             if !self.placementJournal.entries.contains(where: { $0.identity == identity }) {
                 self.parkingTabs.remove(identity)
             }
-            if outcome.retriesAutomatically { self.recovery.schedule() }
+            if outcome.retriesAutomatically { self.recovery.requestRecovery(for: identity) }
             NSLog("Dropy placement: tab clicked restore=%@", PlacementJournal.name(outcome))
         }
         for entry in placementJournal.entries where entry.mode == .parked && entry.applicationConfirmed != false {
@@ -243,7 +243,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             if !self.placementJournal.entries.contains(where: { $0.identity == identity }) {
                 self.parkingTabs.remove(identity)
             }
-            if outcome.retriesAutomatically { self.recovery.schedule() }
+            if outcome.retriesAutomatically { self.recovery.requestRecovery(for: identity) }
             try? await Task.sleep(for: .milliseconds(500))
             let restored = try? WindowPlacer.state(of: identity)
             let verified = restored.map { $0.approximatelyEquals(entry.original) }
@@ -267,7 +267,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
             alert.runModal()
             return
         }
-        recovery.run(resetBackoff: true)
+        recovery.recoverAll()
         for entry in placementJournal.entries where entry.applicationConfirmed == false {
             let alert = NSAlert()
             alert.messageText = "Restore an interrupted window move?"
@@ -287,7 +287,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        recovery.run(resetBackoff: true)
+        recovery.recoverAll()
         let waiting = recovery.deferred
         if !waiting.isEmpty {
             let alert = NSAlert()

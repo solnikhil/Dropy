@@ -40,19 +40,30 @@ struct JournalChecks {
         try recoveryJournal.upsert(PlacementEntry(identity: entry.identity, mode: .parked, original: state,
                                                   applied: state, createdAt: entry.createdAt, applicationConfirmed: true))
         let recovery = PlacementRecovery(journal: recoveryJournal)
+        // A new placement added after recovery was created remains active. Retrying
+        // the older orphan must not consume or restore this new record.
+        let activeIdentity = WindowIdentity(processID: 8, processLaunchDate: Date(timeIntervalSince1970: 1),
+                                            windowID: 100, bundleIdentifier: "test.active")
+        let activeEntry = PlacementEntry(identity: activeIdentity, mode: .parked, original: state,
+                                         applied: state, createdAt: entry.createdAt, applicationConfirmed: true)
+        try recoveryJournal.upsert(activeEntry)
         var settled: [WindowIdentity] = []
         recovery.onSettled = { settled.append($0) }
         let results = recovery.run(resetBackoff: true)
         precondition(results.count == 1)
         if WindowPlacer.isTrusted {
             precondition(results[0].outcome == .decided(.sourceGone), "\(results[0].outcome)")
-            precondition(recoveryJournal.entries.isEmpty && settled == [entry.identity] && recovery.deferred.isEmpty)
-            precondition(!FileManager.default.fileExists(atPath: recoveryURL.path))
+            precondition(recoveryJournal.entries == [activeEntry] && settled == [entry.identity] && recovery.deferred.isEmpty)
+            precondition(PlacementJournal(url: recoveryURL).entries == [activeEntry])
         } else {
             precondition(results[0].outcome == .deferred(.accessibilityNotTrusted), "\(results[0].outcome)")
-            precondition(recoveryJournal.entries.count == 1 && settled.isEmpty && recovery.deferred.count == 1)
-            precondition(PlacementJournal(url: recoveryURL).entries.count == 1, "record must survive on disk")
+            precondition(recoveryJournal.entries.count == 2 && settled.isEmpty && recovery.deferred.count == 1)
+            precondition(PlacementJournal(url: recoveryURL).entries.count == 2, "records must survive on disk")
         }
+        recovery.requestRecovery(for: activeIdentity)
+        let explicitlyRequested = recovery.run()
+        precondition(explicitlyRequested.contains { $0.entry.identity == activeIdentity },
+                     "a requested active placement must become eligible")
         recovery.stop()
         print("Placement journal checks passed (recovery with Accessibility \(WindowPlacer.isTrusted ? "trusted" : "not trusted"))")
     }

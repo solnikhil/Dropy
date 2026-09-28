@@ -148,6 +148,13 @@ enum WindowPlacer {
             decision = settled
         case .restore(let planned, let unhide, let unminimize, let frame, let resize):
             decision = planned
+            // A restore may partly succeed (unminimize/unhide) before the frame
+            // write fails or the process crashes. Preserve that ambiguity rather
+            // than classifying our partial restore as the user's later change.
+            var restoring = entry
+            restoring.applicationConfirmed = false
+            do { try journal.upsert(restoring) }
+            catch { return .deferred(.journalWriteFailed(String(describing: error))) }
             do {
                 if unhide { NSRunningApplication(processIdentifier: entry.identity.processID)?.unhide() }
                 if unminimize || frame != nil {
@@ -211,10 +218,13 @@ enum WindowPlacer {
         let position = try pointValue(window, kAXPositionAttribute)
         let size = try sizeValue(window, kAXSizeAttribute)
         var minimized: CFTypeRef?
-        AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized)
+        let minimizedResult = AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized)
+        guard minimizedResult == .success, let isMinimized = minimized as? Bool else {
+            throw PlacementError.attribute(kAXMinimizedAttribute, minimizedResult)
+        }
         let hidden = NSRunningApplication(processIdentifier: identity.processID)?.isHidden ?? false
         return WindowPlacementState(frame: CGRect(origin: position, size: size),
-                                    isMinimized: (minimized as? Bool) ?? false, isAppHidden: hidden)
+                                    isMinimized: isMinimized, isAppHidden: hidden)
     }
 
     /// Window-server view of the window: its bounds and whether it is on screen.
@@ -269,7 +279,9 @@ enum WindowPlacer {
             if found, windowID == identity.windowID { return .found(element) }
             ids.append(found ? windowID : nil)
         }
-        let server = windowServerInfo(identity.windowID)
+        let records = CGWindowListCopyWindowInfo([.optionIncludingWindow], identity.windowID) as? [[String: Any]]
+        let serverRecord = records?.first { ($0[kCGWindowNumber as String] as? UInt32) == identity.windowID }
+        let serverOnScreen = (serverRecord?[kCGWindowIsOnscreen as String] as? Bool) ?? false
         let facts = WindowLookupFacts(
             trusted: true, processRunning: true,
             windowsListError: listResult == .success ? nil : listResult.rawValue,
@@ -279,7 +291,8 @@ enum WindowPlacer {
                 var value: CFTypeRef?
                 return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .invalidUIElement
             }.count,
-            windowServerListed: server != nil, windowServerOnScreen: server?.onScreen ?? false,
+            windowServerListed: serverRecord != nil, windowServerOnScreen: serverOnScreen,
+            windowServerQuerySucceeded: records != nil,
             windowSpaces: Spaces.of(identity.windowID), activeSpaces: Spaces.current())
         let diagnosis = WindowLookupDiagnosis.diagnose(facts, windowID: identity.windowID)
         NSLog("Dropy placement lookup: wanted=%u diagnosis=%@ axWindows=%@ roles=[%@] candidates=[%@] server=%@ spaces=%@ active=%@",
@@ -287,7 +300,7 @@ enum WindowPlacer {
               listResult == .success ? "ok" : "err\(listResult.rawValue)",
               facts.listedRoles.joined(separator: ","),
               ids.map { $0.map(String.init) ?? "err" }.joined(separator: ","),
-              server.map { $0.onScreen ? "onScreen" : "offScreen" } ?? "notListed",
+              records == nil ? "queryFailed" : (serverRecord == nil ? "notListed" : (serverOnScreen ? "onScreen" : "offScreen")),
               facts.windowSpaces.map { $0.map(String.init).joined(separator: ",") } ?? "unknown",
               facts.activeSpaces.map { $0.map(String.init).joined(separator: ",") } ?? "unknown")
         return .missing(diagnosis)

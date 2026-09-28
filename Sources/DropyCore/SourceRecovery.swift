@@ -24,6 +24,8 @@ public struct WindowLookupFacts: Equatable, Sendable {
     public var staleCandidates: Int
     /// The window server still lists the window ID.
     public var windowServerListed: Bool
+    /// A failed server query is not evidence that the source closed.
+    public var windowServerQuerySucceeded: Bool
     /// The window server reports the window on screen (on the active Space and not minimized).
     public var windowServerOnScreen: Bool
     /// Spaces holding the window and the current Space of each display, when known.
@@ -32,7 +34,7 @@ public struct WindowLookupFacts: Equatable, Sendable {
 
     public init(trusted: Bool, processRunning: Bool, windowsListError: Int32? = nil,
                 listedRoles: [String] = [], candidateWindowIDs: [UInt32?] = [], staleCandidates: Int = 0,
-                windowServerListed: Bool, windowServerOnScreen: Bool,
+                windowServerListed: Bool, windowServerOnScreen: Bool, windowServerQuerySucceeded: Bool = true,
                 windowSpaces: [UInt64]? = nil, activeSpaces: [UInt64]? = nil) {
         self.trusted = trusted
         self.processRunning = processRunning
@@ -41,6 +43,7 @@ public struct WindowLookupFacts: Equatable, Sendable {
         self.candidateWindowIDs = candidateWindowIDs
         self.staleCandidates = staleCandidates
         self.windowServerListed = windowServerListed
+        self.windowServerQuerySucceeded = windowServerQuerySucceeded
         self.windowServerOnScreen = windowServerOnScreen
         self.windowSpaces = windowSpaces
         self.activeSpaces = activeSpaces
@@ -58,6 +61,7 @@ public enum WindowLookupDiagnosis: Equatable, Sendable, CustomStringConvertible 
     case processGone
     /// The exact window no longer exists.
     case windowClosed
+    case windowServerUnavailable
     /// The app did not answer the windows-list request (e.g. `kAXErrorCannotComplete`).
     case appNotResponding(axError: Int32)
     /// The window is on a Space that is not active on any display.
@@ -80,8 +84,9 @@ public enum WindowLookupDiagnosis: Equatable, Sendable, CustomStringConvertible 
         guard facts.processRunning else { return .processGone }
         if facts.candidateWindowIDs.contains(windowID) { return .found }
         if facts.windowsListError == apiDisabled { return .accessibilityDisabled }
-        guard facts.windowServerListed else { return .windowClosed }
         if let error = facts.windowsListError { return .appNotResponding(axError: error) }
+        guard facts.windowServerQuerySucceeded else { return .windowServerUnavailable }
+        guard facts.windowServerListed else { return .windowClosed }
         if let spaces = facts.windowSpaces, let active = facts.activeSpaces, !spaces.isEmpty, !active.isEmpty {
             if Set(spaces).isDisjoint(with: active) { return .onOtherSpace }
         } else if !facts.windowServerOnScreen {
@@ -108,6 +113,7 @@ public enum WindowLookupDiagnosis: Equatable, Sendable, CustomStringConvertible 
         case .accessibilityDisabled: "accessibilityDisabled"
         case .processGone: "processGone"
         case .windowClosed: "windowClosed"
+        case .windowServerUnavailable: "windowServerUnavailable"
         case .appNotResponding(let error): "appNotResponding(\(error))"
         case .onOtherSpace: "onOtherSpace"
         case .notOnScreen: "notOnScreen"
