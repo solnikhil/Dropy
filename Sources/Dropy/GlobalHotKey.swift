@@ -6,7 +6,7 @@ import Foundation
 /// the closed overlay free of background work.
 @MainActor
 final class GlobalHotKey {
-    /// Option-Command-D: "D" for Dropy, and unused by macOS by default.
+    /// Option-Command-D. Registration may fail if the system or another app owns it.
     static let defaultKeyCode = UInt32(kVK_ANSI_D)
     static let defaultModifiers = UInt32(optionKey | cmdKey)
     static let defaultDisplay = "⌥⌘D"
@@ -31,6 +31,7 @@ final class GlobalHotKey {
         let registered = RegisterEventHotKey(keyCode, modifiers, identifier,
                                              GetApplicationEventTarget(), 0, &hotKey)
         guard installed == noErr, registered == noErr else {
+            if let hotKey { UnregisterEventHotKey(hotKey) }
             if let handler { RemoveEventHandler(handler) }
             NSLog("Dropy shortcut unavailable: handler=%d register=%d", installed, registered)
             return nil

@@ -152,6 +152,12 @@ final class OverlayController: NSObject {
                                                            handler: { [weak self] _ in
             self?.dismiss(.clickOutside)
         }) { sessionMonitors.append(monitor) }
+        // Other Dropy windows (including the status menu) are invisible to the
+        // global monitor. Keep those events flowing after checking the panel.
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self, weak panel] event in
+            if let panel, event.window !== panel { self?.dismiss(.clickOutside) }
+            return event
+        }) { sessionMonitors.append(monitor) }
         // Pointer-leave arms only once the pointer has been inside, so opening from
         // the menu or the shortcut with the pointer elsewhere does not close at once.
         pointerHasEntered = finalFrame.contains(NSEvent.mouseLocation)
@@ -183,8 +189,9 @@ final class OverlayController: NSObject {
     @objc func mouseExited(with event: NSEvent) {
         guard pointerHasEntered, preferences.value.dismissBehavior.closes(on: .pointerLeft) else { return }
         pendingPointerLeave?.cancel()
+        let session = overlaySession
         let work = DispatchWorkItem { [weak self] in
-            guard let self, let panel = self.panel,
+            guard let self, self.overlaySession == session, let panel = self.panel,
                   !panel.frame.contains(NSEvent.mouseLocation) else { return }
             self.dismiss(.pointerLeft)
         }
