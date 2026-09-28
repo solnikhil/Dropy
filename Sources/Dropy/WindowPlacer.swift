@@ -18,6 +18,7 @@ enum WindowPlacer {
         case exactWindowLookupUnavailable
         case windowNotFound
         case processGone
+        case pendingPlacement
         case attribute(String, AXError)
 
         var description: String {
@@ -26,6 +27,7 @@ enum WindowPlacer {
             case .exactWindowLookupUnavailable: "exactWindowLookupUnavailable"
             case .windowNotFound: "windowNotInAccessibilityTree"
             case .processGone: "processGone"
+            case .pendingPlacement: "pendingPlacement"
             case .attribute(let name, let error): "attribute(\(name),\(error.rawValue))"
             }
         }
@@ -47,6 +49,9 @@ enum WindowPlacer {
     /// whose `applied` state is what was observed after placing.
     static func apply(_ mode: PlacementMode, to identity: WindowIdentity,
                       journal: PlacementJournal) async throws -> PlacementEntry {
+        guard !journal.entries.contains(where: { $0.identity == identity }) else {
+            throw PlacementError.pendingPlacement
+        }
         let needsAccessibility = mode != .hideApp
         if needsAccessibility, !isTrusted { throw PlacementError.accessibilityNotTrusted }
         guard WindowCatalog.isRunning(identity) else { throw PlacementError.processGone }

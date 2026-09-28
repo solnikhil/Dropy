@@ -133,4 +133,12 @@ check(PlacementRestorer.decide(placement, current: userMoved, displays: [placeme
 check(PlacementRestorer.decide(placement, current: nil, displays: [placementDisplay]) == .sourceGone, "gone source")
 let roundTrip = try JSONDecoder().decode(PlacementEntry.self, from: JSONEncoder().encode(placement))
 check(roundTrip == placement, "journal entry round trip")
+var nudgedPlacement = placedAway
+nudgedPlacement.frame.origin.x += 0.5
+check(PlacementRestorer.decide(placement, current: nudgedPlacement, displays: [placementDisplay]) == .keepUserChange,
+      "subpoint user move wins")
+var interrupted = placement
+interrupted.applicationConfirmed = false
+check(PlacementRestorer.decide(interrupted, current: userMoved, displays: [placementDisplay]) == .pending,
+      "ambiguous interrupted placement remains pending")
 print("DropyCore checks passed")
