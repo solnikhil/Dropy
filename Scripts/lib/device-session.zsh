@@ -11,6 +11,8 @@
 #   - refuses to start on battery below DROPY_MIN_BATTERY percent (default 30): a Mac
 #     that sleeps or shuts down mid-run leaves parked windows and test preferences for
 #     recovery to clean up, and a half-finished trial is not evidence;
+#   - refuses to start while a macOS permission or security prompt is on screen: a
+#     synthetic click or key could land on it and answer it (Scripts/bench/PromptCheck.swift);
 #   - sets `device_session_summary` (owner and input idle time) for the report;
 #   - keeps a copy of Dropy's preferences in the lock. A run that dies without its
 #     cleanup (zsh skips traps on some fatal errors, and kill -9 skips them all) leaves
@@ -38,6 +40,20 @@ device_power_state() {
   print -r -- "${percent:-unknown}"
 }
 
+# Fails when a system prompt is visible; prints where.
+device_prompts_clear() {
+  local repo="${${(%):-%x}:A:h:h:h}" tool="$HOME/Library/Caches/org.dropy.promptcheck"
+  local source="$repo/Scripts/bench/PromptCheck.swift" found
+  if [[ ! -x "$tool" || "$source" -nt "$tool" ]]; then
+    swiftc -O -swift-version 6 -o "$tool" "$source" >/dev/null 2>&1 || { print -u2 "Could not build the prompt check."; return 1; }
+  fi
+  if ! found="$("$tool")"; then
+    print -u2 "A macOS permission prompt is on screen; device checks refuse to run until someone answers it:"
+    print -u2 -r -- "$found"
+    return 1
+  fi
+}
+
 # Fails when running on battery below the minimum.
 device_power_ok() {
   local minimum="${DROPY_MIN_BATTERY:-30}" state="$(device_power_state)"
@@ -58,6 +74,7 @@ device_session_begin() {
     return 0
   fi
   device_power_ok || return 1
+  [[ "${DROPY_SKIP_PROMPT_CHECK:-0}" == 1 ]] || device_prompts_clear || return 1
   # The guard inode is permanent. Kernel locking covers directory creation, owner
   # publication and crash recovery; an empty owner file is never treated as proof
   # that a concurrent initializer died. The kernel releases the guard on exit.

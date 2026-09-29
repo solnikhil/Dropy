@@ -15,18 +15,20 @@ Milestones are **evidence gates**, not calendar promises. Work may move between 
 
 ## Now: M3 compatibility and reliability gates
 
-Status after the 2026-09-30 session (details and raw reports in the [compatibility matrix](docs/COMPATIBILITY.md)). New keyboard features (shortcuts, editing keys, IME) stay deferred; parking stays experimental.
+Status after the 2026-09-30 session, judged against the written [M3 workflow contract](docs/COMPATIBILITY.md#m3-workflow-contract). **M3 is not complete** (see the exit evaluation there). New keyboard features stay deferred; parking stays experimental.
 
 | Gate | Pass condition | Status |
 |---|---|---|
-| Electron input | Disposable two-window Electron app: clicks, scrolling, typing with the target visible, covered, parked, minimized, on another desktop; decoy untouched; pointer, focus, desktop, modifier and button state measured | Click (pressable elements) **passed** in all five; scroll **passed** visible, covered, parked, no effect on another desktop or minimized. Typing **failed**: no route inserts at the caret of a non-key Chromium window (value rewrite lands at offset 0 and breaks undo; keys reach the decoy). Refused |
-| Routing regressions | Source resize, rapid switching, quit/relaunch and stale text targets refuse input whenever identity or geometry is uncertain | **Passed** (device and unit tests). Clicks also refuse unless verified for the element class under the pointer |
-| Recovery | Placement restoration, "your move wins" and crash recovery for TextEdit and the Electron fixture, including a source on another desktop | **Passed** for both, including TextEdit parked recovery on another desktop (normal and after `kill -9`), with the source and active desktops recorded independently |
-| WebKit page input | Safari, local throwaway page: clicks and typing with the same checks | Button clicks **passed** visible, covered, parked, minimized (other desktop NOT RUN); caret clicks and typing **failed** (a value rewrite edited a different element). Enabled: button clicks only |
-| Third-party Electron | One real Electron app with a scratch profile | VS Code 1.139.1: typing **failed** (keys reach the decoy), clicks **unreliable**, scroll **no route**. View-only |
-| Performance (tracked here, owned by M4) | Idle input-to-visible latency traced before any pipeline change | **Traced, target not met.** Idle input-to-present p50 125–136 ms; frame age p95 81–107 ms against the provisional 50 ms. The first draw after idle misses twice (both pooled drawables) before the third is shown. Idle CPU 2.3% in one check (PR #30: 1.9%) |
+| Written contract | Support levels, conditions, pass/fail rules, containment and exit condition written before promotion | **Done** |
+| AppKit | TextEdit meets containment and click/scroll/typing visible and parked | **Passed**, including parked recovery on another desktop |
+| WebKit | Safari meets containment and click/scroll visible and parked | **Passed for page buttons and scroll**; containment passes but parked capture is throttled (≈5 fps). Typing and caret clicks **refused**: a value rewrite edited another element; keys reached window B on another desktop. Other desktop: app-inactive passed, window-B-key NOT RUN |
+| Chromium/Electron (third party) | One real Electron app meets containment and click/scroll visible and parked | **Failed**: VS Code (scratch) caret clicks unreliable, no scroll route measured, keys reach window B; containment not run. The disposable fixture passes click/scroll but does not count |
+| Media | One media player meets containment and click/scroll | **Failed for input**: QuickTime passes containment (parked capture throttled ≈10 fps) but exposes no playback controls to Accessibility; view-only |
+| Unsupported workflows | Refused visibly, reaching neither window | **Passed** end to end for right-click, drag, modified scroll, shortcuts, editing keys and the second click of a double-click; permission loss refuses every send. IME refusal not exercised on device |
+| Routing regressions | Resize, switching, relaunch, stale field, permission loss refuse | **Passed** |
+| Latency (M4, measured only) | Idle input-to-visible traced before any change | Idle input-to-present p50 125–136 ms; the first two drawables after idle are never shown. No change made |
 
-Next, in order: find why the first two drawables after idle are never shown, and test one change against the trace (M4); a typing design that is honest about focus (for example typing only while the source window is key and visibly focused) or a caret-reporting API for non-key windows; Safari on another desktop through a desktop switch; a media app; then IME and editing keys.
+Barriers to M3, in order: (1) apps throttle a fully hidden window, so "out of sight" and "live" conflict for animating content; (2) no Chromium third-party app exposes clicks and scroll reliably enough through the tested routes (next: pressable workbench controls in VS Code judged by their own state, and window-targeted wheel events judged from the editor's visible range); (3) media apps expose no controls to Accessibility; (4) typing outside AppKit needs the hand-off design in FEASIBILITY, which gives up containment while typing.
 
 ## Now: M1 work order
 

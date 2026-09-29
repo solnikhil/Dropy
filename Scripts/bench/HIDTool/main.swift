@@ -25,6 +25,22 @@ func wait(_ seconds: Double) { RunLoop.current.run(until: Date().addingTimeInter
 let modifierKeys: [(String, CGKeyCode, CGEventFlags)] = [("cmd", 55, .maskCommand), ("opt", 58, .maskAlternate),
                                                           ("shift", 56, .maskShift), ("ctrl", 59, .maskControl)]
 
+/// Processes that draw macOS permission and security prompts. Synthetic pointer input
+/// must never land on them: a click there could answer a privacy prompt.
+let promptOwners: Set<String> = ["UserNotificationCenter", "SecurityAgent", "universalAccessAuthWarn",
+                                 "CoreServicesUIAgent", "tccd", "coreautha"]
+
+/// Exits (status 3) before posting when a system prompt covers the point.
+func refuseIfPromptAt(_ point: CGPoint) {
+    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+    for window in windows where promptOwners.contains(window[kCGWindowOwnerName as String] as? String ?? "") {
+        guard let raw = window[kCGWindowBounds as String] as? NSDictionary,
+              let frame = CGRect(dictionaryRepresentation: raw), frame.contains(point) else { continue }
+        FileHandle.standardError.write(Data("blockedByPrompt owner=\(window[kCGWindowOwnerName as String] ?? "?") at=\(Int(point.x)),\(Int(point.y))\n".utf8))
+        exit(3)
+    }
+}
+
 func post(_ event: CGEvent?) {
     event?.post(tap: .cghidEventTap)
     wait(0.03)
@@ -81,6 +97,7 @@ case "click":
     var flags: CGEventFlags = []
     for (_, key, flag) in held { flags.insert(flag); modifier(key, down: true, flags: flags) }
     let point = CGPoint(x: x, y: y)
+    refuseIfPromptAt(point)
     post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
     for type in [CGEventType.leftMouseDown, .leftMouseUp] {
         let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
@@ -93,6 +110,7 @@ case "click":
 case "rightclick":
     guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: rightclick <x> <y>") }
     let point = CGPoint(x: x, y: y)
+    refuseIfPromptAt(point)
     post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .right))
     for type in [CGEventType.rightMouseDown, .rightMouseUp] {
         let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .right)
@@ -103,6 +121,7 @@ case "rightclick":
 case "doubleclick":
     guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: doubleclick <x> <y>") }
     let point = CGPoint(x: x, y: y)
+    refuseIfPromptAt(point)
     post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
     for click in [1, 2] {
         for type in [CGEventType.leftMouseDown, .leftMouseUp] {
@@ -117,6 +136,8 @@ case "drag":
     guard args.count == 5, let x1 = Double(args[1]), let y1 = Double(args[2]), let x2 = Double(args[3]), let y2 = Double(args[4])
     else { fail("usage: drag <x1> <y1> <x2> <y2>") }
     let start = CGPoint(x: x1, y: y1)
+    refuseIfPromptAt(start)
+    refuseIfPromptAt(CGPoint(x: x2, y: y2))
     post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: start, mouseButton: .left))
     let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left)
     down?.flags = []
@@ -158,6 +179,7 @@ case "scroll":
     // Wheel initializers do not promise the current cursor location. Set it explicitly
     // so a test never posts the scroll to the menu bar or another window by accident.
     let point = CGEvent(source: nil)?.location ?? .zero
+    refuseIfPromptAt(point)
     event?.location = point
     let hit = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []).first {
         bounds($0).contains(point) && ($0[kCGWindowAlpha as String] as? Double ?? 1) > 0

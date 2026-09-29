@@ -4,7 +4,7 @@
 set -euo pipefail
 repo_dir="${0:A:h:h}"
 work="$(mktemp -d)"
-export DROPY_DEVICE_LOCK="$work/lock" DROPY_PREFS_DOMAIN="org.dropy.devicesessioncheck.$$" DROPY_REQUIRED_IDLE=0 DROPY_MIN_BATTERY=0
+export DROPY_DEVICE_LOCK="$work/lock" DROPY_PREFS_DOMAIN="org.dropy.devicesessioncheck.$$" DROPY_REQUIRED_IDLE=0 DROPY_MIN_BATTERY=0 DROPY_SKIP_PROMPT_CHECK=1
 unset DROPY_DEVICE_SESSION
 key=org.dropy.preferences.v1
 trap 'defaults delete "$DROPY_PREFS_DOMAIN" 2>/dev/null || true; rm -f "$HOME/Library/Preferences/$DROPY_PREFS_DOMAIN.plist"; rm -rf "$work"' EXIT

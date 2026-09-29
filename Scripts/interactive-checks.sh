@@ -197,7 +197,15 @@ refusal_checks() {
   }
   point=($(preview_point "${button[1]}" "${button[2]}"))
   refused "right-click (context menu)" "Right-click not sent" "$hid" rightclick "${point[1]}" "${point[2]}"
-  refused "double-click" "Click not sent" "$hid" doubleclick "${point[1]}" "${point[2]}"
+  # A double-click's first click is an ordinary click (apps receive it too); only the
+  # second, click-count-2 press must be refused. So A gets exactly one press, B nothing.
+  before="$(grep -c 'Dropy input: shown=' "$log" || true)"; mark="$(log_mark)"
+  "$hid" doubleclick "${point[1]}" "${point[2]}"; sleep 0.8
+  local presses="$(effects_since "$mark" press)" activity="$(activity_since "$mark")"
+  shown="$(grep 'Dropy input: shown=' "$log" | tail -n +"$(( before + 1 ))" | grep -F "Click not sent" | tail -1 | grep -oE 'shown="[^"]*"' || true)"
+  [[ "$presses" == "A=1 B=0" && "$activity" == *"B=0/0" && -n "$shown" ]] \
+    && record visible "double-click: second click refused" PASS "$presses; $activity; $shown" \
+    || record visible "double-click: second click refused" FAIL "$presses; $activity; ${shown:-no refusal shown}"
   local s1=($(preview_point "${scroll[1]}" "$(( scroll[2] - 60 ))")) s2=($(preview_point "${scroll[1]}" "$(( scroll[2] + 60 ))"))
   refused "drag" "Drag not sent" "$hid" drag "${s1[1]}" "${s1[2]}" "${s2[1]}" "${s2[2]}"
   "$hid" move "${point[1]}" "${point[2]}"
