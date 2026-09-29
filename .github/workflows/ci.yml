@@ -31,4 +31,5 @@ jobs:
       - name: Validate bundle
         run: |
           plutil -lint .build/local/Dropy.app/Contents/Info.plist
+          python3 -m json.tool .build/local/Dropy.app/Contents/Resources/InputEvidence.json > /dev/null
           codesign --verify --deep --strict .build/local/Dropy.app

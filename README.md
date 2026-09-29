@@ -2,7 +2,7 @@
 
 Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app container around the MacBook notch. The intended experience is to reveal an existing app's live UI in a Dropy-owned overlay, work there, and dismiss the overlay without losing the app's session.
 
-**Current status: early native build, view-only.** Dropy can mirror a selected running window, but it does not yet route general interaction into that app or hide the app's original window. The [roadmap](ROADMAP.md) makes those requirements explicit feasibility gates before a full-container claim.
+**Current status: early native build, view-only by default.** Dropy can mirror a selected running window. An opt-in **Interactive preview (beta)** sends clicks, scrolling and typed text to the exact source window, but only for input verified on that app (currently TextEdit, and scrolling in Safari). It does not yet hide the app's original window outside experiments. The [roadmap](ROADMAP.md) makes those requirements explicit feasibility gates before a full-container claim.
 
 ## What works today
 
@@ -12,7 +12,7 @@ Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app 
 - The capture stream stops when the overlay closes. The source app continues running.
 - A selected window is rechecked by process, launch time, bundle and window ID while the overlay is open. Closing it clears the preview; resizing it updates capture dimensions.
 
-The preview is labelled as view-only in the UI. Direct and last-used opening match a saved *app* and choose one of its current windows; they do not yet remember a particular document window. Dropy does not yet launch an app that is closed, pin installed apps, select a crop region, or implement every dismissal mode.
+The preview says what it can do: "View only", or "Interactive (beta)" with the verified input kinds; unverified input is refused with a reason. Direct and last-used opening match a saved *app* and choose one of its current windows; they do not yet remember a particular document window. Dropy does not yet launch an app that is closed, pin installed apps, or select a crop region. Esc, the shortcut, click-outside and pointer-leave dismissal are checked with real input by `Scripts/dismissal-checks.sh`.
 
 ## Build and run
 

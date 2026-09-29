@@ -36,11 +36,35 @@ public enum InputRoute: String, Codable, CaseIterable, Sendable {
     public var changesFocus: Bool { self == .activateAndPost }
     /// Moves the person's pointer, so it needs the target point on a display.
     public var movesPointer: Bool { self == .activateAndPost }
+
+    /// Side effects the route has by construction, whatever a trial observed.
+    public var inherentSideEffects: Set<InputSideEffect> {
+        self == .activateAndPost ? [.sourceKeyWindow, .frontmostApp, .pointer] : []
+    }
+}
+
+/// A change outside the target window that sending input caused. Each is gated
+/// separately: making the target key inside its own inactive app is harmless while
+/// Dropy stays in front, but switching the person's app, desktop or pointer is not.
+public enum InputSideEffect: String, Codable, CaseIterable, Sendable {
+    /// The source app's key window changed (e.g. the target became key within its app).
+    case sourceKeyWindow
+    /// The frontmost app changed.
+    case frontmostApp
+    /// The active desktop (Space) changed.
+    case desktop
+    /// The person's pointer moved.
+    case pointer
+    /// A focus or desktop change from a record that did not say which.
+    case unclassifiedFocusChange
+
+    /// Effects that take focus away from Dropy, so it must be handed back afterwards.
+    public var needsHandback: Bool { self == .frontmostApp || self == .unclassifiedFocusChange }
 }
 
 /// Where the source window is while Dropy shows it.
 public enum SourceCondition: String, Codable, CaseIterable, Sendable {
-    case visible, covered, parked, otherSpace, minimized
+    case visible, covered, parked, otherSpace, minimized, hidden
 }
 
 /// Which window had focus in the source app when the input was sent.
@@ -70,16 +94,53 @@ public struct InputTrial: Codable, Equatable, Sendable {
     public let condition: SourceCondition
     public let focus: FocusState
     public let outcome: Outcome
+    /// Changes observed outside the target window during the action.
+    public let sideEffects: Set<InputSideEffect>
     /// Includes key-window, frontmost-app or desktop changes observed during the action.
-    public let changesFocus: Bool
+    public var changesFocus: Bool { !sideEffects.isEmpty }
 
-    public init(route: InputRoute, kind: InputKind, condition: SourceCondition, focus: FocusState, outcome: Outcome, changesFocus: Bool = false) {
+    public init(route: InputRoute, kind: InputKind, condition: SourceCondition, focus: FocusState, outcome: Outcome,
+                sideEffects: Set<InputSideEffect>) {
         self.route = route
         self.kind = kind
         self.condition = condition
         self.focus = focus
         self.outcome = outcome
-        self.changesFocus = changesFocus
+        self.sideEffects = sideEffects
+    }
+
+    /// A trial that only says whether some focus change was observed.
+    public init(route: InputRoute, kind: InputKind, condition: SourceCondition, focus: FocusState, outcome: Outcome,
+                changesFocus: Bool = false) {
+        self.init(route: route, kind: kind, condition: condition, focus: focus, outcome: outcome,
+                  sideEffects: changesFocus ? [.unclassifiedFocusChange] : [])
+    }
+
+    private enum CodingKeys: String, CodingKey { case route, kind, condition, focus, outcome, sideEffects, changesFocus }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        route = try container.decode(InputRoute.self, forKey: .route)
+        kind = try container.decode(InputKind.self, forKey: .kind)
+        condition = try container.decode(SourceCondition.self, forKey: .condition)
+        focus = try container.decode(FocusState.self, forKey: .focus)
+        outcome = try container.decode(Outcome.self, forKey: .outcome)
+        if let effects = try container.decodeIfPresent(Set<InputSideEffect>.self, forKey: .sideEffects) {
+            sideEffects = effects
+        } else {
+            // Older records carried only a flag.
+            sideEffects = try container.decodeIfPresent(Bool.self, forKey: .changesFocus) == true ? [.unclassifiedFocusChange] : []
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(route, forKey: .route)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(condition, forKey: .condition)
+        try container.encode(focus, forKey: .focus)
+        try container.encode(outcome, forKey: .outcome)
+        try container.encode(sideEffects.sorted { $0.rawValue < $1.rawValue }, forKey: .sideEffects)
     }
 }
 
@@ -120,14 +181,22 @@ public struct InputCapabilities: Equatable, Sendable {
     }
 
     /// Route side effects are evidence-dependent: even AX actions can change focus or Spaces.
+    public func sideEffects(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> Set<InputSideEffect> {
+        trials.filter { $0.route == route && $0.kind == kind && $0.condition == condition }
+            .reduce(route.inherentSideEffects) { $0.union($1.sideEffects) }
+    }
+
     public func requiresFocusChange(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> Bool {
-        route.changesFocus || trials.contains {
-            $0.route == route && $0.kind == kind && $0.condition == condition && $0.changesFocus
-        }
+        !sideEffects(route, kind, condition).isEmpty
+    }
+
+    /// Whether focus must be handed back to Dropy after sending.
+    public func needsHandback(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> Bool {
+        sideEffects(route, kind, condition).contains(where: \.needsHandback)
     }
 
     public func allows(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition, policy: InputPolicy) -> Bool {
-        policy.allows(route) && (policy.allowsFocusChanges || !requiresFocusChange(route, kind, condition))
+        policy.allows(route) && sideEffects(route, kind, condition).isSubset(of: policy.allowedSideEffects)
     }
 
     /// Kinds with at least one verified route for the condition under the policy.
@@ -141,15 +210,28 @@ public struct InputCapabilities: Equatable, Sendable {
 /// What the person or build allows Dropy to use.
 public struct InputPolicy: Equatable, Sendable {
     public var allowsPrivateInterfaces: Bool
-    public var allowsFocusChanges: Bool
+    public var allowedSideEffects: Set<InputSideEffect>
 
-    public init(allowsPrivateInterfaces: Bool = false, allowsFocusChanges: Bool = false) {
+    public init(allowsPrivateInterfaces: Bool = false, allowedSideEffects: Set<InputSideEffect>) {
         self.allowsPrivateInterfaces = allowsPrivateInterfaces
-        self.allowsFocusChanges = allowsFocusChanges
+        self.allowedSideEffects = allowedSideEffects
     }
 
+    /// All side effects, or none.
+    public init(allowsPrivateInterfaces: Bool = false, allowsFocusChanges: Bool = false) {
+        self.init(allowsPrivateInterfaces: allowsPrivateInterfaces,
+                  allowedSideEffects: allowsFocusChanges ? Set(InputSideEffect.allCases) : [])
+    }
+
+    public var allowsFocusChanges: Bool { allowedSideEffects == Set(InputSideEffect.allCases) }
+
+    /// Dropy's interactive preview: the private window-targeted route is allowed (the
+    /// owner accepted that risk on 2026-09-29), and the source may make the target its
+    /// own key window. Nothing may switch the person's app, desktop or pointer.
+    public static let preview = InputPolicy(allowsPrivateInterfaces: true, allowedSideEffects: [.sourceKeyWindow])
+
     public func allows(_ route: InputRoute) -> Bool {
-        (allowsPrivateInterfaces || !route.usesPrivateInterfaces) && (allowsFocusChanges || !route.changesFocus)
+        (allowsPrivateInterfaces || !route.usesPrivateInterfaces) && route.inherentSideEffects.isSubset(of: allowedSideEffects)
     }
 }
 
@@ -167,7 +249,7 @@ public enum InputDecision: Equatable, Sendable {
     case refuse(InputRefusal)
 }
 
-public enum InputRefusal: Equatable, Sendable {
+public enum InputRefusal: Error, Equatable, Sendable {
     /// The target could not be tied to exactly the selected window; nothing is sent.
     case ambiguousTarget
     case targetUnreachable(WindowLookupDiagnosis)
@@ -184,6 +266,35 @@ public enum InputPlanner {
     /// that change focus. A process-wide event is only used where it was verified.
     public static let routeOrder: [InputRoute] = [.accessibility, .windowTargetedEvent, .activateAndPost, .processEvent]
 
+    /// Route order for one kind. A pointer event through the exact window reproduces what
+    /// the person did (caret placement, links, custom controls), so pointer kinds prefer
+    /// it over an Accessibility press where both are verified and allowed. Keys always
+    /// follow the source app's key window, so text uses Accessibility first.
+    public static func routeOrder(for kind: InputKind) -> [InputRoute] {
+        switch kind {
+        case .pointerClick, .scroll, .drag, .contextMenu:
+            [.windowTargetedEvent, .accessibility, .activateAndPost, .processEvent]
+        case .text, .keyShortcut, .imeComposition:
+            routeOrder
+        }
+    }
+
+    /// Every verified, allowed route for the kind, best first. A route that cannot act on
+    /// the element under the pointer (e.g. nothing pressable there) may give way to the
+    /// next; every candidate targets the exact window.
+    public static func candidates(_ kind: InputKind, selectedWindowID: UInt32, resolution: InputTargetResolution,
+                                  condition: SourceCondition, capabilities: InputCapabilities,
+                                  policy: InputPolicy) -> Result<[InputRoute], InputRefusal> {
+        switch decide(kind, selectedWindowID: selectedWindowID, resolution: resolution, condition: condition,
+                      capabilities: capabilities, policy: policy) {
+        case .refuse(let refusal): return .failure(refusal)
+        case .send:
+            return .success(routeOrder(for: kind).filter {
+                capabilities.allows($0, kind, condition, policy: policy) && capabilities.verdict($0, kind, condition) == .verified
+            })
+        }
+    }
+
     public static func decide(_ kind: InputKind, selectedWindowID: UInt32, resolution: InputTargetResolution,
                               condition: SourceCondition, capabilities: InputCapabilities,
                               policy: InputPolicy) -> InputDecision {
@@ -193,9 +304,9 @@ public enum InputPlanner {
         case .exact(let windowID):
             guard windowID == selectedWindowID else { return .refuse(.targetChanged) }
         }
-        let allowed = routeOrder.filter { capabilities.allows($0, kind, condition, policy: policy) }
+        let allowed = routeOrder(for: kind).filter { capabilities.allows($0, kind, condition, policy: policy) }
         if let route = allowed.first(where: { capabilities.verdict($0, kind, condition) == .verified }) {
-            return .send(route, handBackFocus: capabilities.requiresFocusChange(route, kind, condition))
+            return .send(route, handBackFocus: capabilities.needsHandback(route, kind, condition))
         }
         // Report the risk when every allowed route that was actually tried hit the wrong window.
         let tried = allowed.map { capabilities.verdict($0, kind, condition) }

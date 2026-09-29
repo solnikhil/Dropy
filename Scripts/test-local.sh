@@ -62,3 +62,22 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 # Probe judging is pure: no synthetic events, app activation or Accessibility access.
 swiftc -swift-version 6 -o "$build_dir/InputProbeChecks" "$repo_dir/Scripts/bench/InputProbe/main.swift"
 "$build_dir/InputProbeChecks" self-test
+
+# Probe results become shipped evidence only through this mapping.
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rpath -Xlinker "$build_dir" \
+  -o "$build_dir/EvidenceToolChecks" "$repo_dir/Scripts/bench/EvidenceTool/main.swift"
+"$build_dir/EvidenceToolChecks" self-test
+# The shipped evidence must decode with the current format.
+"$build_dir/EvidenceToolChecks" validate "$repo_dir/Resources/InputEvidence.json"
+
+# AppKit-level regression checks for the overlay panel (no window is shown).
+swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
+  "$repo_dir/Tests/LocalOverlayPanelCheck.swift" "$repo_dir/Sources/Dropy/OverlayPanel.swift"
+"$build_dir/OverlayPanelChecks"
+
+# Compile the fixture-only router checks in CI; execution requires a real device session.
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/DeviceInputRouterChecks" \
+  "$repo_dir/Tests/DeviceInputRouterCheck.swift" "$repo_dir/Sources/Dropy/InputRouter.swift" \
+  "$repo_dir/Sources/Dropy/PlacementJournal.swift" "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
+  "$repo_dir/Sources/Dropy/WindowCatalog.swift"

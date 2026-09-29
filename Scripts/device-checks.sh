@@ -23,6 +23,7 @@
 # (WindowTool snapshot) to the logs.
 #
 #   ONLY=fixture Scripts/device-checks.sh --skip-benchmark   runs only the fixture checks.
+#   ONLY=textedit Scripts/device-checks.sh --skip-benchmark  runs only TextEdit, user move and crash recovery.
 #
 # Needs a terminal with Screen Recording and Accessibility permission, the display
 # awake, and TextEdit, Safari and the fixture not running. Every window is restored afterwards.
@@ -439,14 +440,16 @@ mkdir -p "$build_dir"
   print -r -- "|---|---|---|---|---|"
 } > "$report"
 desktop_at_start="$(desktop_state)"
-print "Device checks: Space recovery (fixture)"
-start_fixture && placement_checks org.dropy.fixture
-stop_fixture
-fixture_space_main_check
-fixture_space_deferred_check no
-fixture_space_deferred_check yes
-stop_fixture
-if [[ "$only" != fixture ]]; then
+if [[ "$only" == all || "$only" == fixture ]]; then
+  print "Device checks: Space recovery (fixture)"
+  start_fixture && placement_checks org.dropy.fixture
+  stop_fixture
+  fixture_space_main_check
+  fixture_space_deferred_check no
+  fixture_space_deferred_check yes
+  stop_fixture
+fi
+if [[ "$only" == all || "$only" == textedit ]]; then
   print "Device checks: placement matrix"
   open_target com.apple.TextEdit
   placement_checks com.apple.TextEdit
@@ -458,6 +461,8 @@ if [[ "$only" != fixture ]]; then
     record com.apple.TextEdit "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
   fi
   osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
+fi
+if [[ "$only" == all ]]; then
   open_target com.apple.Safari
   placement_checks com.apple.Safari
   osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true

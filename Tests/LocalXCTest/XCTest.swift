@@ -62,3 +62,22 @@ public func xctestRun(_ name: String, _ body: () throws -> Void) {
     do { try body() } catch { xctestFailures.append("\(name): threw \(error)") }
     print(xctestFailures.count == before ? "pass \(name)" : "FAIL \(name)")
 }
+
+public struct XCTUnwrapError: Error, CustomStringConvertible {
+    public var description: String
+}
+
+public func XCTUnwrap<T>(_ value: @autoclosure () throws -> T?, _ message: @autoclosure () -> String = "",
+                         file: StaticString = #filePath, line: UInt = #line) throws -> T {
+    guard let unwrapped = try value() else {
+        record("XCTUnwrap found nil \(message())", file, line)
+        throw XCTUnwrapError(description: "XCTUnwrap found nil at \(file):\(line)")
+    }
+    return unwrapped
+}
+
+public func XCTAssertNotNil<T>(_ value: @autoclosure () throws -> T?, _ message: @autoclosure () -> String = "",
+                               file: StaticString = #filePath, line: UInt = #line) {
+    do { if try value() == nil { record("XCTAssertNotNil \(message())", file, line) } }
+    catch { record("threw \(error)", file, line) }
+}
