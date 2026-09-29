@@ -202,7 +202,15 @@ func activeSpaces() -> String {
 
 // MARK: Trial model
 
-enum Route: String, CaseIterable { case pid, pidWindow, activate, ax }
+enum Route: String, CaseIterable {
+    case pid, pidWindow, activate, ax
+    /// Text candidates for windows whose field ignores `AXSelectedText` (Chromium):
+    /// splice into the exact element's `AXValue` at its selection, or focus the exact
+    /// element first. Only `type` applies; other actions report notApplicable.
+    case axValue, axFocus
+    /// Routes run by default; the text candidates are opt-in by name.
+    static let standard: [Route] = [.pid, .pidWindow, .activate, .ax]
+}
 enum Action: String, CaseIterable { case type, click, scroll, shortcut }
 enum Condition: String, CaseIterable { case visible, covered, parked, otherSpace, minimized }
 enum Focus: String, CaseIterable { case aKey, bKey, appInactive }
@@ -508,6 +516,10 @@ func perform(_ route: Route, _ action: Action, fixture: Fixture) -> String? {
         CGWarpMouseCursorPosition(pointer)
         previous?.activate()
         wait(0.3)
+    case .axValue, .axFocus:
+        guard action == .type else { return "notApplicable(textRouteOnly)" }
+        guard let field = descendant(a, identifier: "text") else { return "elementNotFound" }
+        return route == .axValue ? spliceValue(field, typedText) : focusThenInsert(field, typedText)
     case .ax:
         switch action {
         case .type:
@@ -536,6 +548,34 @@ func perform(_ route: Route, _ action: Action, fixture: Fixture) -> String? {
     }
     wait(0.5)
     return nil
+}
+
+/// Inserts text at the element's selection by rewriting its whole value, then puts the
+/// caret after the insertion. Nothing but this element is addressed.
+func spliceValue(_ field: AXUIElement, _ text: String) -> String? {
+    guard let value = attribute(field, kAXValueAttribute) as? String else { return "noValue" }
+    var range = CFRange(location: value.utf16.count, length: 0)
+    if let raw = attribute(field, kAXSelectedTextRangeAttribute), CFGetTypeID(raw) == AXValueGetTypeID() {
+        AXValueGetValue(raw as! AXValue, .cfRange, &range)
+    }
+    let units = Array(value.utf16)
+    guard range.location >= 0, range.length >= 0, range.location + range.length <= units.count else { return "badRange" }
+    let next = String(decoding: units[..<range.location], as: UTF16.self) + text
+        + String(decoding: units[(range.location + range.length)...], as: UTF16.self)
+    let result = AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, next as CFString)
+    guard result == .success else { return "axError(\(result.rawValue))" }
+    var caret = CFRange(location: range.location + text.utf16.count, length: 0)
+    AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, AXValueCreate(.cfRange, &caret)!)
+    return nil
+}
+
+/// Focuses the exact element, then inserts at its selection.
+func focusThenInsert(_ field: AXUIElement, _ text: String) -> String? {
+    let focus = setBool(field, kAXFocusedAttribute, true)
+    guard focus == .success else { return "axError(focus \(focus.rawValue))" }
+    wait(0.2)
+    let result = AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString)
+    return result == .success ? nil : "axError(\(result.rawValue))"
 }
 
 func findMenuItem(_ root: AXUIElement, title: String, depth: Int = 0) -> AXUIElement? {
@@ -613,9 +653,22 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
                             let receivedBy = Dictionary(grouping: received, by: { $0["w"] as? String ?? "?" })
                                 .mapValues(\.count)
                             record["receivedBy"] = receivedBy
+                            if action == .type {
+                                // Exact result, not just "changed": the text must be the typed
+                                // characters at the caret. A page-level input event must also have
+                                // fired, or the app's own state would not know about the edit.
+                                let textA = (after.state["A"] as? [String: Any])?["text"] as? String ?? ""
+                                record["textA"] = textA
+                                let pageEdits = fixture.events(from: before.mark, to: after.mark).filter { $0["kind"] as? String == "effect" && $0["effect"] as? String == "text" && $0["w"] as? String == "A" }
+                                record["inputEventsA"] = pageEdits.count
+                            }
                             // Delivery to B is a failure even without a visible effect: in a real
                             // app the same event would act on the other document.
                             record["outcome"] = judge(inA: inA, inB: inB, receivedBy: receivedBy, actionError: skipped)
+                            if action == .type, record["outcome"] as? String == "pass" {
+                                if record["textA"] as? String != typedText { record["outcome"] = "partialEffect(text)" }
+                                else if record["inputEventsA"] as? Int == 0 { record["outcome"] = "partialEffect(noInputEvent)" }
+                            }
                             let focusEvents = fixture.events(from: before.mark, to: after.mark).filter {
                                 $0["kind"] as? String == "focus" &&
                                 ["becameKey", "appActive", "appInactive"].contains($0["change"] as? String ?? "")
@@ -811,6 +864,10 @@ func performOnApp(_ route: Route, _ action: Action, window a: AXUIElement, fixtu
     guard let targetElement, let target = frame(targetElement) else { return "notSent(elementNotFound)" }
     let point = CGPoint(x: target.midX, y: min(target.midY, target.minY + 200))
     switch route {
+    case .axValue, .axFocus:
+        guard action == .type else { return "notApplicable(textRouteOnly)" }
+        return (route == .axValue ? spliceValue(targetElement, typedText) : focusThenInsert(targetElement, typedText))
+            .map { "notSent(\($0))" }
     case .ax:
         if action == .type {
             let result = AXUIElementSetAttributeValue(targetElement, kAXSelectedTextAttribute as CFString, typedText as CFString)
@@ -893,7 +950,7 @@ guard AXIsProcessTrusted() else { fail("Accessibility not granted to this proces
 switch args.first {
 case "matrix":
     guard args.count >= 3 else { fail("usage: InputProbe matrix <fixture-log> <results.jsonl> [routes]") }
-    let routes = args.count > 3 ? args[3].split(separator: ",").compactMap { Route(rawValue: String($0)) } : Route.allCases
+    let routes = args.count > 3 ? args[3].split(separator: ",").compactMap { Route(rawValue: String($0)) } : Route.standard
     run(fixture: Fixture.attach(log: args[1]), results: args[2], routes: routes)
 case "app":
     // app <pid> <windowA> <windowB> <results.jsonl> <type,scroll> [routes]

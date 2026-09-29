@@ -16,6 +16,8 @@ func fail(_ message: String) -> Never {
 
 let routes: [String: InputRoute] = ["ax": .accessibility, "pidWindow": .windowTargetedEvent, "pid": .processEvent,
                                     "activate": .activateAndPost]
+// Probe-only text candidates (axValue, axFocus) have no InputRoute and never become
+// shipped evidence; promoting one needs a router implementation and a model change.
 let kinds: [String: InputKind] = ["type": .text, "click": .pointerClick, "scroll": .scroll, "shortcut": .keyShortcut]
 let focusStates: [String: FocusState] = ["aKey": .targetKey, "bKey": .otherWindowKey, "appInactive": .appInactive]
 
@@ -60,6 +62,8 @@ if args == ["self-test"] {
     precondition(trial(record(["outcome": "wrongWindow(delivered)"]))?.outcome == .wrongWindow)
     precondition(trial(record(["outcome": "notSent(axError(-25200))"]))?.outcome == .noEffect)
     precondition(trial(record(["outcome": "unsafeModifiers"]))?.outcome == .noEffect)
+    precondition(trial(record(["outcome": "partialEffect(noInputEvent)"]))?.outcome == .noEffect, "a partial edit is not a pass")
+    precondition(trial(record(["route": "axValue", "action": "type"])) == nil, "candidate routes are not evidence")
     precondition(trial(record(["focusChanges": ["becameKey"]]))?.sideEffects == [.sourceKeyWindow])
     precondition(trial(record(["focusChanges": ["appActive", "becameKey"]]))?.sideEffects == [.sourceKeyWindow, .frontmostApp])
     precondition(trial(record(["focusChangedDuringTrial": true]))?.sideEffects == [.unclassifiedFocusChange])

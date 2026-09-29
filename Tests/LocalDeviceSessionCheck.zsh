@@ -4,7 +4,7 @@
 set -euo pipefail
 repo_dir="${0:A:h:h}"
 work="$(mktemp -d)"
-export DROPY_DEVICE_LOCK="$work/lock" DROPY_PREFS_DOMAIN="org.dropy.devicesessioncheck.$$" DROPY_REQUIRED_IDLE=0
+export DROPY_DEVICE_LOCK="$work/lock" DROPY_PREFS_DOMAIN="org.dropy.devicesessioncheck.$$" DROPY_REQUIRED_IDLE=0 DROPY_MIN_BATTERY=0
 unset DROPY_DEVICE_SESSION
 key=org.dropy.preferences.v1
 trap 'defaults delete "$DROPY_PREFS_DOMAIN" 2>/dev/null || true; rm -f "$HOME/Library/Preferences/$DROPY_PREFS_DOMAIN.plist"; rm -rf "$work"' EXIT
@@ -13,6 +13,15 @@ fail() { print -u2 "device-session check failed: $1"; exit 1; }
 crash() {
   zsh -c "source '$repo_dir/Scripts/lib/device-session.zsh'; device_session_begin crashy; defaults write '$DROPY_PREFS_DOMAIN' $key damaged; kill -9 \$\$" || true
 }
+
+# Low battery is refused before anything is touched; external power is accepted.
+DROPY_POWER_REPORT="Now drawing from 'Battery Power'
+ -InternalBattery-0 (id=1)	19%; discharging; 0:43 remaining present: true" DROPY_MIN_BATTERY=30 \
+  zsh -c "source '$repo_dir/Scripts/lib/device-session.zsh'; device_session_begin lowpower" 2>/dev/null \
+  && fail "a session started on low battery"
+[[ ! -e "$DROPY_DEVICE_LOCK" ]] || fail "a refused low-battery session created the lock"
+[[ "$(DROPY_POWER_REPORT="Now drawing from 'AC Power'
+ -InternalBattery-0 (id=1)	19%; charging" device_power_state)" == ac ]] || fail "AC power not recognised"
 
 # A second session is refused while the first is alive.
 device_session_begin first

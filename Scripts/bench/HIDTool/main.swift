@@ -64,9 +64,12 @@ case "key":
     let held = modifierKeys.filter { names.contains($0.0) }
     var flags: CGEventFlags = []
     for (_, key, flag) in held { flags.insert(flag); modifier(key, down: true, flags: flags) }
+    // Hardware arrow keys carry the numeric-pad and Fn flags. Mission Control's
+    // Control-arrow desktop switch ignores an arrow event without them (2026-09-29).
+    let keyFlags = (123...126).contains(code) ? flags.union([.maskNumericPad, .maskSecondaryFn]) : flags
     for down in [true, false] {
         let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)
-        event?.flags = flags
+        event?.flags = keyFlags
         post(event)
     }
     for (_, key, flag) in held.reversed() { flags.remove(flag); modifier(key, down: false, flags: flags) }

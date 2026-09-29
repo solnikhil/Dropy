@@ -8,6 +8,9 @@
 #     recording the owner, PID and start time; stale backups are recovered under it;
 #   - refuses to start while a person has used the keyboard, pointer or trackpad in the
 #     last DROPY_REQUIRED_IDLE seconds (default 5), so a run never fights a person;
+#   - refuses to start on battery below DROPY_MIN_BATTERY percent (default 30): a Mac
+#     that sleeps or shuts down mid-run leaves parked windows and test preferences for
+#     recovery to clean up, and a half-finished trial is not evidence;
 #   - sets `device_session_summary` (owner and input idle time) for the report;
 #   - keeps a copy of Dropy's preferences in the lock. A run that dies without its
 #     cleanup (zsh skips traps on some fatal errors, and kill -9 skips them all) leaves
@@ -27,6 +30,24 @@ device_hid_idle() {
   ioreg -c IOHIDSystem | awk '/HIDIdleTime/ && !done { printf "%.1f", $NF / 1000000000; done = 1 }'
 }
 
+# "ac" on external power, else the battery percentage; "unknown" without a battery.
+device_power_state() {
+  local report="${DROPY_POWER_REPORT:-$(pmset -g batt 2>/dev/null || true)}"
+  if [[ "$report" == *"'AC Power'"* ]]; then print ac; return; fi
+  local percent="$(print -r -- "$report" | grep -oE '[0-9]+%' | awk 'NR == 1' | tr -d % || true)"
+  print -r -- "${percent:-unknown}"
+}
+
+# Fails when running on battery below the minimum.
+device_power_ok() {
+  local minimum="${DROPY_MIN_BATTERY:-30}" state="$(device_power_state)"
+  [[ "$state" == ac || "$state" == unknown ]] && return 0
+  if (( state < minimum )); then
+    print -u2 "On battery at ${state}% (minimum ${minimum}%); connect power before running device checks."
+    return 1
+  fi
+}
+
 device_session_begin() {
   local name="$1" required="${DROPY_REQUIRED_IDLE:-5}" owner idle
   mkdir -p "${device_lock:h}" || return 1
@@ -36,6 +57,7 @@ device_session_begin() {
     device_session_summary="nested in $owner"
     return 0
   fi
+  device_power_ok || return 1
   # The guard inode is permanent. Kernel locking covers directory creation, owner
   # publication and crash recovery; an empty owner file is never treated as proof
   # that a concurrent initializer died. The kernel releases the guard on exit.
@@ -83,7 +105,7 @@ device_session_begin() {
     device_session_end
     return 1
   fi
-  device_session_summary="owner=$name; input idle ${idle:-unknown}s at start"
+  device_session_summary="owner=$name; input idle ${idle:-unknown}s at start; power $(device_power_state)"
   return 0
 }
 
