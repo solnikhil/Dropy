@@ -1,6 +1,6 @@
 # Dropy interactive preview checks
 
-- Date: 2026-09-29 17:45 IST; revision: 069ccec (uncommitted changes)
+- Date: 2026-09-29 18:28 IST; revision: 3e083be
 - macOS: 27.0 (26A428); real HID input on Dropy's preview of input-fixture window A while window B is the fixture's key window
 
 | Source | Input | Result | Observed |
