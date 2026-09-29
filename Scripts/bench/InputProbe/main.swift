@@ -748,8 +748,11 @@ func report(_ path: String) {
 /// A real app with two windows, A (target) and B (decoy). Effects are read from each
 /// window's own Accessibility state: the first text area's value and the first scroll
 /// bar's position. Only typing and scrolling are judged; nothing else is sent.
+/// Chromium apps nest content far deeper than AppKit ones.
+let appSearchDepth = enablesManualAccessibility ? 40 : 14
+
 func firstDescendant(_ root: AXUIElement, role: String, depth: Int = 0) -> AXUIElement? {
-    guard depth < 14 else { return nil }
+    guard depth < appSearchDepth else { return nil }
     for child in attribute(root, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
         if attribute(child, kAXRoleAttribute) as? String == role { return child }
         if let found = firstDescendant(child, role: role, depth: depth + 1) { return found }

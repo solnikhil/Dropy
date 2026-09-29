@@ -42,9 +42,31 @@ swiftc -O -swift-version 6 -o "$probe" "$repo_dir"/Scripts/bench/InputProbe/*.sw
 
 "$probe" check-modifiers
 
+# Ends only the scratch VS Code (matched by its temporary user-data directory).
+stop_scratch_vscode() {
+  pkill -TERM -f "$work/vscode-data" 2>/dev/null || true
+  for i in {1..40}; do pgrep -qf "$work/vscode-data" || return 0; sleep 0.25; done
+  pkill -KILL -f "$work/vscode-data" 2>/dev/null || true
+  sleep 1
+}
+
+# Puts ~/.vscode/argv.json back byte for byte if the scratch VS Code changed it.
+restore_vscode_argv() {
+  [[ -f "$work/argv.json.sum" ]] || return 0
+  shasum -s -c "$work/argv.json.sum" 2>/dev/null && return 0
+  cp -p "$work/argv.json.backup" "$HOME/.vscode/argv.json"
+  if shasum -s -c "$work/argv.json.sum"; then
+    print -u2 "Restored ~/.vscode/argv.json, which the scratch VS Code had changed."
+    print -r -- "| VSCode | - | ~/.vscode/argv.json was changed by the scratch instance and restored |" >> "$work/rows"
+  else
+    print -u2 "Could not restore ~/.vscode/argv.json; the backup is $work/argv.json.backup"; return 1
+  fi
+}
+
 cleanup() {
   "$probe" release 2>/dev/null || true
-  pkill -f "$work/vscode-data" 2>/dev/null || true
+  stop_scratch_vscode
+  restore_vscode_argv || { print -u2 "Keeping $work for the argv.json backup."; device_session_end; return; }
   [[ -n "${sink_pid:-}" ]] && { kill "$sink_pid" 2>/dev/null || true; sink_pid=""; }
   for app in $owned; do osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1 || true; done
   rm -rf "$work"
@@ -59,7 +81,7 @@ pid_of() { lsappinfo info -only pid -app "$1" 2>/dev/null | grep -oE '[0-9]+' | 
 
 probe_app() {
   local name="$1" bundle="$2" actions="$3" routes="${4:-}" pid ids
-  pid="$(pid_of "$bundle")"
+  pid="${PROBE_APP_PID:-$(pid_of "$bundle")}"
   ids=(${=$("$probe" windows "$pid")})
   if (( ${#ids} < 2 )); then print -r -- "| $name | - | only ${#ids} window(s) reachable; NOT RUN |" >> "$work/rows"; return; fi
   "$probe" app "$pid" "${ids[1]}" "${ids[2]}" "$logs/$name.jsonl" "$actions" ${routes:+"$routes"} | tee "$logs/$name.txt"
@@ -114,23 +136,50 @@ for app in $apps; do
     vscode)
       code_app="/Applications/Visual Studio Code.app"
       [[ -d "$code_app" ]] || { print -r -- "| VSCode | - | not installed; NOT RUN |" >> "$work/rows"; continue; }
-      if lsappinfo info -only pid -app com.microsoft.VSCode 2>/dev/null | grep -q '[0-9]'; then
+      # A live process, not LaunchServices' record, which can outlive the process.
+      if pgrep -qf "Visual Studio Code.app/Contents/MacOS/Code"; then
         print -u2 "Quit Visual Studio Code first; the probe uses only its own scratch instance."; exit 1
       fi
-      code_version="$(mdls -raw -name kMDItemVersion "$code_app")"
+      code_version="$(defaults read "$code_app/Contents/Info" CFBundleShortVersionString)"
       mkdir -p "$work/vscode-data/User" "$work/vscode-extensions" "$work/vscode-files"
       # Nothing from a person's setup is read, and nothing is written outside $work.
-      print -r -- '{"update.mode":"none","telemetry.telemetryLevel":"off","workbench.startupEditor":"none","security.workspace.trust.enabled":false,"window.restoreWindows":"none","editor.accessibilitySupport":"on","window.confirmBeforeClose":"never","extensions.autoCheckUpdates":false,"extensions.autoUpdate":false,"workbench.enableExperiments":false,"git.enabled":false}' \
+      # No telemetry setting here: changing it makes VS Code rewrite the shared
+      # ~/.vscode/argv.json ("enable-crash-reporter"), which it did on 2026-09-30.
+      # The CLI flags below disable telemetry and crash reporting without that.
+      print -r -- '{"update.mode":"none","workbench.startupEditor":"none","security.workspace.trust.enabled":false,"window.restoreWindows":"none","editor.accessibilitySupport":"on","window.confirmBeforeClose":"never","extensions.autoCheckUpdates":false,"extensions.autoUpdate":false,"workbench.enableExperiments":false,"git.enabled":false}' \
         > "$work/vscode-data/User/settings.json"
       for n in A B; do for i in {1..200}; do print "Dropy scratch $n line $i"; done > "$work/vscode-files/scratch-$n.txt"; done
       code_cli=("$code_app/Contents/Resources/app/bin/code" --user-data-dir "$work/vscode-data"
-        --extensions-dir "$work/vscode-extensions" --disable-extensions --skip-welcome --skip-release-notes)
+        --extensions-dir "$work/vscode-extensions" --disable-extensions --skip-welcome --skip-release-notes
+        --disable-telemetry --disable-crash-reporter --disable-workspace-trust)
+      # ~/.vscode/argv.json is shared with a person's own VS Code: keep an exact copy and
+      # put it back afterwards (cleanup does too), and fail the run if it cannot be.
+      # VS Code's built-in updater (Squirrel/ShipIt) shares state with a person's install
+      # whatever the user-data directory; on 2026-09-30 a scratch instance downloaded
+      # an update and installed it into /Applications on quit, although the scratch
+      # settings say "update.mode": "none". Record the installed version and refuse
+      # to continue if an update is pending, and report any change afterwards.
+      code_version_before="$code_version"
+      if [[ -e "$HOME/Library/Caches/com.microsoft.VSCode.ShipIt/ShipItState.plist" ]] && \
+         pgrep -qf "ShipIt com.microsoft.VSCode"; then
+        print -u2 "A VS Code update is being installed; run later."; exit 1
+      fi
+      argv_json="$HOME/.vscode/argv.json"
+      [[ -f "$argv_json" ]] && { cp -p "$argv_json" "$work/argv.json.backup"; shasum "$argv_json" > "$work/argv.json.sum"; }
       "${code_cli[@]}" -n "$work/vscode-files/scratch-A.txt"; sleep 6
       "${code_cli[@]}" -n "$work/vscode-files/scratch-B.txt"; sleep 5
-      PROBE_ELECTRON=1 PROBE_APP_CONDITIONS=visible,covered,parked,minimized \
+      scratch_pid="$(pgrep -f "Visual Studio Code.app/Contents/MacOS/Code --user-data-dir $work/vscode-data" | head -1 || true)"
+      [[ -n "$scratch_pid" ]] || { print -r -- "| VSCode | - | scratch instance did not start; NOT RUN |" >> "$work/rows"; continue; }
+      PROBE_APP_PID="$scratch_pid" PROBE_ELECTRON=1 PROBE_APP_CONDITIONS=visible,covered,parked,minimized \
         probe_app "VSCode-$code_version" com.microsoft.VSCode type,click,scroll ax,axValue,pidWindow,pid
-      pkill -f "$work/vscode-data" 2>/dev/null || true
-      sleep 2 ;;
+      stop_scratch_vscode
+      restore_vscode_argv || exit 1
+      sleep 3
+      code_version_after="$(defaults read "$code_app/Contents/Info" CFBundleShortVersionString 2>/dev/null || print unknown)"
+      if [[ "$code_version_after" != "$code_version_before" ]] || pgrep -qf "ShipIt com.microsoft.VSCode"; then
+        print -r -- "| VSCode | - | WARNING: VS Code's updater changed the installed app ($code_version_before → $code_version_after) |" >> "$work/rows"
+        print -u2 "VS Code's updater changed the installed app during the probe."
+      fi ;;
   esac
 done
 
