@@ -87,6 +87,57 @@ if args == ["self-test"] {
     print("EvidenceTool mapping checks passed")
     exit(0)
 }
+if args.count == 2, args[0] == "policy" {
+    // The shipped M3 policy, as docs/COMPATIBILITY.md states it. Fails if regenerated
+    // evidence would silently enable a workflow the contract says is refused.
+    guard let data = FileManager.default.contents(atPath: args[1]),
+          let evidence = try? JSONDecoder().decode(InputEvidence.self, from: data) else { fail("\(args[1]) unreadable") }
+    let major = evidence.macOSMajor
+    var problems: [String] = []
+    func expect(_ bundle: String, _ condition: SourceCondition, kinds: Set<InputKind>, clickTargets: Set<InputTargetClass>) {
+        let caps = evidence.capabilities(for: bundle, macOSMajor: major)
+        let got = caps.verifiedKinds(in: condition, policy: .preview)
+        if got != kinds { problems.append("\(bundle) \(condition.rawValue): kinds \(got.map(\.rawValue).sorted()) != \(kinds.map(\.rawValue).sorted())") }
+        let targets = caps.verifiedTargets(.pointerClick, in: condition, policy: .preview)
+        if targets != clickTargets { problems.append("\(bundle) \(condition.rawValue): click targets \(targets.map(\.rawValue).sorted()) != \(clickTargets.map(\.rawValue).sorted())") }
+    }
+    let all = Set(InputTargetClass.allCases)
+    // Never enabled anywhere: keyboard shortcuts, drag, IME, context menus.
+    for source in evidence.sources {
+        for condition in SourceCondition.allCases {
+            let kinds = evidence.capabilities(for: source.bundleIdentifier, macOSMajor: major).verifiedKinds(in: condition, policy: .preview)
+            let forbidden = kinds.intersection([.keyShortcut, .drag, .imeComposition, .contextMenu])
+            if !forbidden.isEmpty { problems.append("\(source.bundleIdentifier) \(condition.rawValue): refused kinds enabled \(forbidden)") }
+            // A hidden app is refused for every app (the contract's "cannot be safely targeted").
+            if condition == .hidden, !kinds.isEmpty { problems.append("\(source.bundleIdentifier) hidden: \(kinds.map(\.rawValue).sorted()) enabled") }
+            // Typing only where an app reports a real caret for a non-key window (AppKit).
+            if kinds.contains(.text), !["com.apple.TextEdit", "org.dropy.inputfixture"].contains(source.bundleIdentifier) {
+                problems.append("\(source.bundleIdentifier) \(condition.rawValue): typing enabled")
+            }
+        }
+    }
+    for condition in [SourceCondition.visible, .parked] {
+        expect("com.apple.TextEdit", condition, kinds: [.pointerClick, .scroll, .text], clickTargets: [.text])
+        expect("com.apple.Safari", condition, kinds: [.pointerClick, .scroll], clickTargets: [.pressable])
+        expect("org.dropy.electronfixture", condition, kinds: [.pointerClick, .scroll], clickTargets: [.pressable])
+    }
+    expect("com.apple.Safari", .covered, kinds: [.pointerClick], clickTargets: [.pressable])
+    expect("com.apple.Safari", .minimized, kinds: [.pointerClick], clickTargets: [.pressable])
+    expect("com.apple.Safari", .otherSpace, kinds: [], clickTargets: [])
+    expect("org.dropy.electronfixture", .otherSpace, kinds: [.pointerClick], clickTargets: [.pressable])
+    for condition in SourceCondition.allCases {
+        expect("com.microsoft.VSCode", condition, kinds: [], clickTargets: [])
+        expect("com.apple.QuickTimePlayerX", condition, kinds: [], clickTargets: [])
+        expect("org.dropy.inputfixture", .hidden, kinds: [], clickTargets: [])
+    }
+    expect("org.dropy.inputfixture", .visible, kinds: [.pointerClick, .scroll, .text], clickTargets: all)
+    if !evidence.requiresManualAccessibility(for: "org.dropy.electronfixture", macOSMajor: major) {
+        problems.append("Electron evidence must require AXManualAccessibility")
+    }
+    guard problems.isEmpty else { fail("Shipped input policy differs from the M3 contract:\n" + problems.joined(separator: "\n")) }
+    print("Shipped input policy matches the M3 contract")
+    exit(0)
+}
 if args.count == 2, args[0] == "validate" {
     guard let data = FileManager.default.contents(atPath: args[1]),
           let evidence = try? JSONDecoder().decode(InputEvidence.self, from: data),

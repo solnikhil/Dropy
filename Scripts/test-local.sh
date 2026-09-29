@@ -69,6 +69,8 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rp
 "$build_dir/EvidenceToolChecks" self-test
 # The shipped evidence must decode with the current format.
 "$build_dir/EvidenceToolChecks" validate "$repo_dir/Resources/InputEvidence.json"
+# The shipped evidence must grant exactly what docs/COMPATIBILITY.md says, no more.
+"$build_dir/EvidenceToolChecks" policy "$repo_dir/Resources/InputEvidence.json"
 
 # AppKit-level regression checks for the overlay panel (no window is shown).
 swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
