@@ -113,7 +113,25 @@ struct DeviceInputRouterChecks {
         check(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontBefore, "frontmost app unchanged")
         check(Spaces.current() == spacesBefore, "desktop unchanged")
 
-        // 6. Hidden source: not verified, refused. (Hiding is the check's own action.)
+        // 6. Permission loss while the preview is open: a router whose trust check fails
+        //    sends nothing for click, scroll or typing, even with a typing target chosen.
+        var trusted = true
+        let revocable = InputRouter(journal: PlacementJournal(url: root.appendingPathComponent("journal2.json")),
+                                    evidence: testEvidence(), trustCheck: { trusted })
+        _ = revocable.click(identity, at: point, expectedWindowSize: windowFrame.size)
+        settle(0.3)
+        let beforeRevoke = textField(a).map(value)
+        trusted = false
+        check(revocable.type(identity, text: "must-not-send") == .refused(.accessibilityNotGranted),
+              "typing after Accessibility is revoked is refused")
+        check(revocable.click(identity, at: point, expectedWindowSize: windowFrame.size) == .refused(.accessibilityNotGranted),
+              "a click after Accessibility is revoked is refused")
+        check(revocable.scroll(identity, at: point, delta: CGSize(width: 0, height: -40), expectedWindowSize: windowFrame.size)
+              == .refused(.accessibilityNotGranted), "a scroll after Accessibility is revoked is refused")
+        settle(0.3)
+        check(textField(a).map(value) == beforeRevoke && value(fieldB) == beforeB, "revoked permission sent nothing")
+
+        // 7. Hidden source: not verified, refused. (Hiding is the check's own action.)
         let front = NSWorkspace.shared.frontmostApplication
         app.hide()
         settle(0.4)

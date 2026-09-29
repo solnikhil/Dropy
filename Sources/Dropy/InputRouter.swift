@@ -31,9 +31,15 @@ final class InputRouter {
     /// The text element last clicked in each window, so typing goes to that window only.
     private var textTargets: [WindowIdentity: AXUIElement] = [:]
 
-    init(journal: PlacementJournal, evidence: InputEvidence = InputRouter.bundledEvidence()) {
+    /// Whether this process may use Accessibility; replaceable so regressions can
+    /// simulate a revoked permission without touching system privacy settings.
+    private let trustCheck: () -> Bool
+
+    init(journal: PlacementJournal, evidence: InputEvidence = InputRouter.bundledEvidence(),
+         trustCheck: @escaping () -> Bool = { AXIsProcessTrusted() }) {
         self.journal = journal
         self.evidence = evidence
+        self.trustCheck = trustCheck
     }
 
     /// `InputEvidence.json` from the app bundle; empty (everything view-only) when missing.
@@ -185,6 +191,12 @@ final class InputRouter {
     private func send(_ kind: InputKind, _ identity: WindowIdentity, expectedWindowSize: CGSize? = nil,
                       classify: ((AXUIElement, CGPoint) -> InputTargetClass)? = nil,
                       _ perform: (InputRoute, AXUIElement, CGPoint) -> String?) -> Outcome {
+        // Checked on every send, not only when the preview was configured: the permission
+        // can be revoked while the overlay is open.
+        guard trustCheck() else {
+            NSLog("Dropy input: kind=%@ refused=accessibilityNotGranted", kind.rawValue)
+            return .refused(.accessibilityNotGranted)
+        }
         let resolution: InputTargetResolution
         var window: AXUIElement?
         do {

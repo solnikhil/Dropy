@@ -88,6 +88,11 @@ func runPage(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Str
     for condition in [Condition.visible, .covered, .parked, .otherSpace, .minimized] {
         for focus in [Focus.bKey, .appInactive] { conditions.append((condition, focus)) }
     }
+    // PROBE_PAGE_CONDITIONS limits a run, e.g. "otherSpace" to add only that condition.
+    if let only = ProcessInfo.processInfo.environment["PROBE_PAGE_CONDITIONS"] {
+        let allowed = Set(only.split(separator: ",").compactMap { Condition(rawValue: String($0)) })
+        conditions = conditions.filter { allowed.contains($0.0) }
+    }
     // Every text route for every case, then the click routes once per condition.
     var plan: [(Route, Action, PageCase?)] = []
     for route in routes where route != .activate {
@@ -194,11 +199,14 @@ func setUpPage(_ condition: Condition, _ focus: Focus, pageCase: PageCase?, fixt
         setBool(a, kAXMinimizedAttribute, true)
         wait(0.8)
     case .otherSpace:
-        guard engine == "electron", commandFile != nil else { return "otherSpaceNeedsOwnWindowMove" }
-        sendCommand("space:other")
-        wait(1.0)
+        // Electron moves its own window; for any other app the harness switches the
+        // active desktop away instead, after the focus state is set (below).
+        if engine == "electron", commandFile != nil { sendCommand("space:other"); wait(1.0) }
     }
     if focus == .appInactive { makeOtherAppFrontmost() }
+    if condition == .otherSpace, !(engine == "electron" && commandFile != nil) {
+        guard DesktopSwitch.away() else { return "setupSpaceSwitchFailed" }
+    }
     wait(0.4)
     // Verify rather than assume.
     let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -230,6 +238,7 @@ func setUpPage(_ condition: Condition, _ focus: Focus, pageCase: PageCase?, fixt
 @discardableResult
 func tearDownPage(fixture: Fixture, a: AXUIElement, b: AXUIElement, home: (CGRect, CGRect), engine: String) -> [String: Any]? {
     if engine == "electron", commandFile != nil { sendCommand("space:home"); wait(0.6) }
+    if !DesktopSwitch.back() { fail("could not return to the starting desktop; stopping") }
     if attribute(a, kAXMinimizedAttribute) as? Bool == true { setBool(a, kAXMinimizedAttribute, false); wait(0.8) }
     setPosition(a, home.0.origin)
     setPosition(b, home.1.origin)
@@ -268,6 +277,54 @@ func performPage(_ route: Route, _ action: Action, pageCase: PageCase?, window a
         if route == .pid { for event in keyEvents(typedText) { event.postToPid(fixture.pid); wait(0.03) }; return nil }
         return postToWindow(keyEvents(typedText), fixture: fixture, local: CGPoint(x: centre.x - origin.x, y: centre.y - origin.y))
     case .activate: return "notApplicable(route)"
+    }
+}
+
+/// Switches the person's active desktop away and back with Mission Control's
+/// Control-arrow shortcut, for sources whose windows the harness cannot move between
+/// desktops. Arrow events carry the numeric-pad and Fn flags a keyboard sets; Mission
+/// Control ignores them otherwise. The switch is verified against the window server.
+enum DesktopSwitch {
+    nonisolated(unsafe) static var returnKey: CGKeyCode?
+    nonisolated(unsafe) static var home: String?
+
+    static func press(_ key: CGKeyCode) {
+        func flags(_ event: CGEvent?, _ value: CGEventFlags) { event?.flags = value }
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: 59, keyDown: true)
+        down?.type = .flagsChanged; flags(down, .maskControl); down?.post(tap: .cghidEventTap)
+        for isDown in [true, false] {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: isDown)
+            flags(event, [.maskControl, .maskNumericPad, .maskSecondaryFn])
+            event?.post(tap: .cghidEventTap)
+            wait(0.02)
+        }
+        let up = CGEvent(keyboardEventSource: nil, virtualKey: 59, keyDown: false)
+        up?.type = .flagsChanged; flags(up, []); up?.post(tap: .cghidEventTap)
+    }
+
+    /// Moves to a neighbouring desktop; false if none changed the active desktop.
+    static func away() -> Bool {
+        let start = activeSpaces()
+        for (key, back) in [(CGKeyCode(124), CGKeyCode(123)), (123, 124)] {
+            press(key)
+            wait(1.5)
+            if activeSpaces() != start {
+                home = start
+                returnKey = back
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Returns to the desktop `away` left, if it left one. False if that fails.
+    static func back() -> Bool {
+        guard let key = returnKey, let home else { return true }
+        press(key)
+        wait(1.5)
+        returnKey = nil
+        self.home = nil
+        return activeSpaces() == home
     }
 }
 

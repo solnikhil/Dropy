@@ -2,6 +2,33 @@
 
 This is a **development observation log**, not a supported-app list. A green capture image does not mean the app is interactive inside Dropy. Results need a Dropy revision, macOS version, target app version, display configuration and tested workflow before they can become release support claims.
 
+## M3 workflow contract
+
+This is the written contract that M3's exit condition refers to. Results below are judged against it; nothing is promoted by a demo.
+
+**Support levels**, per app, app version, macOS major version, input kind, element class and source condition:
+
+| Level | Meaning |
+|---|---|
+| View-only | Live pixels; every input is refused with a reason on screen |
+| Clickable (class) | A click on an element of that class (pressable, text, other) reaches the exact element in the exact window |
+| Scrollable | A wheel scroll moves only the scroll area under the pointer in the exact window |
+| Typable (field class) | Committed characters are inserted at the field's own caret or replace its selection, in the exact field, with the app's own input events and undo |
+
+**Source conditions**: visible, covered by another window, parked (moved beyond the displays behind a Dropy tab), minimized, on another desktop, app hidden. A level holds only for the conditions in which it was verified. When the source cannot be tied to the selected window (closed, relaunched, resized mid-send, stale element, no drawn frame, another desktop without evidence, app hidden, Accessibility not granted), input is refused and the preview says why.
+
+**A trial passes only if all of these hold**: the intended effect happened, exactly (text and caret, not "something changed"), in the target element of window A; the decoy window B of the same app neither changed nor received the event; nothing else changed except, at most, A becoming key inside its own inactive app; the pointer did not move; no modifier key or mouse button was left down; the frontmost app and the active desktop did not change. A trial whose setup could not be verified (focus state, cover, parking, minimize, desktop) is **NOT RUN**, never a pass.
+
+**A level is verified** for a condition when every trial passed with another window of the app key *and* with the app in the background, with no wrong-window trial in any repeat; and, for any level shipped in the preview, an end-to-end check with real HID input on Dropy's preview (`Scripts/interactive-checks.sh`) passed in at least the visible condition. Any wrong-window observation disqualifies that route for that kind, class and condition.
+
+**Containment contract**, per app: the four placement modes restore the window exactly; a move made by the person during a placement is kept; a placement journal left by a killed Dropy is restored on the next launch, including with the source on another desktop; and while parked the capture keeps presenting the source's changes. Minimize and hide pause capture, and the preview says paused.
+
+**Always refused until exact-target evidence exists**: editing keys (arrows, delete, return), shortcuts, input-method composition, dead keys, context menus, drag and drop, hover, momentum and modified scrolling, modified and multi-clicks, and any sheet, menu or dialog outside the captured window. Each refusal must be visible and must reach neither window.
+
+**Failures**: any wrong-window effect or delivery, focus theft from Dropy, pointer motion, a held key or button, a source window not restored or lost, a desktop change, and a report that calls a skipped check passed.
+
+**M3 exit condition, made concrete**: one named app per toolkit (AppKit: TextEdit; WebKit: Safari; Chromium/Electron: a third-party Electron app; media: a media player) meets the containment contract and has at least click and scroll verified in the visible *and* the parked condition, with every other workflow refused as above. A toolkit represented only by Dropy's own disposable fixture does not count.
+
 ## Verified capability matrix (2026-09-30)
 
 M2 MacBook Air (`Mac14,2`), macOS 27.0 (26A428), built-in display only, one person-free session on one desktop plus a second desktop for the other-desktop condition. "Verified" means every recorded trial passed with another window of the app key *and* with the app inactive, no trial reached the decoy window, and the route has no side effect beyond the target becoming key inside its own app (see [feasibility](FEASIBILITY.md) and `InputCapabilities`). These are the only capabilities `Resources/InputEvidence.json` grants; every other app and macOS version is view-only. Since 2026-09-30, click evidence is also **per element class** (`InputTargetClass`: pressable, text, other): the router classifies the element under the pointer and sends only if a route is verified for that class. Trials recorded without a class count for every class, so they can only make a class fail; only the disposable AppKit fixture's clicks are unclassified.

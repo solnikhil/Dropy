@@ -27,6 +27,11 @@
 #   ONLY=electron Scripts/device-checks.sh --skip-benchmark  the same against the disposable Electron
 #                 fixture (Scripts/bench/ElectronFixture, throwaway profile) showing the animation page.
 #
+#   ONLY=safari Scripts/device-checks.sh --skip-benchmark  Safari (animating local page) placement,
+#                 user move and crash recovery.
+#   ONLY=media Scripts/device-checks.sh --skip-benchmark  the same against QuickTime Player playing a
+#                 generated test movie (Scripts/bench/MovieMaker.swift); needs QuickTime not running.
+#                 QuickTime is driven without Apple Events (no Automation permission).
 #   CHECK_OTHER_DESKTOP=1 adds normal/crash parked recovery on another desktop.
 #
 # Needs a terminal with Screen Recording and Accessibility permission, the display
@@ -49,6 +54,7 @@ prefs_key="org.dropy.preferences.v1"
 if lsappinfo info -only pid -app org.dropy.electronfixture 2>/dev/null | grep -q '[0-9]'; then
   print -u2 "Quit DropyElectronFixture first."; exit 1
 fi
+[[ "$only" == media ]] && pgrep -xq "QuickTime Player" && { print -u2 "Quit QuickTime Player first."; exit 1; }
 for app in Dropy TextEdit Safari DropyFixture; do
   if pgrep -xq "$app"; then
     print -u2 "Quit $app first; the checks open and close their own $app windows."
@@ -84,6 +90,8 @@ cleanup() {
     DROPY_DEBUG_QUIT_AFTER=3 "$dropy" >/dev/null 2>&1 || true
   fi
   for app in $owned_apps; do
+    # QuickTime is ended without Apple Events: its only documents are generated movies.
+    if [[ "$app" == "QuickTime Player" ]]; then pkill -x "QuickTime Player" 2>/dev/null || true; continue; fi
     pgrep -xq "$app" && osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1 || true
   done
   if [[ "$prefs_touched" == yes ]]; then
@@ -217,6 +225,20 @@ open_target() {
         close (every window whose name is not "Dropy bench animation")
         set bounds of (first window whose name is "Dropy bench animation") to {80, 560, 880, 1000}
       end tell' >/dev/null ;;
+    com.apple.QuickTimePlayerX)
+      owned_apps+=("QuickTime Player")
+      swiftc -O -swift-version 6 -o "$build_dir/MovieMaker" "$repo_dir/Scripts/bench/MovieMaker.swift"
+      swiftc -O -swift-version 6 -o "$build_dir/HIDTool" "$repo_dir/Scripts/bench/HIDTool/main.swift"
+      "$build_dir/MovieMaker" "$work_dir/dropy-media.mov" 240 >/dev/null
+      open -a "QuickTime Player" "$work_dir/dropy-media.mov" --args -ApplePersistenceIgnoreState YES
+      sleep 3
+      local qt="$(pid_of com.apple.QuickTimePlayerX)" qw
+      qw="$("$tool" find "$qt" 2>/dev/null || true)"
+      [[ -n "$qw" ]] && "$tool" move "$qt" "$qw" 80 560 >/dev/null 2>&1 || true
+      # Start playback as a person would: QuickTime is frontmost after opening; Space plays.
+      if [[ "$("$build_dir/HIDTool" frontmost)" == com.apple.QuickTimePlayerX ]]; then "$build_dir/HIDTool" key 49
+      else print -u2 "QuickTime not frontmost; playback not started"; fi
+      sleep 1 ;;
     org.dropy.electronfixture)
       : > "$work_dir/electron-commands.txt"
       open -n "$build_dir/DropyElectronFixture.app" --args --mode animation --page animation.html \
@@ -573,6 +595,31 @@ if [[ "$only" == all || "$only" == textedit ]]; then
     record com.apple.TextEdit "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
   fi
   osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
+fi
+if [[ "$only" == safari ]]; then
+  print "Device checks: Safari (WebKit) placement, user move and crash recovery"
+  open_target com.apple.Safari
+  placement_checks com.apple.Safari
+  if [[ ! -f "$journal" ]] && "$tool" axcheck "$(pid_of com.apple.Safari)" >/dev/null 2>&1; then
+    user_move_check com.apple.Safari
+    crash_check com.apple.Safari
+  else
+    record com.apple.Safari "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
+  fi
+  osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true
+fi
+if [[ "$only" == media ]]; then
+  print "Device checks: QuickTime Player (media) placement, user move and crash recovery"
+  open_target com.apple.QuickTimePlayerX
+  qt_pid="$(pid_of com.apple.QuickTimePlayerX)"
+  placement_checks com.apple.QuickTimePlayerX
+  if [[ ! -f "$journal" ]] && "$tool" axcheck "$qt_pid" >/dev/null 2>&1; then
+    user_move_check com.apple.QuickTimePlayerX
+    crash_check com.apple.QuickTimePlayerX
+  else
+    record com.apple.QuickTimePlayerX "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
+  fi
+  pkill -x "QuickTime Player" 2>/dev/null || true
 fi
 if [[ "$only" == all || "$only" == electron ]]; then
   print "Device checks: Electron fixture placement, user move and crash recovery"

@@ -161,11 +161,50 @@ run_case() {
   [[ "$scrolled" == A=[1-9]*" B=0" ]] && record "$condition" scroll PASS "$scrolled; $(grep -oE 'kind=scroll [^ ]+ route=[a-zA-Z]+' "$log" | tail -1)" \
     || record "$condition" scroll FAIL "$scrolled; $(grep -E 'kind=scroll' "$log" | tail -1 | cut -c 60-)"
 
+  [[ "$condition" == visible ]] && refusal_checks "$log"
   local front="$("$hid" frontmost)"
   [[ "$front" == org.dropy.app ]] && record "$condition" "focus stays with Dropy" PASS "frontmost=$front" \
     || record "$condition" "focus stays with Dropy" FAIL "frontmost=$front"
   kill "$dropy_pid" 2>/dev/null || true; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
   "$probe" send reset; "$probe" send key:B; sleep 0.5
+}
+
+# Input and effect lines per window since a log line: "A=<events>/<effects> B=<events>/<effects>".
+activity_since() {
+  tail -n +"$(( $1 + 1 ))" "$fixture_log" | python3 -c "
+import json,sys
+c={'A':[0,0],'B':[0,0]}
+for line in sys.stdin:
+    try: d=json.loads(line)
+    except: continue
+    if d.get('w') in c and d.get('kind') in ('event','effect'): c[d['w']][0 if d['kind']=='event' else 1]+=1
+print('A=%d/%d B=%d/%d' % (c['A'][0],c['A'][1],c['B'][0],c['B'][1]))"
+}
+
+# Unsupported workflows must be refused visibly and reach neither window. Runs in the
+# visible condition, after the click/typing/scroll checks (A's field is the typing target).
+refusal_checks() {
+  local log="$1" mark point shown before
+  refused() {  # name, expected message fragment, command...
+    local name="$1" message="$2"; shift 2
+    before="$(grep -c 'Dropy input: shown=' "$log" || true)"
+    mark="$(log_mark)"
+    "$@"; sleep 0.8
+    local activity="$(activity_since "$mark")"
+    shown="$(grep 'Dropy input: shown=' "$log" | tail -n +"$(( before + 1 ))" | grep -F "$message" | tail -1 | grep -oE 'shown="[^"]*"' || true)"
+    [[ "$activity" == "A=0/0 B=0/0" && -n "$shown" ]] && record visible "$name refused" PASS "$activity; $shown" \
+      || record visible "$name refused" FAIL "$activity; ${shown:-no refusal shown}"
+  }
+  point=($(preview_point "${button[1]}" "${button[2]}"))
+  refused "right-click (context menu)" "Right-click not sent" "$hid" rightclick "${point[1]}" "${point[2]}"
+  refused "double-click" "Click not sent" "$hid" doubleclick "${point[1]}" "${point[2]}"
+  local s1=($(preview_point "${scroll[1]}" "$(( scroll[2] - 60 ))")) s2=($(preview_point "${scroll[1]}" "$(( scroll[2] + 60 ))"))
+  refused "drag" "Drag not sent" "$hid" drag "${s1[1]}" "${s1[2]}" "${s2[1]}" "${s2[2]}"
+  "$hid" move "${point[1]}" "${point[2]}"
+  refused "Option-scroll" "Scroll not sent" "$hid" scroll -120 opt
+  refused "Command-K shortcut" "Shortcut not sent" "$hid" key 40 cmd
+  refused "left arrow (editing key)" "not supported in the preview" "$hid" key 123
+  refused "delete (editing key)" "not supported in the preview" "$hid" key 51
 }
 
 print "Interactive preview checks"
@@ -429,7 +468,7 @@ print -r -- "Report saved to $report"
 # A report containing failures or skipped checks is not a successful verification run.
 (( router_status == 0 )) && ! grep -q '^FAIL' "$logs/router-regressions.txt" \
   || { print -u2 "A router regression failed; see $report"; exit 1; }
-(( ${#rows} == 21 )) || { print -u2 "Expected 21 completed checks; see $report"; exit 1; }
+(( ${#rows} == 28 )) || { print -u2 "Expected 28 completed checks; see $report"; exit 1; }
 for row in $rows; do
   [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
 done

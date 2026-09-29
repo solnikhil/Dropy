@@ -759,6 +759,8 @@ final class OverlayController: NSObject {
 
     /// Shows a short message in place of the interaction label, then restores the label.
     private func flash(_ message: String) {
+        // Logged so device checks can confirm every refusal is shown, not silent.
+        NSLog("Dropy input: shown=\"%@\"", message)
         interactionMessage?.cancel()
         interactionStatus?.stringValue = message
         let work = DispatchWorkItem { [weak self] in

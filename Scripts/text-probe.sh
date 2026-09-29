@@ -10,7 +10,10 @@
 #
 # Only local throwaway pages are opened. Safari must not be running (its saved windows
 # are not restored: -ApplePersistenceIgnoreState). Safari windows cannot be moved to
-# another desktop from outside the app, so its otherSpace trials record notRun.
+# another desktop from outside the app, so for Safari the otherSpace condition switches
+# the active desktop away (Control-arrow) after the focus state is set, verifies that
+# the source's desktop and the active one differ, and switches back after each trial.
+# PROBE_PAGE_CONDITIONS=otherSpace runs only that condition.
 # Writes .build/local/text-probe-<target>-<timestamp>.md with raw results beside it.
 set -euo pipefail
 repo_dir="${0:A:h:h}"
@@ -111,6 +114,7 @@ APPLESCRIPT
 fi
 [[ -n "$target_pid" && -n "$A" && -n "$B" ]] || { print -u2 "target did not start"; exit 1; }
 
+desktop_start="$("$build_dir/WindowTool" spaces | cut -d' ' -f1)"
 caffeinate -d "$probe" page "$target_pid" "$A" "$B" "$logs/results.jsonl" "$target" "$routes" | tee "$logs/probe.txt"
 
 {
@@ -118,7 +122,7 @@ caffeinate -d "$probe" page "$target_pid" "$A" "$B" "$logs/results.jsonl" "$targ
   print
   print -r -- "- Date: $(date '+%Y-%m-%d %H:%M %Z'); revision: $(git -C "$repo_dir" rev-parse --short HEAD)$(git -C "$repo_dir" diff --quiet || print ' (uncommitted changes)')"
   print -r -- "- macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion)); $(sysctl -n hw.model); target: $version, window A $A, decoy window B $B"
-  print -r -- "- Desktop session: $device_session_summary"
+  print -r -- "- Desktop session: $device_session_summary; desktop at start $desktop_start, at end $("$build_dir/WindowTool" spaces | cut -d' ' -f1)"
   print -r -- "- $(grep -E '^tally' "$logs/probe.txt")"
   print
   print -r -- "Cases (Scripts/bench/text.html): middle = caret inside prefilled input, select = selection replaced, multi = caret inside line 2 of a textarea, edit = caret inside a contenteditable. \`pass\` = exact text and caret in A's field, an input event in A, A's other fields and all of B unchanged, no key-window, app, desktop or pointer change, nothing held. \`partialEffect(...)\` = A changed but not correctly; **wrongWindow** = B changed or received input. Undo is measured afterwards with the page's own undo."

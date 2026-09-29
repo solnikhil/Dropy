@@ -90,6 +90,48 @@ case "click":
     }
     for (_, key, flag) in held.reversed() { flags.remove(flag); modifier(key, down: false, flags: flags) }
     _ = release()
+case "rightclick":
+    guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: rightclick <x> <y>") }
+    let point = CGPoint(x: x, y: y)
+    post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .right))
+    for type in [CGEventType.rightMouseDown, .rightMouseUp] {
+        let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .right)
+        event?.flags = []
+        event?.setIntegerValueField(.mouseEventClickState, value: 1)
+        post(event)
+    }
+case "doubleclick":
+    guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: doubleclick <x> <y>") }
+    let point = CGPoint(x: x, y: y)
+    post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
+    for click in [1, 2] {
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+            event?.flags = []
+            event?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+            post(event)
+        }
+    }
+case "drag":
+    // drag <x1> <y1> <x2> <y2>: left button down, 20 dragged steps, up.
+    guard args.count == 5, let x1 = Double(args[1]), let y1 = Double(args[2]), let x2 = Double(args[3]), let y2 = Double(args[4])
+    else { fail("usage: drag <x1> <y1> <x2> <y2>") }
+    let start = CGPoint(x: x1, y: y1)
+    post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: start, mouseButton: .left))
+    let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left)
+    down?.flags = []
+    post(down)
+    var point = start
+    for step in 1...20 {
+        let t = Double(step) / 20
+        point = CGPoint(x: x1 + (x2 - x1) * t, y: y1 + (y2 - y1) * t)
+        let event = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left)
+        event?.flags = []
+        post(event)
+    }
+    let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+    up?.flags = []
+    post(up)
 case "move":
     guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: move <x> <y>") }
     let start = CGEvent(source: nil)?.location ?? .zero
@@ -102,9 +144,17 @@ case "move":
     }
 case "scroll":
     // scroll <dy>: one pixel-unit wheel event at the pointer (negative scrolls down).
-    guard args.count == 2, let dy = Int32(args[1]) else { fail("usage: scroll <dy>") }
+    guard (2...3).contains(args.count), let dy = Int32(args[1]) else { fail("usage: scroll <dy> [mods]") }
+    let names = args.count == 3 ? args[2].split(separator: ",").map(String.init) : []
+    let held = modifierKeys.filter { names.contains($0.0) }
+    var flags: CGEventFlags = []
+    for (_, key, flag) in held { flags.insert(flag); modifier(key, down: true, flags: flags) }
+    defer {
+        for (_, key, flag) in held.reversed() { flags.remove(flag); modifier(key, down: false, flags: flags) }
+        _ = release()
+    }
     let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0)
-    event?.flags = []
+    event?.flags = flags
     // Wheel initializers do not promise the current cursor location. Set it explicitly
     // so a test never posts the scroll to the menu bar or another window by accident.
     let point = CGEvent(source: nil)?.location ?? .zero
