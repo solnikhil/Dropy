@@ -40,6 +40,15 @@ The selected `SCWindow.windowID` identifies capture content; it does not provide
 
 Before enabling an input adapter in the product, test same-app windows A and B under different focus states; left/right click, hover, wheel, keyboard shortcuts, selection, text/IME, menus, sheets, dialogs and drag/drop; then repeat with AppKit, browser/WebKit, Electron and music apps. Record the exact window receiving the action and any focus or visible-window transition. Declare support per app and workflow, not by one successful click.
 
+### Typing design (decision record, 2026-09-30; not implemented)
+
+Measured on macOS 27: keyboard events always follow the source app's key window, and only AppKit text views report a usable caret for a window that is not key. Chromium reports the selection as 0; WebKit applied a value to another element. So Dropy has two typing modes, and only the first exists:
+
+1. **In-preview typing** (shipped, AppKit only): committed text through `AXSelectedText` into the text element last clicked in the exact window, verified per app, field class and condition. Never for an app without that evidence.
+2. **Hand-off typing** (proposed): on an explicit request, Dropy undoes any placement, raises the source window, makes its app frontmost, and says so. The person then types in the real window with every key, IME and shortcut working natively. Returning to the preview re-parks the window. This gives up containment while typing, by design. Its gates: the placement journal must record the hand-off; "your move wins" applies to moves made during it; focus returns to where it was; and it must never trigger without a person's action.
+
+Rejected, with evidence: whole-value rewrite (wrong position, broken undo, no `inputType`); posting keys to the process or window (decoy window receives them); typing only while the source happens to be key (a demo, not exact-window routing).
+
 ## Source-window placement boundary
 
 ScreenCaptureKit documents capture of covered and off-screen windows, with minimization pausing. The controlled off-screen experiment worked only after its source window subclass overrode AppKit's default frame constraint; the ordinary test window was clamped so 40 points remained visible. Dropy cannot change another app's `NSWindow` subclass. Hiding, minimizing, moving to another Space, off-screen Accessibility positioning and virtual display placement each need separate tests with real apps. A failure must leave the source app accessible through normal macOS controls.
