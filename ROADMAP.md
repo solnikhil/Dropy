@@ -13,6 +13,20 @@ Milestones are **evidence gates**, not calendar promises. Work may move between 
 | M4 · Product experience and performance | Direct/last/picker opening, app pinning, size and region controls, dismissal, shortcut and notchless entry, accessibility, multi-display/full-screen behavior, benchmark suite | End-to-end journeys pass on target hardware; latency and resource budgets are measured and met for supported workflows |
 | M5 · Release candidate | Compatibility matrix, signed/notarized packaging, update and rollback policy, documentation, privacy review, regression testing | Reproducible release with honest app/workflow support and no unresolved data-loss, security or source-window restoration failure |
 
+## Now: M3 compatibility and reliability gates
+
+Status after the 2026-09-29 session (details and raw reports in the [compatibility matrix](docs/COMPATIBILITY.md)). New keyboard features (shortcuts, editing keys, IME) stay deferred until these gates pass; parking stays experimental.
+
+| Gate | Pass condition | Status |
+|---|---|---|
+| Electron input | Disposable two-window Electron app: clicks, scrolling, typing with the target visible, covered, parked, minimized, on another desktop; decoy untouched; pointer, focus, desktop, modifier and button state measured | **Partly passed.** Click (Accessibility press, pressable elements only) verified in all five conditions; scroll verified visible, covered and parked; no effect on another desktop or minimized. Typing has **no verified route** and is refused. No trial moved the pointer or left a modifier or button held |
+| Routing regressions | Source resize, rapid switching, quit/relaunch and stale text targets refuse input whenever identity or geometry is uncertain | **Passed** on the AppKit fixture (device) and in unit tests (`PreviewInputGate`) |
+| Recovery | Placement restoration, "your move wins" and crash recovery for TextEdit and the Electron fixture | **Passed** for both: all four placement modes restored, a move during placement kept, a journal restored after `kill -9` ([TextEdit](docs/device-checks/2026-09-29-recovery-textedit.md), [Electron](docs/device-checks/2026-09-29-recovery-electron.md)). Review rerun: Electron fixture normal/crash parked recovery on another desktop also passes. TextEdit cross-desktop setup could not switch desktops and remains unverified ([review](docs/device-checks/2026-09-29-pr30-review.md)) |
+| Performance | One coordinated idle-Mac benchmark: closed, open idle, actively updating | **Review fixes improve CPU and accounting.** Closed 0.0%; unchanged 1.9% CPU at stable idle rate; active 10.9%, 57.5 fps. Final presentation counts pass after separating retries. Idle frame-age p95 remains 100.4 ms against the provisional 50 ms target, and background load was not quiet ([review](docs/BENCHMARK.md#pr-30-review-measurements)) |
+| Real apps | The same matrix on third-party Electron, WebKit and media apps with disposable content | Open: needs apps whose windows and documents can be created and discarded without touching personal workspaces |
+
+Next, in order: a Chromium typing route that targets the exact field without making the window key (or an honest "type only when the source is key" mode with visible focus handling); Safari page input; third-party apps with disposable profiles; then IME and editing keys.
+
 ## Now: M1 work order
 
 1. Introduce stable source identity and event-driven re-resolution when a selected window closes, moves or changes size. Never trust an old numeric window ID after a target relaunch.

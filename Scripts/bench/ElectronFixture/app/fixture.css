@@ -1,0 +1,6 @@
+body { margin: 0; padding: 16px; font: 13px -apple-system, sans-serif; background: #f4f4f4; }
+.row { display: flex; gap: 12px; margin-bottom: 12px; }
+#text { flex: 1; height: 24px; font-size: 14px; }
+#button { width: 90px; height: 30px; }
+#scroll { height: 270px; overflow-y: scroll; background: #fff; border: 1px solid #ccc; }
+#scroll p { margin: 0; padding: 4px 8px; border-bottom: 1px solid #eee; }

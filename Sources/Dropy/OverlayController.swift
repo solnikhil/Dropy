@@ -664,6 +664,7 @@ final class OverlayController: NSObject {
             return
         }
         let support = inputRouter.support(for: identity)
+        inputRouter.prepare(identity)
         if renderer.onClick == nil, let window = renderer.window {
             // Where the preview is, for device checks: global top-left points.
             let frame = window.convertToScreen(renderer.convert(renderer.bounds, to: nil))
@@ -674,29 +675,42 @@ final class OverlayController: NSObject {
         if interactionMessage == nil {
             interactionStatus?.stringValue = InteractionLabel.text(for: support, enabled: true, trusted: true)
         }
+        // Each event re-checks that the drawn frame is this selection's window at its
+        // current size; the router then confirms that size against the live window.
         renderer.onClick = { [weak self] point in
-            guard let self, let target = self.windowPoint(point) else { return }
-            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: self.selectedWindowSize), kind: .pointerClick)
+            guard let self, let mapping = self.mapping(for: identity, kind: .pointerClick),
+                  let target = mapping.windowPoint(for: point) else { return }
+            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize), kind: .pointerClick)
         }
         renderer.onScroll = { [weak self] point, delta in
-            guard let self, let target = self.windowPoint(point), let mapping = self.mapping() else { return }
-            self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta), expectedWindowSize: self.selectedWindowSize), kind: .scroll)
+            guard let self, let mapping = self.mapping(for: identity, kind: .scroll),
+                  let target = mapping.windowPoint(for: point) else { return }
+            self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta),
+                                                expectedWindowSize: mapping.windowSize), kind: .scroll)
         }
         renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
     }
 
-    private func mapping() -> PreviewPointMapping? {
-        guard let renderer, let pixels = renderer.presentedPixelSize, let windowSize = selectedWindowSize else { return nil }
-        return PreviewPointMapping(viewSize: renderer.bounds.size,
-                                   backingScale: renderer.window?.backingScaleFactor ?? 2,
-                                   capturePixelSize: pixels, windowSize: windowSize,
-                                   mode: preferences.value.contentMode)
-    }
-
-    /// The source-window point under a preview point; nil over letterbox areas, where
-    /// nothing is sent.
-    private func windowPoint(_ viewPoint: CGPoint) -> CGPoint? {
-        mapping()?.windowPoint(for: viewPoint)
+    /// The mapping through the frame actually drawn, or nil (with a visible reason)
+    /// when that frame cannot be tied to this selection's window at its current size:
+    /// after a switch, before the first frame, or while the source is being resized.
+    private func mapping(for identity: WindowIdentity, kind: InputKind) -> PreviewPointMapping? {
+        guard let renderer else { return nil }
+        let frame = renderer.presentedFrame
+        switch PreviewInputGate.check(handler: identity, selected: selectedIdentity, frame: frame,
+                                      sourceWindowSize: selectedWindowSize) {
+        case .failure(let refusal):
+            NSLog("Dropy input: kind=%@ gate=%@", kind.rawValue, String(describing: refusal))
+            flash(refusal == .sourceChanged || refusal == .frameFromOtherWindow
+                  ? "Switching windows · input not sent" : "Preview updating · input not sent")
+            return nil
+        case .success(let windowSize):
+            guard let pixels = frame?.pixelSize else { return nil }
+            return PreviewPointMapping(viewSize: renderer.bounds.size,
+                                       backingScale: renderer.window?.backingScaleFactor ?? 2,
+                                       capturePixelSize: pixels, windowSize: windowSize,
+                                       mode: preferences.value.contentMode)
+        }
     }
 
     /// Typing in the preview: committed characters only. Shortcuts, editing keys and

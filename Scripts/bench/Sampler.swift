@@ -10,6 +10,12 @@ import Darwin
 import Foundation
 import IOKit
 
+let ticksToNanoseconds: Double = {
+    var timebase = mach_timebase_info_data_t()
+    mach_timebase_info(&timebase)
+    return Double(timebase.numer) / Double(timebase.denom)
+}()
+
 struct Reading {
     var cpuNanoseconds: Double
     var memoryBytes: Double
@@ -25,8 +31,11 @@ func rusageReading(_ pid: pid_t) -> Reading? {
         }
     }
     guard result == 0 else { return nil }
-    // proc_pid_rusage reports nanoseconds, unlike mach_absolute_time ticks.
-    let nanoseconds = Double(info.ri_user_time) + Double(info.ri_system_time)
+    // ri_user_time and ri_system_time are mach absolute-time ticks on Apple silicon
+    // (125/3 ns each on this Mac), not nanoseconds. Measured 2026-09-29: a 1 s busy loop
+    // read 23.9 M units against 0.995 s of CLOCK_PROCESS_CPUTIME_ID. `self-check`
+    // repeats that comparison so a future OS change cannot silently skew CPU figures.
+    let nanoseconds = (Double(info.ri_user_time) + Double(info.ri_system_time)) * ticksToNanoseconds
     return Reading(cpuNanoseconds: nanoseconds,
                    memoryBytes: Double(info.ri_phys_footprint),
                    idleWakeups: Double(info.ri_pkg_idle_wkups),
@@ -77,6 +86,20 @@ func percentile(_ values: [Double], _ p: Double) -> Double {
 }
 
 let arguments = CommandLine.arguments.dropFirst()
+if arguments.first == "self-check" {
+    // Burn about 0.5 s of CPU and compare the rusage reading with the process CPU clock.
+    let before = rusageReading(getpid())!.cpuNanoseconds
+    let clockBefore = clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID)
+    var value = 0.0
+    let end = Date().addingTimeInterval(0.5)
+    while Date() < end { value += sin(value + 1) }
+    let measured = rusageReading(getpid())!.cpuNanoseconds - before
+    let reference = Double(clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID) - clockBefore)
+    let ratio = measured / reference
+    print(String(format: "Sampler CPU self-check: rusage/clock=%.3f (%.0f ms vs %.0f ms)%@", ratio,
+                 measured / 1e6, reference / 1e6, value.isNaN ? " " : ""))
+    exit(abs(ratio - 1) < 0.05 ? 0 : 1)
+}
 guard let seconds = arguments.first.flatMap(Int.init), seconds > 0 else {
     FileHandle.standardError.write(Data("usage: Sampler <seconds> <label>=<pid> ...\n".utf8))
     exit(2)

@@ -19,6 +19,8 @@ seconds="${1:-20}"
 shift $(( $# > 0 ? 1 : 0 ))
 workloads=("${@:-static scroll animation}")
 workloads=(${=workloads})
+source "${0:A:h}/lib/device-session.zsh"
+device_session_begin benchmark || exit 1
 work_dir="$(mktemp -d)"
 report="$build_dir/benchmark-$(date +%Y%m%d-%H%M%S).md"
 prefs_domain="org.dropy.app"
@@ -33,6 +35,7 @@ done
 
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$build_dir/Sampler" "$repo_dir/Scripts/bench/Sampler.swift"
+"$build_dir/Sampler" self-check
 
 defaults export "$prefs_domain" "$work_dir/prefs.plist" 2>/dev/null || true
 dropy_pid=""
@@ -50,6 +53,7 @@ cleanup() {
     defaults delete "$prefs_domain" "$prefs_key" 2>/dev/null || true
   fi
   rm -rf "$work_dir"
+  device_session_end
 }
 trap cleanup EXIT INT TERM
 
@@ -66,11 +70,11 @@ prepare() {
     static)
       app=TextEdit
       for i in {1..60}; do print "Dropy benchmark static document, line $i"; done > "$work_dir/static.txt"
-      open -a TextEdit "$work_dir/static.txt"; window="static.txt" ;;
+      open -a TextEdit "$work_dir/static.txt" --args -ApplePersistenceIgnoreState YES; window="static.txt" ;;
     scroll)
-      app=Safari; open -a Safari "$repo_dir/Scripts/bench/scroll.html"; window="Dropy bench scroll" ;;
+      app=Safari; open -a Safari "$repo_dir/Scripts/bench/scroll.html" --args -ApplePersistenceIgnoreState YES; window="Dropy bench scroll" ;;
     animation)
-      app=Safari; open -a Safari "$repo_dir/Scripts/bench/animation.html"; window="Dropy bench animation" ;;
+      app=Safari; open -a Safari "$repo_dir/Scripts/bench/animation.html" --args -ApplePersistenceIgnoreState YES; window="Dropy bench animation" ;;
     *) print -u2 "unknown workload $1"; exit 2 ;;
   esac
   for i in {1..40}; do

@@ -24,6 +24,10 @@
 #
 #   ONLY=fixture Scripts/device-checks.sh --skip-benchmark   runs only the fixture checks.
 #   ONLY=textedit Scripts/device-checks.sh --skip-benchmark  runs only TextEdit, user move and crash recovery.
+#   ONLY=electron Scripts/device-checks.sh --skip-benchmark  the same against the disposable Electron
+#                 fixture (Scripts/bench/ElectronFixture, throwaway profile) showing the animation page.
+#
+#   CHECK_OTHER_DESKTOP=1 adds normal/crash parked recovery on another desktop.
 #
 # Needs a terminal with Screen Recording and Accessibility permission, the display
 # awake, and TextEdit, Safari and the fixture not running. Every window is restored afterwards.
@@ -42,6 +46,9 @@ report="$build_dir/device-checks-$(date +%Y%m%d-%H%M%S).md"
 prefs_domain="org.dropy.app"
 prefs_key="org.dropy.preferences.v1"
 
+if lsappinfo info -only pid -app org.dropy.electronfixture 2>/dev/null | grep -q '[0-9]'; then
+  print -u2 "Quit DropyElectronFixture first."; exit 1
+fi
 for app in Dropy TextEdit Safari DropyFixture; do
   if pgrep -xq "$app"; then
     print -u2 "Quit $app first; the checks open and close their own $app windows."
@@ -53,12 +60,16 @@ if [[ -f "$journal" ]]; then
   print -u2 "Recover the existing placement journal before running device checks."
   exit 1
 fi
+source "${0:A:h}/lib/device-session.zsh"
+device_session_begin device-checks || exit 1
 work_dir="$(mktemp -d)"
 dropy_pid=""
 fixture_pid=""
 owned_apps=()
 rows=()
 prefs_touched=no
+space_return_key=""
+space_home=""
 
 cleaned_up=no
 cleanup() {
@@ -66,6 +77,8 @@ cleanup() {
   cleaned_up=yes
   stop_dropy
   stop_fixture
+  stop_electron
+  return_test_desktop
   # A placement left behind by an interrupted check is undone by one Dropy launch.
   if [[ -f "$journal" ]]; then
     DROPY_DEBUG_QUIT_AFTER=3 "$dropy" >/dev/null 2>&1 || true
@@ -86,6 +99,7 @@ cleanup() {
     cp "$logfile" "$logs/"
   done
   rm -rf "$work_dir"
+  device_session_end
 }
 trap cleanup EXIT
 # zsh 5.9 skips EXIT traps (and `always` blocks) when errexit fires inside a function,
@@ -125,6 +139,16 @@ stop_fixture() {
     kill "$fixture_pid" 2>/dev/null || true
     fixture_pid=""
   fi
+}
+
+electron_pid=""
+stop_electron() {
+  # Ask through the command channel even when the fixture never reported ready.
+  [[ -f "$work_dir/electron-commands.txt" ]] && { print quit >> "$work_dir/electron-commands.txt" 2>/dev/null || true; }
+  [[ -n "$electron_pid" ]] || return 0
+  for i in {1..30}; do kill -0 "$electron_pid" 2>/dev/null || break; sleep 0.1; done
+  kill "$electron_pid" 2>/dev/null || true
+  electron_pid=""
 }
 
 # Active Space and frontmost app, e.g. "active=4 frontmost=com.apple.Terminal".
@@ -175,14 +199,14 @@ open_target() {
     com.apple.TextEdit)
       owned_apps+=(TextEdit)
       for i in {1..40}; do print "Dropy device check line $i"; done > "$work_dir/check.txt"
-      open -a TextEdit "$work_dir/check.txt"; sleep 2
+      open -a TextEdit "$work_dir/check.txt" --args -ApplePersistenceIgnoreState YES; sleep 2
       osascript -e 'tell application "TextEdit"
         close (every window whose name is not "check.txt") saving no
         set bounds of window "check.txt" to {80, 560, 880, 1000}
       end tell' >/dev/null ;;
     com.apple.Safari)
       owned_apps+=(Safari)
-      open -a Safari "$repo_dir/Scripts/bench/animation.html"
+      open -a Safari "$repo_dir/Scripts/bench/animation.html" --args -ApplePersistenceIgnoreState YES
       # Wait for the page title; closing "other" windows too early closes the page itself.
       for i in {1..40}; do
         osascript -e 'tell application "Safari" to exists (first window whose name is "Dropy bench animation")' \
@@ -193,6 +217,15 @@ open_target() {
         close (every window whose name is not "Dropy bench animation")
         set bounds of (first window whose name is "Dropy bench animation") to {80, 560, 880, 1000}
       end tell' >/dev/null ;;
+    org.dropy.electronfixture)
+      : > "$work_dir/electron-commands.txt"
+      open -n "$build_dir/DropyElectronFixture.app" --args --mode animation --page animation.html \
+        --log "$work_dir/electron.jsonl" --commands "$work_dir/electron-commands.txt" --profile "$work_dir/electron-profile"
+      for i in {1..60}; do grep -q '"kind":"ready"' "$work_dir/electron.jsonl" 2>/dev/null && break; sleep 0.25; done
+      electron_pid="$(grep '"kind":"ready"' "$work_dir/electron.jsonl" | grep -oE '"pid":[0-9]+' | cut -d: -f2)"
+      local window="$(grep '"kind":"ready"' "$work_dir/electron.jsonl" | grep -oE '"A":[0-9]+' | cut -d: -f2)"
+      "$tool" move "$electron_pid" "$window" 80 560 >/dev/null 2>&1 || true
+      sleep 1 ;;
     *)
       open -b "$1"; sleep 3 ;;
   esac
@@ -266,7 +299,7 @@ placement_checks() {
 }
 
 user_move_check() {
-  local bundle=com.apple.TextEdit pid window before after log
+  local bundle="${1:-com.apple.TextEdit}" pid window before after log
   pid="$(pid_of "$bundle")"; window="$("$tool" find "$pid")"; before="$("$tool" frame "$pid" "$window")"
   set_direct_open "$bundle"; log="$work_dir/user-move.log"
   if ! start_placement offscreen "$window" "$log" 8; then
@@ -289,7 +322,7 @@ user_move_check() {
 }
 
 crash_check() {
-  local bundle=com.apple.TextEdit pid window before parked after log
+  local bundle="${1:-com.apple.TextEdit}" pid window before parked after log
   pid="$(pid_of "$bundle")"; window="$("$tool" find "$pid")"; before="$("$tool" frame "$pid" "$window")"
   set_direct_open "$bundle"; log="$work_dir/crash.log"
   if ! start_placement parked "$window" "$log" 30; then
@@ -329,6 +362,84 @@ start_fixture() {
 
 # Moves the fixture window to another desktop and waits for it to report the move.
 # Returns 1 when there is no other desktop.
+# Return only the desktop change this check made; never drive an app's UI.
+return_test_desktop() {
+  [[ -n "$space_return_key" ]] || return 0
+  "$build_dir/HIDTool" key "$space_return_key" ctrl
+  sleep 1.5
+  space_return_key=""
+  [[ "${$(desktop_state)#active=}" == "$space_home "* ]] || {
+    print -u2 "Could not return to the starting desktop; stop device verification."
+    return 1
+  }
+}
+
+# Recovery while the source lives on another desktop. Electron moves its own
+# disposable window; TextEdit stays put while the harness changes desktop and
+# returns afterwards. Both normal dismissal and a killed Dropy are checked.
+source_space_recovery() {
+  local bundle="$1" pid window before after log outcome result active direction
+  pid="$(pid_of "$bundle")"; window="$("$tool" find "$pid")"
+  before="$("$tool" frame "$pid" "$window")"
+  set_direct_open "$bundle"
+  if [[ "$bundle" == com.apple.TextEdit ]]; then
+    swiftc -O -swift-version 6 -o "$build_dir/HIDTool" "$repo_dir/Scripts/bench/HIDTool/main.swift"
+  fi
+  for crash in no yes; do
+    log="$work_dir/$bundle-other-desktop-$crash.log"
+    local hold=8; [[ "$crash" == yes ]] && hold=30
+    start_placement parked "$window" "$log" "$hold" || { stop_dropy; record "$bundle" "other desktop ($crash crash)" - - FAILED; return; }
+    if [[ "$bundle" == org.dropy.electronfixture ]]; then
+      print space:other >> "$work_dir/electron-commands.txt"
+      sleep 1
+      local moved="$(grep '"kind":"space"' "$work_dir/electron.jsonl" | tail -1)"
+      if [[ "$moved" == *'"error"'* || -z "$moved" ]]; then
+        stop_dropy; print space:home >> "$work_dir/electron-commands.txt"
+        record "$bundle" "other desktop ($crash crash)" - "$moved" "NOT RUN: needs another desktop"; return
+      fi
+    else
+      space_home="${${$(desktop_state)#active=}%% *}"
+      for direction in 124 123; do
+        "$build_dir/HIDTool" key "$direction" ctrl; sleep 1.5
+        active="${${$(desktop_state)#active=}%% *}"
+        if [[ "$active" != "$space_home" ]]; then
+          [[ "$direction" == 124 ]] && space_return_key=123 || space_return_key=124
+          break
+        fi
+      done
+      if [[ -z "$space_return_key" ]]; then
+        stop_dropy; record "$bundle" "other desktop ($crash crash)" - - "NOT RUN: cannot switch desktop"; return
+      fi
+    fi
+    if ! "$tool" snapshot "$pid" "$window" | python3 -c 'import json,sys; d=json.load(sys.stdin); w=next((w for w in d.get("serverWindows",[]) if w["id"]==int(sys.argv[1])),{}); a=set(d.get("activeSpaces",[])); b=set(w.get("spaces",[])); sys.exit(0 if a and b and a.isdisjoint(b) else 1)' "$window"; then
+      stop_dropy
+      [[ "$bundle" == org.dropy.electronfixture ]] && print space:home >> "$work_dir/electron-commands.txt"
+      return_test_desktop
+      record "$bundle" "other desktop ($crash crash)" - - "FAILED: source is not on another desktop"
+      return 1
+    fi
+    snapshot "$bundle-other-desktop-before-restore-$crash" "$pid" "$window"
+    if [[ "$crash" == yes ]]; then
+      kill -9 "$dropy_pid"; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
+      DROPY_DEBUG_QUIT_AFTER=5 "$dropy" > "$log.relaunch.log" 2>&1 || true
+      outcome="$(grep -oE "placement recovery: mode=parked window=$window outcome=[^ ]+" "$log.relaunch.log" | tail -1 || true)"
+    else
+      wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
+      outcome="$(grep -oE 'restore=[^ ]+' "$log" | tail -1 || true)"
+    fi
+    after="$("$tool" frame "$pid" "$window" 2>/dev/null || true)"
+    result="restored on another desktop"
+    frames_match "$before" "$after" && [[ "$outcome" == *restored && ! -f "$journal" ]] || result="FAILED: $outcome; $after"
+    record "$bundle" "parked recovery on another desktop (crash=$crash)" - "$outcome" "$result"
+    if [[ "$bundle" == org.dropy.electronfixture ]]; then
+      print space:home >> "$work_dir/electron-commands.txt"; sleep 1
+    else
+      return_test_desktop || return 1
+    fi
+    [[ "$result" != FAILED* ]] || return 1
+  done
+}
+
 fixture_to_other_space() {
   local out="$work_dir/fixture.out" reports now active
   reports="$(grep -c 'space=' "$out")"
@@ -457,10 +568,25 @@ if [[ "$only" == all || "$only" == textedit ]]; then
   if [[ ! -f "$journal" ]] && "$tool" axcheck "$(pid_of com.apple.TextEdit)" >/dev/null 2>&1; then
     user_move_check
     crash_check
+    [[ "${CHECK_OTHER_DESKTOP:-0}" == 1 ]] && source_space_recovery com.apple.TextEdit
   else
     record com.apple.TextEdit "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
   fi
   osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
+fi
+if [[ "$only" == all || "$only" == electron ]]; then
+  print "Device checks: Electron fixture placement, user move and crash recovery"
+  "$repo_dir/Scripts/bench/build-electron-fixture.sh" >/dev/null
+  open_target org.dropy.electronfixture
+  placement_checks org.dropy.electronfixture
+  if [[ ! -f "$journal" ]] && "$tool" axcheck "$electron_pid" >/dev/null 2>&1; then
+    user_move_check org.dropy.electronfixture
+    crash_check org.dropy.electronfixture
+    [[ "${CHECK_OTHER_DESKTOP:-0}" == 1 ]] && source_space_recovery org.dropy.electronfixture
+  else
+    record org.dropy.electronfixture "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
+  fi
+  stop_electron
 fi
 if [[ "$only" == all ]]; then
   open_target com.apple.Safari
@@ -479,8 +605,9 @@ fi
   print -r -- "- Dropy: $(git -C "$repo_dir" rev-parse --short HEAD)$(git -C "$repo_dir" diff --quiet || print ' (uncommitted changes)')"
   print -r -- "- macOS: $(sw_vers -productVersion) ($(sw_vers -buildVersion)); hardware: $(sysctl -n hw.model)"
   print -r -- "- Displays: $(system_profiler SPDisplaysDataType 2>/dev/null | awk -F': ' '/Resolution/ {print $2}' | paste -sd ';' -)"
-  print -r -- "- TextEdit $(mdls -raw -name kMDItemVersion /System/Applications/TextEdit.app); Safari $(mdls -raw -name kMDItemVersion /Applications/Safari.app)"
+  print -r -- "- TextEdit $(mdls -raw -name kMDItemVersion /System/Applications/TextEdit.app); Safari $(mdls -raw -name kMDItemVersion /Applications/Safari.app); Electron fixture $(grep -oE '"electron":"[^"]*"' "$work_dir/electron.jsonl" 2>/dev/null | head -1 | cut -d'"' -f4 || print 'not run')"
   print -r -- "- Checks: $only; extra apps: ${EXTRA_APPS:-none}"
+  print -r -- "- Desktop session: $device_session_summary"
   print -r -- "- Desktop at start: $desktop_at_start; at end: $(desktop_state)"
   print
   print -r -- "## Placement and recovery"
@@ -489,9 +616,7 @@ fi
   print -r -- "|---|---|---|---|---|"
   for row in $rows; do print -r -- "$row"; done
   print
-  print -r -- "## Manual: dismissal"
-  print
-  print -r -- "Click-outside and pointer-leave: NOT RUN. Open the overlay with each preference; click another app and the Dropy menu, then enter and leave the overlay. Confirm close and focus handback, and that shortcut-open with the pointer elsewhere stays open."
+  print -r -- "Dismissal (Esc, shortcut, click-outside, pointer-leave, focus handback) is checked separately by \`Scripts/dismissal-checks.sh\`; input routing by \`Scripts/interactive-checks.sh\`."
   print
   print -r -- "## Manual: Screen Recording revocation"
   print
@@ -508,3 +633,9 @@ if [[ $run_benchmark == yes ]]; then
 fi
 
 print; cat "$report"; print; print -r -- "Report saved to $report"
+
+# Keep the report on failure, but never let an incomplete recovery run look passing.
+if (( ${#rows} == 0 )) || print -r -- "$rows" | grep -Eq 'FAILED|NOT RUN|NOT restored|LEAK:|skipped|stopped:|person switched desktop'; then
+  print -u2 "Device checks failed or were incomplete; see the report above."
+  exit 1
+fi

@@ -9,17 +9,22 @@ import ScreenCaptureKit
 /// on the main thread; an overloaded UI drops stale frames instead of queueing them.
 final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
-    private var latest: (image: CVPixelBuffer, stamp: FrameStamp)?
+    private var latest: (image: CVPixelBuffer, stamp: FrameStamp, geometry: CaptureGeometry?)?
+    /// The stream configuration frames are currently produced with; attached to each
+    /// forwarded frame so preview input can prove which window and size it shows.
+    private var geometry: CaptureGeometry?
     /// The last frame sent toward the renderer, kept to detect unchanged frames.
     private var lastForwarded: CVPixelBuffer?
+    private var lastForwardedGeometry: CaptureGeometry?
+    private var diagnosticFrames = 0
+    private let logsGeometry = ProcessInfo.processInfo.environment["DROPY_DEBUG_FRAME_GEOMETRY"] == "1"
     private var scheduled = false
     private var invalidated = false
     private weak var renderer: MetalFrameView?
     let metrics: CaptureMetricsRecorder
     /// Consecutive unchanged frames before the source counts as idle (0.5 s at 60 fps).
-    static let idleThreshold = 30
-    private var consecutiveUnchanged = 0
-    private var sourceIdle = false
+    static let idleThreshold = CaptureActivityTracker.defaultUnchangedThreshold
+    private var activity = CaptureActivityTracker()
     private var activitySequence = 0
     /// Called on the capture queue when the source becomes idle (true) or changes again.
     private let onActivityChange: @Sendable (Bool, Int) -> Void
@@ -36,6 +41,8 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         guard type == .screen else { return }
         lock.lock()
         let previous = invalidated ? nil : lastForwarded
+        let configuredGeometry = geometry
+        let previousGeometry = lastForwardedGeometry
         let active = !invalidated
         lock.unlock()
         guard active,
@@ -45,31 +52,49 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         // Unchanged content skips the main-thread handoff, the draw and the
         // compositor work entirely. The comparison runs outside the lock; stream
         // callbacks are serial, so only this queue writes `lastForwarded`.
-        if let previous, Self.identical(previous, image) {
-            metrics.recordUnchanged()
-            consecutiveUnchanged += 1
-            if consecutiveUnchanged == Self.idleThreshold, !sourceIdle {
-                sourceIdle = true
-                activitySequence += 1
-                onActivityChange(true, activitySequence)
-            }
-            return
+        // Geometry must come from this sample's metadata, not the moment at which
+        // updateConfiguration happened to finish. Old-size frames can arrive later,
+        // including when a proportional resize leaves the output dimensions unchanged.
+        let info = (CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            as? [[SCStreamFrameInfo: Any]])?.first
+        let rect = (info?[.contentRect] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
+        let scale = info?[.contentScale] as? CGFloat
+        let density = info?[.scaleFactor] as? CGFloat
+        let measuredGeometry = configuredGeometry.flatMap { config in
+            CaptureGeometry.measured(windowID: config.windowID, pixelSize: config.pixelSize,
+                                     contentRect: rect, contentScale: scale, scaleFactor: density)
         }
-        consecutiveUnchanged = 0
-        if sourceIdle {
-            sourceIdle = false
+        if logsGeometry, diagnosticFrames < 6 {
+            diagnosticFrames += 1
+            NSLog("Dropy frame geometry: rect=%@ contentScale=%@ density=%@ configured=%@ measured=%@",
+                  String(describing: rect), String(describing: scale), String(describing: density),
+                  String(describing: configuredGeometry), String(describing: measuredGeometry))
+        }
+        let unchanged = previous.map { previousGeometry == measuredGeometry && Self.identical($0, image) } ?? false
+        if let idle = activity.record(unchanged: unchanged) {
             activitySequence += 1
-            onActivityChange(false, activitySequence)
+            onActivityChange(idle, activitySequence)
+        }
+        if unchanged {
+            metrics.recordUnchanged()
+            return
         }
         lock.lock()
         guard !invalidated else { lock.unlock(); return }
         lastForwarded = image
+        lastForwardedGeometry = measuredGeometry
         if latest != nil { metrics.recordMailboxDrop() }
-        latest = (image, stamp)
+        latest = (image, stamp, measuredGeometry)
         let shouldSchedule = !scheduled
         if shouldSchedule { scheduled = true }
         lock.unlock()
         if shouldSchedule { DispatchQueue.main.async { self.deliverLatest() } }
+    }
+
+    func setGeometry(_ next: CaptureGeometry) {
+        lock.lock()
+        geometry = next
+        lock.unlock()
     }
 
     /// Drop the pending frame and refuse later ones, so a stopped or superseded
@@ -88,7 +113,7 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         latest = nil
         scheduled = false
         lock.unlock()
-        if let frame { renderer?.present(frame.image, stamp: frame.stamp) }
+        if let frame { renderer?.present(frame.image, stamp: frame.stamp, geometry: frame.geometry) }
     }
 }
 
@@ -179,6 +204,8 @@ final class CaptureController {
             recorder.finish(reason: "startFailed(\((error as NSError).code))")
             throw error
         }
+        mailbox.setGeometry(CaptureGeometry(windowID: window.windowID, windowSize: window.frame.size,
+                                            pixelSize: CGSize(width: configuration.width, height: configuration.height)))
         recorders[ObjectIdentifier(stream)] = recorder
         // The delegate can stop a stream before startCapture returns. Publish
         // this session first so that an early stop is not silently discarded.
@@ -219,20 +246,26 @@ final class CaptureController {
         guard request == requestID, self.stream === stream else { return }
         let configuration = makeConfiguration(window: window, renderer: renderer)
         let nextSize = CGSize(width: configuration.width, height: configuration.height)
+        let nextGeometry = CaptureGeometry(windowID: window.windowID, windowSize: window.frame.size, pixelSize: nextSize)
         guard nextSize != outputSize else {
+            // Same output size (e.g. a proportional resize): content is scaled into it.
+            mailbox?.setGeometry(nextGeometry)
             activeWindow = window
             activeRenderer = renderer
             return
         }
         try await stream.updateConfiguration(configuration)
         guard request == requestID else { return }
+        // Frames drawn before this point keep the old output size, which the preview
+        // input gate rejects against the new geometry.
+        mailbox?.setGeometry(nextGeometry)
         outputSize = nextSize
         activeWindow = window
         activeRenderer = renderer
     }
 
-    /// While the source is unchanged, capture at a low rate; the first changed frame
-    /// restores the full rate. ScreenCaptureKit keeps producing identical frames for
+    /// While the source is unchanged, capture at a low rate; sustained changes
+    /// restore the full rate. Every changed frame still reaches the renderer immediately. ScreenCaptureKit keeps producing identical frames for
     /// titled windows, so without this an idle source costs as much as a live one.
     private func setSourceIdle(_ idle: Bool, sequence: Int, request: UUID) async {
         guard request == requestID, stream != nil,

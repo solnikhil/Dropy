@@ -26,10 +26,11 @@ for app in Dropy DropyFixture DropyInputFixture; do
   pgrep -xq "$app" && { print -u2 "Quit $app first."; exit 1; }
 done
 [[ -e "$journal" ]] && { print -u2 "Recover the pending placement journal first."; exit 1; }
-if pgrep -f 'Scripts/(device-checks|input-probe|dismissal-checks|interactive-checks).*\.sh' | grep -vqx "$$"; then
-  print -u2 "Another Dropy device check is running."; exit 1
-fi
 
+source "${0:A:h}/lib/device-session.zsh"
+device_session_begin dismissal-checks || exit 1
+# Protect builds too: another run must not replace a running app or its dylib.
+trap device_session_end EXIT
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$hid" "$repo_dir/Scripts/bench/HIDTool/main.swift"
@@ -50,6 +51,7 @@ cleanup() {
   else defaults delete "$prefs_domain" "$prefs_key" 2>/dev/null || true; fi
   (( ${#pointer_start} == 2 )) && "$hid" move "${pointer_start[1]}" "${pointer_start[2]}" >/dev/null 2>&1 || true
   rm -rf "$work"
+  device_session_end
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT

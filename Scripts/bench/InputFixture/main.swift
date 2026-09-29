@@ -12,6 +12,8 @@
 //   reset           clear text, press counts and scroll offsets
 //   key:A|key:B     make that window key (and activate the app)
 //   space:other|space:home   move window A to another desktop or back (private SkyLight)
+//   rebuild:A|rebuild:B      replace that window's text field with a new one, so an
+//                            Accessibility element resolved earlier becomes stale
 //   quit
 // Logs contain only synthetic test content typed by the harness.
 import AppKit
@@ -43,7 +45,7 @@ final class Log {
 final class TestWindow: NSObject, NSTextFieldDelegate {
     let name: String
     let window: NSWindow
-    let field = NSTextField(string: "")
+    var field = NSTextField(string: "")
     let button = NSButton(title: "Press", target: nil, action: nil)
     let scroll = NSScrollView()
     var presses = 0
@@ -86,6 +88,17 @@ final class TestWindow: NSObject, NSTextFieldDelegate {
          "minimized": window.isMiniaturized, "onScreen": window.occlusionState.contains(.visible),
          "firstResponderIsText": window.firstResponder === field.currentEditor() ||
             window.firstResponder === field]
+    }
+
+    /// Swaps in a fresh text field with the same identifier and frame.
+    func rebuildField() {
+        let replacement = NSTextField(string: field.stringValue)
+        replacement.frame = field.frame
+        replacement.setAccessibilityIdentifier("text")
+        replacement.delegate = self
+        field.superview?.replaceSubview(field, with: replacement)
+        field = replacement
+        Log.write(["kind": "rebuilt", "w": name])
     }
 
     func reset() {
@@ -237,6 +250,8 @@ final class InputFixture: NSObject, NSApplicationDelegate {
             let target = windows[command == "key:A" ? 0 : 1]
             NSApp.activate()
             target.window.makeKeyAndOrderFront(nil)
+        case "rebuild:A", "rebuild:B":
+            windows[command == "rebuild:A" ? 0 : 1].rebuildField()
         case "space:other", "space:home":
             moveA(toHome: command == "space:home")
         default:

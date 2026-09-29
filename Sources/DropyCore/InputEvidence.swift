@@ -13,12 +13,18 @@ public struct InputEvidence: Codable, Equatable, Sendable {
         /// The `docs/input-probe` report the trials came from.
         public var report: String
         public var trials: [InputTrial]
+        /// The trials ran with the app's Accessibility tree switched on through
+        /// `AXManualAccessibility` (Chromium/Electron builds it only on request), so
+        /// Accessibility routes are valid only after Dropy does the same.
+        public var requiresManualAccessibility: Bool?
 
-        public init(bundleIdentifier: String, appVersion: String?, report: String, trials: [InputTrial]) {
+        public init(bundleIdentifier: String, appVersion: String?, report: String, trials: [InputTrial],
+                    requiresManualAccessibility: Bool? = nil) {
             self.bundleIdentifier = bundleIdentifier
             self.appVersion = appVersion
             self.report = report
             self.trials = trials
+            self.requiresManualAccessibility = requiresManualAccessibility
         }
     }
 
@@ -43,6 +49,13 @@ public struct InputEvidence: Codable, Equatable, Sendable {
             return InputCapabilities(trials: [])
         }
         return InputCapabilities(trials: sources.filter { $0.bundleIdentifier == bundleIdentifier }.flatMap(\.trials))
+    }
+
+    /// Whether Accessibility routes for this app were verified only with its tree
+    /// switched on through `AXManualAccessibility`.
+    public func requiresManualAccessibility(for bundleIdentifier: String?, macOSMajor running: Int) -> Bool {
+        guard format == Self.currentFormat, running == macOSMajor, let bundleIdentifier else { return false }
+        return sources.contains { $0.bundleIdentifier == bundleIdentifier && $0.requiresManualAccessibility == true }
     }
 }
 
