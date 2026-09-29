@@ -322,9 +322,10 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         let generation = visibilityGeneration
         let armed = onNextPresented != nil
         let sequence = frameSequence
+        let drawIndex = stamp?.beginDraw()
         drawable.addPresentedHandler { [weak self] drawable in
             let presentedTime = drawable.presentedTime
-            if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime) }
+            if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime, draw: drawIndex) }
             if presentedTime == 0 {
                 if let stamp {
                     Task { @MainActor [weak self] in self?.retryPresent(stamp, sequence: sequence) }

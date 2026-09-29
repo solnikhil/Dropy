@@ -746,7 +746,9 @@ final class OverlayController: NSObject {
 
     private func report(_ outcome: InputRouter.Outcome, kind: InputKind) {
         switch outcome {
-        case .sent: break
+        case .sent:
+            // The latency trace measures from here to the first frame showing the result.
+            if FrameStamp.tracing { LatencyMarks.shared.markInput() }
         case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
         case .notApplicable(let reason):
             flash(reason.contains("windowGeometryChanged") ? "Preview resizing · try again in a moment"

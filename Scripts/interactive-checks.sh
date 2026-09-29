@@ -35,7 +35,7 @@ trap device_session_end EXIT
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$hid" "$repo_dir/Scripts/bench/HIDTool/main.swift"
-swiftc -O -swift-version 6 -o "$probe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+swiftc -O -swift-version 6 -o "$probe" "$repo_dir"/Scripts/bench/InputProbe/*.swift
 swiftc -O -swift-version 6 -o "$tool" "$repo_dir"/Scripts/bench/WindowTool/*.swift
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/DeviceInputRouterChecks" \

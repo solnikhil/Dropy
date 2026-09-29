@@ -60,7 +60,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 "$build_dir/PlacementJournalTests"
 
 # Probe judging is pure: no synthetic events, app activation or Accessibility access.
-swiftc -swift-version 6 -o "$build_dir/InputProbeChecks" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+swiftc -swift-version 6 -o "$build_dir/InputProbeChecks" "$repo_dir"/Scripts/bench/InputProbe/*.swift
 "$build_dir/InputProbeChecks" self-test
 
 # Probe results become shipped evidence only through this mapping.

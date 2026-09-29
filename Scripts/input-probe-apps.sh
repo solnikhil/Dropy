@@ -3,7 +3,13 @@
 # window A and a decoy window B; InputProbe judges typing and scrolling from each
 # window's Accessibility state and undoes typed text.
 #
-#   Scripts/input-probe-apps.sh [textedit] [safari] [notion]
+#   Scripts/input-probe-apps.sh [textedit] [safari] [notion] [vscode]
+#
+# vscode: Visual Studio Code with a throwaway --user-data-dir and --extensions-dir,
+# extensions disabled, two scratch text files in a temp directory, typing, clicks and
+# scrolling, with Chromium's Accessibility tree switched on (AXManualAccessibility) and
+# the matrix widened to covered and minimized. Refused while any VS Code is running, so
+# a personal window can never be mistaken for a scratch one.
 #
 # TextEdit and Safari use only disposable temp documents and a local test page. Notion
 # is scroll-only against its two frontmost windows (nothing is typed), and it must
@@ -31,13 +37,14 @@ if [[ -e "$HOME/Library/Application Support/Dropy/placement-journal.json" ]]; th
   exit 1
 fi
 mkdir -p "$logs"
-swiftc -O -swift-version 6 -o "$probe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+swiftc -O -swift-version 6 -o "$probe" "$repo_dir"/Scripts/bench/InputProbe/*.swift
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 
 "$probe" check-modifiers
 
 cleanup() {
   "$probe" release 2>/dev/null || true
+  pkill -f "$work/vscode-data" 2>/dev/null || true
   [[ -n "${sink_pid:-}" ]] && { kill "$sink_pid" 2>/dev/null || true; sink_pid=""; }
   for app in $owned; do osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1 || true; done
   rm -rf "$work"
@@ -51,11 +58,11 @@ trap '(( ZSH_SUBSHELL == 0 )) && cleanup' ZERR
 pid_of() { lsappinfo info -only pid -app "$1" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true; }
 
 probe_app() {
-  local name="$1" bundle="$2" actions="$3" pid ids
+  local name="$1" bundle="$2" actions="$3" routes="${4:-}" pid ids
   pid="$(pid_of "$bundle")"
   ids=(${=$("$probe" windows "$pid")})
   if (( ${#ids} < 2 )); then print -r -- "| $name | - | only ${#ids} window(s) reachable; NOT RUN |" >> "$work/rows"; return; fi
-  "$probe" app "$pid" "${ids[1]}" "${ids[2]}" "$logs/$name.jsonl" "$actions" | tee "$logs/$name.txt"
+  "$probe" app "$pid" "${ids[1]}" "${ids[2]}" "$logs/$name.jsonl" "$actions" ${routes:+"$routes"} | tee "$logs/$name.txt"
   "$probe" report "$logs/$name.jsonl" | sed "s/^| \\([a-zA-Z]*\\) |/| $name \\1 |/" >> "$work/tables"
   print >> "$work/tables"
 }
@@ -104,6 +111,26 @@ for app in $apps; do
       osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true ;;
     notion)
       probe_app Notion notion.id scroll ;;
+    vscode)
+      code_app="/Applications/Visual Studio Code.app"
+      [[ -d "$code_app" ]] || { print -r -- "| VSCode | - | not installed; NOT RUN |" >> "$work/rows"; continue; }
+      if lsappinfo info -only pid -app com.microsoft.VSCode 2>/dev/null | grep -q '[0-9]'; then
+        print -u2 "Quit Visual Studio Code first; the probe uses only its own scratch instance."; exit 1
+      fi
+      code_version="$(mdls -raw -name kMDItemVersion "$code_app")"
+      mkdir -p "$work/vscode-data/User" "$work/vscode-extensions" "$work/vscode-files"
+      # Nothing from a person's setup is read, and nothing is written outside $work.
+      print -r -- '{"update.mode":"none","telemetry.telemetryLevel":"off","workbench.startupEditor":"none","security.workspace.trust.enabled":false,"window.restoreWindows":"none","editor.accessibilitySupport":"on","window.confirmBeforeClose":"never","extensions.autoCheckUpdates":false,"extensions.autoUpdate":false,"workbench.enableExperiments":false,"git.enabled":false}' \
+        > "$work/vscode-data/User/settings.json"
+      for n in A B; do for i in {1..200}; do print "Dropy scratch $n line $i"; done > "$work/vscode-files/scratch-$n.txt"; done
+      code_cli=("$code_app/Contents/Resources/app/bin/code" --user-data-dir "$work/vscode-data"
+        --extensions-dir "$work/vscode-extensions" --disable-extensions --skip-welcome --skip-release-notes)
+      "${code_cli[@]}" -n "$work/vscode-files/scratch-A.txt"; sleep 6
+      "${code_cli[@]}" -n "$work/vscode-files/scratch-B.txt"; sleep 5
+      PROBE_ELECTRON=1 PROBE_APP_CONDITIONS=visible,covered,parked,minimized \
+        probe_app "VSCode-$code_version" com.microsoft.VSCode type,click,scroll ax,axValue,pidWindow,pid
+      pkill -f "$work/vscode-data" 2>/dev/null || true
+      sleep 2 ;;
   esac
 done
 
