@@ -58,3 +58,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
   "$repo_dir/Sources/Dropy/WindowCatalog.swift"
 "$build_dir/PlacementJournalTests"
+
+# Probe judging is pure: no synthetic events, app activation or Accessibility access.
+swiftc -swift-version 6 -o "$build_dir/InputProbeChecks" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+"$build_dir/InputProbeChecks" self-test

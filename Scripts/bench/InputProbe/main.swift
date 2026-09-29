@@ -216,6 +216,35 @@ func setUp(_ condition: Condition, _ focus: Focus, fixture: Fixture, home: Home)
         wait(0.5)
     }
     wait(0.3)
+    guard let state = fixture.state()?.state,
+          let aState = state["A"] as? [String: Any], let bState = state["B"] as? [String: Any],
+          let active = state["active"] as? Bool else { return "setupStateUnavailable" }
+    switch focus {
+    case .aKey:
+        guard active, aState["key"] as? Bool == true else { return "setupFocusMismatch" }
+    case .bKey:
+        guard active, bState["key"] as? Bool == true else { return "setupFocusMismatch" }
+    case .appInactive:
+        guard !active else { return "setupFocusMismatch" }
+    }
+    switch condition {
+    case .visible: break
+    case .covered:
+        guard let extent = frame(b), extent.origin == home.a.origin else { return "setupCoverFailed" }
+    case .parked:
+        guard let extent = frame(a), !displays().contains(where: { $0.intersects(extent) }) else {
+            return "setupParkingFailed"
+        }
+    case .minimized:
+        guard aState["minimized"] as? Bool == true else { return "setupMinimizeFailed" }
+    case .otherSpace:
+        guard let reply = Fixture.lines(fixture.log).last(where: { $0["kind"] as? String == "space" }),
+              let spaces = reply["A"] as? [UInt64], !spaces.isEmpty,
+              activeSpaces() != "unknown",
+              !spaces.contains(where: { activeSpaces().split(separator: ",").contains(Substring(String($0))) }) else {
+            return "setupSpaceFailed"
+        }
+    }
     return nil
 }
 
@@ -290,7 +319,12 @@ let modifierMask: CGEventFlags = [.maskCommand, .maskShift, .maskAlternate, .mas
 func releaseModifiers() -> Bool {
     guard !CGEventSource.flagsState(.hidSystemState).intersection(modifierMask).isEmpty ||
           !CGEventSource.flagsState(.combinedSessionState).intersection(modifierMask).isEmpty else { return false }
-    modifierEvent(command: false)?.post(tap: .cghidEventTap)
+    for key: CGKeyCode in [55, 54, 56, 60, 58, 61, 59, 62] {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
+        event?.type = .flagsChanged
+        event?.flags = []
+        event?.post(tap: .cghidEventTap)
+    }
     wait(0.1)
     return true
 }
@@ -415,6 +449,17 @@ func effect(_ action: Action, before: [String: Any], after: [String: Any]) -> Bo
     }
 }
 
+/// Failed actions may have already delivered input. Always judge both windows before
+/// considering the API result; a wrong-window observation must never become "notSent".
+func judge(inA: Bool, inB: Bool, receivedBy: [String: Int], actionError: String?) -> String {
+    if inB { return "wrongWindow" }
+    if receivedBy["B", default: 0] > 0 { return "wrongWindow(delivered)" }
+    if let actionError {
+        return actionError.hasPrefix("notApplicable") ? actionError : "notSent(\(actionError))"
+    }
+    return inA ? "pass" : "noEffect"
+}
+
 func run(fixture: Fixture, results path: String, routes: [Route]) {
     FileManager.default.createFile(atPath: path, contents: nil)
     let output = FileHandle(forWritingAtPath: path)!
@@ -429,18 +474,17 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
             if focus == .aKey, [.covered, .otherSpace, .minimized].contains(condition) { continue }
             for route in routes {
                 for action in Action.allCases {
-                    let spaceBefore = activeSpaces()
                     var record: [String: Any] = ["condition": condition.rawValue, "focus": focus.rawValue,
                                                  "route": route.rawValue, "action": action.rawValue]
                     if let blocked = setUp(condition, focus, fixture: fixture, home: home) {
                         record["outcome"] = "notRun(\(blocked))"
                     } else if let before = fixture.state() {
                         let frontBefore = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
+                        let spaceBefore = activeSpaces()
                         let skipped = perform(route, action, fixture: fixture)
                         if lastLookupUsedCache { record["lookup"] = "cachedElement" }
-                        if let skipped {
-                            record["outcome"] = skipped.hasPrefix("notApplicable") ? skipped : "notSent(\(skipped))"
-                        } else if let after = fixture.state() {
+                        if let skipped { record["actionError"] = skipped }
+                        if let after = fixture.state() {
                             let inA = effect(action, before: before.state["A"] as? [String: Any] ?? [:],
                                              after: after.state["A"] as? [String: Any] ?? [:])
                             let inB = effect(action, before: before.state["B"] as? [String: Any] ?? [:],
@@ -452,8 +496,13 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
                             record["receivedBy"] = receivedBy
                             // Delivery to B is a failure even without a visible effect: in a real
                             // app the same event would act on the other document.
-                            record["outcome"] = inB ? "wrongWindow" : receivedBy["B"] != nil ? "wrongWindow(delivered)"
-                                : inA ? "pass" : "noEffect"
+                            record["outcome"] = judge(inA: inA, inB: inB, receivedBy: receivedBy, actionError: skipped)
+                            let focusEvents = fixture.events(from: before.mark, to: after.mark).filter {
+                                $0["kind"] as? String == "focus" &&
+                                ["becameKey", "appActive", "appInactive"].contains($0["change"] as? String ?? "")
+                            }
+                            if !focusEvents.isEmpty { record["focusChangedDuringTrial"] = true }
+                            if activeSpaces() != spaceBefore { record["desktopChanged"] = "\(spaceBefore)→\(activeSpaces())" }
                             let frontAfter = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
                             if frontAfter != frontBefore { record["frontmostChanged"] = "\(frontBefore)→\(frontAfter)" }
                             let aKey = (after.state["A"] as? [String: Any])?["key"] as? Bool
@@ -465,9 +514,11 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
                     } else {
                         record["outcome"] = "noState"
                     }
-                    if releaseModifiers() { record["modifiersLeftHeld"] = true }
+                    if releaseModifiers() {
+                        record["modifiersLeftHeld"] = true
+                        if !(record["outcome"] as? String ?? "").hasPrefix("wrongWindow") { record["outcome"] = "unsafeModifiers" }
+                    }
                     tearDown(fixture: fixture, home: home)
-                    if activeSpaces() != spaceBefore { record["desktopChanged"] = "\(spaceBefore)→\(activeSpaces())" }
                     let outcome = record["outcome"] as? String ?? "?"
                     tally[outcome.components(separatedBy: "(").first ?? outcome, default: 0] += 1
                     let data = try! JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
@@ -504,6 +555,7 @@ func report(_ path: String) {
                 if cell.hasPrefix("wrongWindow") { cell = "**\(cell)**" }
                 var notes: [String] = []
                 if record["frontmostChanged"] != nil { notes.append("front") }
+                if record["focusChangedDuringTrial"] != nil { notes.append("focus") }
                 if record["keyWindowChanged"] != nil { notes.append("key") }
                 if record["desktopChanged"] != nil { notes.append("desktop") }
                 if record["lookup"] != nil { notes.append("cached") }
@@ -559,18 +611,41 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                     }
                     if focus == .appInactive { frontmost?.activate(); wait(0.5) }
                     let beforeA = appState(a), beforeB = appState(b)
+                    let frontBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    let spaceBefore = activeSpaces()
+                    let focusedBefore = element(attribute(fixture.app, kAXFocusedWindowAttribute))
+                    var focusedIDBefore: CGWindowID = 0
+                    if let focusedBefore { _ = getWindow?(focusedBefore, &focusedIDBefore) }
                     var record: [String: Any] = ["condition": condition.rawValue, "focus": focus.rawValue,
                                                  "route": route.rawValue, "action": action.rawValue]
-                    if let skipped = performOnApp(route, action, window: a, fixture: fixture) {
-                        record["outcome"] = skipped
+                    let skipped: String?
+                    if focus == .bKey && (frontBefore != pid || focusedIDBefore != idB) {
+                        skipped = "setupFocusMismatch"
+                    } else if focus == .appInactive && frontBefore == pid {
+                        skipped = "setupFocusMismatch"
+                    } else if condition == .parked && frame(a).map({ extent in displays().contains { $0.intersects(extent) } }) != false {
+                        skipped = "setupParkingFailed"
                     } else {
+                        skipped = performOnApp(route, action, window: a, fixture: fixture)
+                    }
+                    if let skipped { record["actionError"] = skipped }
+                    do {
                         wait(0.6)
                         let afterA = appState(a), afterB = appState(b)
                         let changed: ((text: String, scroll: Double), (text: String, scroll: Double)) -> Bool = { old, new in
                             action == .type ? old.text != new.text : old.scroll != new.scroll
                         }
                         let inA = changed(beforeA, afterA), inB = changed(beforeB, afterB)
-                        record["outcome"] = inB ? "wrongWindow" : inA ? "pass" : "noEffect"
+                        record["outcome"] = judge(inA: inA, inB: inB, receivedBy: [:], actionError: skipped)
+                        var focusedIDAfter: CGWindowID = 0
+                        if let focused = element(attribute(fixture.app, kAXFocusedWindowAttribute)) {
+                            _ = getWindow?(focused, &focusedIDAfter)
+                        }
+                        if focusedIDAfter != focusedIDBefore { record["keyWindowChanged"] = true }
+                        if NSWorkspace.shared.frontmostApplication?.processIdentifier != frontBefore {
+                            record["frontmostChanged"] = true
+                        }
+                        if activeSpaces() != spaceBefore { record["desktopChanged"] = "\(spaceBefore)→\(activeSpaces())" }
                         // Undo typed text in whichever window received it.
                         for (window, before, after) in [(a, beforeA, afterA), (b, beforeB, afterB)] where before.text != after.text {
                             if let area = firstDescendant(window, role: kAXTextAreaRole as String) {
@@ -578,7 +653,10 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                             }
                         }
                     }
-                    releaseModifiers()
+                    if releaseModifiers() {
+                        record["modifiersLeftHeld"] = true
+                        if !(record["outcome"] as? String ?? "").hasPrefix("wrongWindow") { record["outcome"] = "unsafeModifiers" }
+                    }
                     setPosition(a, homeA.origin)
                     wait(0.3)
                     let data = try! JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
@@ -610,6 +688,7 @@ func performOnApp(_ route: Route, _ action: Action, window a: AXUIElement, fixtu
         return result == .success ? nil : "notSent(axError(\(result.rawValue)))"
     case .pid, .pidWindow:
         let origin = frame(a)?.origin ?? .zero
+        if route == .pidWindow, setWindowLocation == nil { return "notApplicable(noSetWindowLocation)" }
         for event in action == .type ? keyEvents(typedText) : scrollEvents(at: point) {
             if route == .pidWindow {
                 event.setIntegerValueField(eventWindow, value: Int64(fixture.a))
@@ -627,6 +706,28 @@ func performOnApp(_ route: Route, _ action: Action, window a: AXUIElement, fixtu
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
+if args.first == "self-test" {
+    let cases: [(Bool, Bool, [String: Int], String?, String)] = [
+        (true, false, [:], nil, "pass"),
+        (false, false, [:], nil, "noEffect"),
+        (true, true, [:], "axError", "wrongWindow"),
+        (false, false, ["B": 1], "notApplicable(minimized)", "wrongWindow(delivered)"),
+        (true, false, [:], "axError", "notSent(axError)")
+    ]
+    for (a, b, received, error, expected) in cases {
+        guard judge(inA: a, inB: b, receivedBy: received, actionError: error) == expected else { fail("judging regression") }
+    }
+    print("InputProbe judging checks passed")
+    exit(0)
+}
+if args.first == "check-modifiers" {
+    guard CGEventSource.flagsState(.hidSystemState).intersection(modifierMask).isEmpty,
+          CGEventSource.flagsState(.combinedSessionState).intersection(modifierMask).isEmpty else {
+        fail("Modifier key held; release it before running the probe")
+    }
+    print("no modifiers held")
+    exit(0)
+}
 if args.first == "report", args.count == 2 { report(args[1]); exit(0) }
 if args.first == "release" { print(releaseModifiers() ? "released held modifiers" : "no modifiers held"); exit(0) }
 if args.first == "send", args.count == 2 {

@@ -99,6 +99,32 @@ final class InputCapabilityTests: XCTestCase {
                        .viewOnly)
     }
 
+    func testRepeatedFailuresNeverBecomeVerified() {
+        for failure in [InputTrial.Outcome.noEffect, .notApplicable] {
+            let trials = [trial(.accessibility, .text, .otherWindowKey, .pass),
+                          trial(.accessibility, .text, .appInactive, .pass),
+                          trial(.accessibility, .text, .otherWindowKey, failure)]
+            let capabilities = InputCapabilities(trials: trials)
+            XCTAssertEqual(capabilities.verdict(.accessibility, .text, .parked), .unreliable)
+            XCTAssertEqual(InputPlanner.support(in: .parked, capabilities: capabilities, policy: InputPolicy()), .viewOnly)
+        }
+    }
+
+    func testObservedAccessibilityFocusChangeRequiresPermission() {
+        let capabilities = InputCapabilities(trials: [FocusState.otherWindowKey, .appInactive].map {
+            InputTrial(route: .accessibility, kind: .text, condition: .otherSpace, focus: $0,
+                       outcome: .pass, changesFocus: true)
+        })
+        XCTAssertEqual(InputPlanner.decide(.text, selectedWindowID: 9, resolution: .exact(windowID: 9),
+                                           condition: .otherSpace, capabilities: capabilities, policy: InputPolicy()),
+                       .refuse(.notVerified))
+        XCTAssertEqual(InputPlanner.support(in: .otherSpace, capabilities: capabilities, policy: InputPolicy()), .viewOnly)
+        XCTAssertEqual(InputPlanner.decide(.text, selectedWindowID: 9, resolution: .exact(windowID: 9),
+                                           condition: .otherSpace, capabilities: capabilities,
+                                           policy: InputPolicy(allowsFocusChanges: true)),
+                       .send(.accessibility, handBackFocus: true))
+    }
+
     func testTrialsRoundTrip() throws {
         let original = trial(.windowTargetedEvent, .scroll, .appInactive, .pass)
         XCTAssertEqual(try JSONDecoder().decode(InputTrial.self, from: JSONEncoder().encode(original)), original)

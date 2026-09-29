@@ -70,13 +70,16 @@ public struct InputTrial: Codable, Equatable, Sendable {
     public let condition: SourceCondition
     public let focus: FocusState
     public let outcome: Outcome
+    /// Includes key-window, frontmost-app or desktop changes observed during the action.
+    public let changesFocus: Bool
 
-    public init(route: InputRoute, kind: InputKind, condition: SourceCondition, focus: FocusState, outcome: Outcome) {
+    public init(route: InputRoute, kind: InputKind, condition: SourceCondition, focus: FocusState, outcome: Outcome, changesFocus: Bool = false) {
         self.route = route
         self.kind = kind
         self.condition = condition
         self.focus = focus
         self.outcome = outcome
+        self.changesFocus = changesFocus
     }
 }
 
@@ -110,15 +113,27 @@ public struct InputCapabilities: Equatable, Sendable {
         if relevant.contains(where: { $0.outcome == .wrongWindow }) { return .wrongWindowObserved }
         let tested = relevant.filter { $0.outcome != .notApplicable }
         if tested.isEmpty { return .notApplicable }
+        guard relevant.allSatisfy({ $0.outcome == .pass }) else { return .unreliable }
         let passed = Set(tested.filter { $0.outcome == .pass }.map(\.focus))
         let required = Self.requiredFocusStates.union(tested.map(\.focus))
         return required.isSubset(of: passed) ? .verified : .unreliable
     }
 
+    /// Route side effects are evidence-dependent: even AX actions can change focus or Spaces.
+    public func requiresFocusChange(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> Bool {
+        route.changesFocus || trials.contains {
+            $0.route == route && $0.kind == kind && $0.condition == condition && $0.changesFocus
+        }
+    }
+
+    public func allows(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition, policy: InputPolicy) -> Bool {
+        policy.allows(route) && (policy.allowsFocusChanges || !requiresFocusChange(route, kind, condition))
+    }
+
     /// Kinds with at least one verified route for the condition under the policy.
     public func verifiedKinds(in condition: SourceCondition, policy: InputPolicy) -> Set<InputKind> {
         Set(InputKind.allCases.filter { kind in
-            InputRoute.allCases.contains { policy.allows($0) && verdict($0, kind, condition) == .verified }
+            InputRoute.allCases.contains { allows($0, kind, condition, policy: policy) && verdict($0, kind, condition) == .verified }
         })
     }
 }
@@ -178,9 +193,9 @@ public enum InputPlanner {
         case .exact(let windowID):
             guard windowID == selectedWindowID else { return .refuse(.targetChanged) }
         }
-        let allowed = routeOrder.filter(policy.allows)
+        let allowed = routeOrder.filter { capabilities.allows($0, kind, condition, policy: policy) }
         if let route = allowed.first(where: { capabilities.verdict($0, kind, condition) == .verified }) {
-            return .send(route, handBackFocus: route.changesFocus)
+            return .send(route, handBackFocus: capabilities.requiresFocusChange(route, kind, condition))
         }
         // Report the risk when every allowed route that was actually tried hit the wrong window.
         let tried = allowed.map { capabilities.verdict($0, kind, condition) }

@@ -24,17 +24,23 @@ for app in Dropy DropyFixture DropyInputFixture; do
     exit 1
   fi
 done
-if pgrep -f 'Scripts/(device-checks|input-probe)\.sh' | grep -vqx "$$"; then
+if pgrep -f 'Scripts/(device-checks|input-probe).*\.sh' | grep -vqx "$$"; then
   print -u2 "Another Dropy device check is running."
   exit 1
 fi
 
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$build_dir/InputProbe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+# Refuse shared recovery state before changing windows or preferences.
+if [[ -e "$HOME/Library/Application Support/Dropy/placement-journal.json" ]]; then
+  print -u2 "Recover pending Dropy placements before running the input probe."
+  exit 1
+fi
 mkdir -p "$logs"
 fixture_log="$logs/fixture.jsonl"
 results="$logs/results.jsonl"
 fixture_pid=""
+"$build_dir/InputProbe" check-modifiers
 
 cleanup() {
   "$build_dir/InputProbe" release 2>/dev/null || true

@@ -17,10 +17,23 @@ logs="$build_dir/input-probe-apps-$stamp-logs"
 report="$build_dir/input-probe-apps-$stamp.md"
 apps=("${@:-textedit safari}")
 apps=(${=apps})
+for app in Dropy DropyFixture DropyInputFixture; do
+  if pgrep -xq "$app"; then print -u2 "Quit $app before running the input probe."; exit 1; fi
+done
+if pgrep -f 'Scripts/(device-checks|input-probe).*\.sh' | grep -vqx "$$"; then
+  print -u2 "Another Dropy device check is running."; exit 1
+fi
 work="$(mktemp -d)"
 owned=()
+# Refuse shared recovery state before changing windows or preferences.
+if [[ -e "$HOME/Library/Application Support/Dropy/placement-journal.json" ]]; then
+  print -u2 "Recover pending Dropy placements before running the input probe."
+  exit 1
+fi
 mkdir -p "$logs"
 swiftc -O -swift-version 6 -o "$probe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+
+"$probe" check-modifiers
 
 cleanup() {
   "$probe" release 2>/dev/null || true
