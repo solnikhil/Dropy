@@ -74,7 +74,9 @@ device_session_begin() {
     return 0
   fi
   device_power_ok || return 1
-  [[ "${DROPY_SKIP_PROMPT_CHECK:-0}" == 1 ]] || device_prompts_clear || return 1
+  # Unconditional: there is no switch to skip it. Tests that need a clear screen replace
+  # device_prompts_clear in their own shell; real device scripts cannot.
+  device_prompts_clear || return 1
   # The guard inode is permanent. Kernel locking covers directory creation, owner
   # publication and crash recovery; an empty owner file is never treated as proof
   # that a concurrent initializer died. The kernel releases the guard on exit.
