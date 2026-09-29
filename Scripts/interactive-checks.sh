@@ -134,6 +134,12 @@ run_case() {
   [[ "$presses" == "A=1 B=0" ]] && record "$condition" click PASS "$presses; $(grep -oE 'kind=pointerClick [^ ]+ route=[a-zA-Z]+' "$log" | tail -1)" \
     || record "$condition" click FAIL "$presses; $(grep -E 'kind=pointerClick' "$log" | tail -1 | cut -c 60-)"
 
+  mark="$(log_mark)"
+  "$hid" click "${point[1]}" "${point[2]}" cmd; sleep 0.5
+  local modified="$(effects_since "$mark" press)"
+  [[ "$modified" == "A=0 B=0" ]] && record "$condition" "modified click refused" PASS "$modified" \
+    || record "$condition" "modified click refused" FAIL "$modified"
+
   mark="$(log_mark)"; point=($(preview_point "${text[1]}" "${text[2]}"))
   "$hid" click "${point[1]}" "${point[2]}"; sleep 0.6
   for key in 2 7 26; do "$hid" key "$key"; done   # d x 7
@@ -236,7 +242,7 @@ cat "$report"
 print -r -- "Report saved to $report"
 
 # A report containing failures or skipped checks is not a successful verification run.
-(( ${#rows} == 11 )) || { print -u2 "Expected 11 completed checks; see $report"; exit 1; }
+(( ${#rows} == 13 )) || { print -u2 "Expected 13 completed checks; see $report"; exit 1; }
 for row in $rows; do
   [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
 done

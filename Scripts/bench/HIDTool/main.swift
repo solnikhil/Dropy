@@ -72,15 +72,21 @@ case "key":
     for (_, key, flag) in held.reversed() { flags.remove(flag); modifier(key, down: false, flags: flags) }
     _ = release()
 case "click":
-    guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: click <x> <y>") }
+    guard (3...4).contains(args.count), let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: click <x> <y> [mods]") }
+    let names = args.count == 4 ? args[3].split(separator: ",").map(String.init) : []
+    let held = modifierKeys.filter { names.contains($0.0) }
+    var flags: CGEventFlags = []
+    for (_, key, flag) in held { flags.insert(flag); modifier(key, down: true, flags: flags) }
     let point = CGPoint(x: x, y: y)
     post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
     for type in [CGEventType.leftMouseDown, .leftMouseUp] {
         let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
-        event?.flags = []
+        event?.flags = flags
         event?.setIntegerValueField(.mouseEventClickState, value: 1)
         post(event)
     }
+    for (_, key, flag) in held.reversed() { flags.remove(flag); modifier(key, down: false, flags: flags) }
+    _ = release()
 case "move":
     guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { fail("usage: move <x> <y>") }
     let start = CGEvent(source: nil)?.location ?? .zero

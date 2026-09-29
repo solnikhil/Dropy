@@ -56,6 +56,12 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
     override func mouseDown(with event: NSEvent) {
         guard onClick != nil else { return super.mouseDown(with: event) }
+        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+              event.clickCount == 1 else {
+            pressPoint = nil
+            onUnsupported?(.pointerClick)
+            return
+        }
         pressPoint = topLeftPoint(event)
         dragged = false
     }
@@ -82,6 +88,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
     override func scrollWheel(with event: NSEvent) {
         guard let onScroll else { return super.scrollWheel(with: event) }
+        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+              event.momentumPhase.isEmpty else {
+            onUnsupported?(.scroll)
+            return
+        }
         // Line-based wheels report small deltas; scale them to points as AppKit does.
         let factor: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
         onScroll(topLeftPoint(event), CGSize(width: event.scrollingDeltaX * factor, height: event.scrollingDeltaY * factor))
