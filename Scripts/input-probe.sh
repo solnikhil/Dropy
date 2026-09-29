@@ -30,7 +30,6 @@ case "$target" in
     report="$build_dir/input-probe-electron-$stamp.md"; logs="${report%.md}-logs" ;;
   *) print -u2 "TARGET must be appkit or electron"; exit 2 ;;
 esac
-source "$repo_dir/Scripts/lib/device-session.zsh"
 
 if lsappinfo info -only pid -app org.dropy.electronfixture 2>/dev/null | grep -q '[0-9]'; then
   print -u2 "Quit DropyElectronFixture first."; exit 1
@@ -42,6 +41,10 @@ for app in Dropy DropyFixture DropyInputFixture; do
   fi
 done
 
+source "$repo_dir/Scripts/lib/device-session.zsh"
+device_session_begin input-probe-$target || exit 1
+# Protect builds too: another run must not replace a running app or its dylib.
+trap device_session_end EXIT
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 [[ "$target" == electron ]] && "$repo_dir/Scripts/bench/build-electron-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$build_dir/InputProbe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
@@ -50,7 +53,6 @@ if [[ -e "$HOME/Library/Application Support/Dropy/placement-journal.json" ]]; th
   print -u2 "Recover pending Dropy placements before running the input probe."
   exit 1
 fi
-device_session_begin input-probe-$target || exit 1
 mkdir -p "$logs"
 profile_dir="$(mktemp -d)"
 fixture_log="$logs/fixture.jsonl"

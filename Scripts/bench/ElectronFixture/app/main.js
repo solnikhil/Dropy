@@ -122,6 +122,11 @@ function moveA(toHome) {
 
 function command(text) {
   if (text === 'quit') { app.quit(); return; }
+  if (text === 'animate:A' || text === 'animate:stop') {
+    const entry = windows.get('A');
+    if (entry) entry.window.webContents.executeJavaScript(`window.fixtureAnimate(${text === 'animate:A'})`).catch(() => {});
+    return;
+  }
   if (text === 'reset') {
     for (const { window } of windows.values()) window.webContents.executeJavaScript('window.fixtureReset()').catch(() => {});
     log({ kind: 'reset' });

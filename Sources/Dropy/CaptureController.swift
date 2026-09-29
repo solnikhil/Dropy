@@ -23,9 +23,8 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     private weak var renderer: MetalFrameView?
     let metrics: CaptureMetricsRecorder
     /// Consecutive unchanged frames before the source counts as idle (0.5 s at 60 fps).
-    static let idleThreshold = 30
-    private var consecutiveUnchanged = 0
-    private var sourceIdle = false
+    static let idleThreshold = CaptureActivityTracker.defaultUnchangedThreshold
+    private var activity = CaptureActivityTracker()
     private var activitySequence = 0
     /// Called on the capture queue when the source becomes idle (true) or changes again.
     private let onActivityChange: @Sendable (Bool, Int) -> Void
@@ -71,21 +70,14 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
                   String(describing: rect), String(describing: scale), String(describing: density),
                   String(describing: configuredGeometry), String(describing: measuredGeometry))
         }
-        if let previous, previousGeometry == measuredGeometry, Self.identical(previous, image) {
-            metrics.recordUnchanged()
-            consecutiveUnchanged += 1
-            if consecutiveUnchanged == Self.idleThreshold, !sourceIdle {
-                sourceIdle = true
-                activitySequence += 1
-                onActivityChange(true, activitySequence)
-            }
-            return
-        }
-        consecutiveUnchanged = 0
-        if sourceIdle {
-            sourceIdle = false
+        let unchanged = previous.map { previousGeometry == measuredGeometry && Self.identical($0, image) } ?? false
+        if let idle = activity.record(unchanged: unchanged) {
             activitySequence += 1
-            onActivityChange(false, activitySequence)
+            onActivityChange(idle, activitySequence)
+        }
+        if unchanged {
+            metrics.recordUnchanged()
+            return
         }
         lock.lock()
         guard !invalidated else { lock.unlock(); return }
@@ -140,7 +132,7 @@ extension FrameMailbox {
               let b = CVPixelBufferGetBaseAddress(second) else { return false }
         return FrameComparison.identical(a, rowStride: CVPixelBufferGetBytesPerRow(first),
                                          b, rowStride: CVPixelBufferGetBytesPerRow(second),
-                                         bytesPerRow: width * 4, rows: height, ignoringAlpha: true)
+                                         bytesPerRow: width * 4, rows: height)
     }
 }
 
@@ -272,8 +264,8 @@ final class CaptureController {
         activeRenderer = renderer
     }
 
-    /// While the source is unchanged, capture at a low rate; the first changed frame
-    /// restores the full rate. ScreenCaptureKit keeps producing identical frames for
+    /// While the source is unchanged, capture at a low rate; sustained changes
+    /// restore the full rate. Every changed frame still reaches the renderer immediately. ScreenCaptureKit keeps producing identical frames for
     /// titled windows, so without this an idle source costs as much as a live one.
     private func setSourceIdle(_ idle: Bool, sequence: Int, request: UUID) async {
         guard request == requestID, stream != nil,

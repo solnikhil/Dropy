@@ -54,6 +54,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     /// Stream geometry of the frame on screen; cleared with the frame.
     private(set) var presentedGeometry: CaptureGeometry?
     private var drawnPixelSize: CGSize?
+    private var lastPresentedSequence = -1
 
     /// The frame on screen and the geometry it was captured with, for preview input.
     var presentedFrame: PresentedFrame? {
@@ -188,8 +189,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         drawableRetryTask = nil
         drawableRetryDelayMilliseconds = 16
         currentPixelBuffer = pixelBuffer
-        presentedGeometry = nil
-        drawnPixelSize = nil
+        // A pending frame does not replace the frame actually on screen. Keep its
+        // mapping until a newer presentation succeeds; clear/viewport changes revoke it.
         pendingGeometry = geometry
         // Draw now instead of waiting for the next display cycle; the deferred
         // path showed about two refreshes of avoidable frame age.
@@ -209,6 +210,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         currentPixelBuffer = nil
         presentedGeometry = nil
         drawnPixelSize = nil
+        lastPresentedSequence = -1
         pendingGeometry = nil
         if let pendingStamp { pendingStamp.recorder.recordNotPresented(pendingStamp) }
         pendingStamp = nil
@@ -254,6 +256,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         visibilityGeneration = UUID()
         presentedGeometry = nil
         drawnPixelSize = nil
+        lastPresentedSequence = -1
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -331,7 +334,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
             guard presentedTime > 0 else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.visibilityGeneration == generation,
-                      self.currentPixelBuffer != nil, self.frameSequence == sequence else { return }
+                      self.currentPixelBuffer != nil, sequence >= self.lastPresentedSequence else { return }
+                self.lastPresentedSequence = sequence
                 self.presentedGeometry = geometry
                 self.drawnPixelSize = pixels
                 self.concealmentView.isHidden = true
@@ -363,9 +367,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
                                   texture2d<float> image [[texture(0)]]) {
         constexpr sampler sampleFilter(coord::normalized, address::clamp_to_edge,
                                        filter::linear);
-        // This preview is opaque. Only RGB reaches the screen; varying window-edge
-        // alpha must not falsely wake unchanged content in the capture comparison.
-        return float4(image.sample(sampleFilter, in.uv).rgb, 1.0);
+        return image.sample(sampleFilter, in.uv);
     }
     """
 }

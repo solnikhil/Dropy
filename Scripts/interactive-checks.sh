@@ -27,8 +27,11 @@ for app in Dropy DropyFixture DropyInputFixture; do
   pgrep -xq "$app" && { print -u2 "Quit $app first."; exit 1; }
 done
 [[ -e "$journal" ]] && { print -u2 "Recover the pending placement journal first."; exit 1; }
-source "${0:A:h}/lib/device-session.zsh"
 
+source "${0:A:h}/lib/device-session.zsh"
+device_session_begin interactive-checks || exit 1
+# Protect builds too: another run must not replace a running app or its dylib.
+trap device_session_end EXIT
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$hid" "$repo_dir/Scripts/bench/HIDTool/main.swift"
@@ -40,7 +43,6 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Sources/Dropy/PlacementJournal.swift" "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
   "$repo_dir/Sources/Dropy/WindowCatalog.swift"
 "$probe" check-modifiers
-device_session_begin interactive-checks || exit 1
 mkdir -p "$logs"
 work="$(mktemp -d)"
 defaults export "$prefs_domain" "$work/prefs.plist" 2>/dev/null || true
@@ -295,6 +297,13 @@ electron_case() {
       local scrolled="$(effects_since "$mark" scroll)"
       [[ "$scrolled" == A=[1-9]*" B=0" ]] && record Electron scroll PASS "$scrolled; $(grep -oE 'kind=scroll [^ ]+ route=[a-zA-Z]+' "$log" | tail -1)" \
         || record Electron scroll FAIL "$scrolled; $(grep -E 'kind=scroll' "$log" | tail -1 | cut -c 60-)"
+      print animate:A >> "$commands"; sleep 1
+      mark="$(log_mark)"; point=($(preview_point "${button[1]}" "${button[2]}"))
+      "$hid" click "${point[1]}" "${point[2]}"; sleep 1
+      presses="$(effects_since "$mark" press)"
+      [[ "$presses" == "A=1 B=0" ]] && record Electron "click while animating" PASS "$presses" \
+        || record Electron "click while animating" FAIL "$presses; $(grep -E 'kind=pointerClick' "$log" | tail -1)"
+      print animate:stop >> "$commands"; sleep 0.5
       mark="$(log_mark)"; point=($(preview_point "${text[1]}" "${text[2]}"))
       "$hid" click "${point[1]}" "${point[2]}"; sleep 0.6
       for key in 2 7 26; do "$hid" key "$key"; done
@@ -342,7 +351,7 @@ print -r -- "Report saved to $report"
 # A report containing failures or skipped checks is not a successful verification run.
 (( router_status == 0 )) && ! grep -q '^FAIL' "$logs/router-regressions.txt" \
   || { print -u2 "A router regression failed; see $report"; exit 1; }
-(( ${#rows} == 17 )) || { print -u2 "Expected 17 completed checks; see $report"; exit 1; }
+(( ${#rows} == 18 )) || { print -u2 "Expected 18 completed checks; see $report"; exit 1; }
 for row in $rows; do
   [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
 done

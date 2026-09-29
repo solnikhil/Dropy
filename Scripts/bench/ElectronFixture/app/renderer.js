@@ -51,3 +51,15 @@ window.fixtureCommand = () => {
   send({ kind: 'effect', effect: 'command', count: commands });
 };
 window.fixtureFocusText = () => text.focus();
+
+// Continuous RGB changes without moving controls, for preview presentation races.
+let animation = 0;
+window.fixtureAnimate = (enabled) => {
+  cancelAnimationFrame(animation);
+  if (!enabled) { document.body.style.backgroundColor = ''; return; }
+  const tick = (time) => {
+    document.body.style.backgroundColor = `rgb(${80 + Math.round(50 * Math.sin(time / 150))}, 120, 160)`;
+    animation = requestAnimationFrame(tick);
+  };
+  animation = requestAnimationFrame(tick);
+};

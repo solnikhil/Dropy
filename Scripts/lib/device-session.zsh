@@ -79,7 +79,7 @@ device_session_begin() {
   fi
   idle="$(device_hid_idle)"
   if [[ -n "$idle" ]] && (( idle < required )); then
-    print -u2 "Someone used the keyboard or pointer ${idle}s ago; device checks need the Mac to themselves."
+    print -u2 "Keyboard or pointer activity occurred ${idle}s ago; device checks need an idle desktop."
     device_session_end
     return 1
   fi

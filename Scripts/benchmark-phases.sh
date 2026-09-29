@@ -31,14 +31,16 @@ pgrep -xq Dropy && { print -u2 "Quit Dropy first."; exit 1; }
 if lsappinfo info -only pid -app org.dropy.electronfixture 2>/dev/null | grep -q '[0-9]'; then
   print -u2 "Quit DropyElectronFixture first."; exit 1
 fi
+source "${0:A:h}/lib/device-session.zsh"
+device_session_begin benchmark-phases || exit 1
+# Protect builds too: another run must not replace a running app or its dylib.
+trap device_session_end EXIT
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 "$repo_dir/Scripts/bench/build-electron-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$build_dir/Sampler" "$repo_dir/Scripts/bench/Sampler.swift"
 "$build_dir/Sampler" self-check
 swiftc -O -swift-version 6 -o "$build_dir/WindowTool" "$repo_dir"/Scripts/bench/WindowTool/*.swift
 
-source "${0:A:h}/lib/device-session.zsh"
-device_session_begin benchmark-phases || exit 1
 work_dir="$(mktemp -d)"
 defaults export "$prefs_domain" "$work_dir/prefs.plist" 2>/dev/null || true
 dropy_pid=""
