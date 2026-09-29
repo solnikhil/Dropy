@@ -160,9 +160,8 @@ for app in $apps; do
       # settings say "update.mode": "none". Record the installed version and refuse
       # to continue if an update is pending, and report any change afterwards.
       code_version_before="$code_version"
-      if [[ -e "$HOME/Library/Caches/com.microsoft.VSCode.ShipIt/ShipItState.plist" ]] && \
-         pgrep -qf "ShipIt com.microsoft.VSCode"; then
-        print -u2 "A VS Code update is being installed; run later."; exit 1
+      if pgrep -qf "ShipIt com.microsoft.VSCode" || ls -d "$HOME/Library/Caches/com.microsoft.VSCode.ShipIt"/update.*(N) | grep -q .; then
+        print -u2 "A VS Code update is staged or installing; the scratch instance would install it on quit. Run later."; exit 1
       fi
       argv_json="$HOME/.vscode/argv.json"
       [[ -f "$argv_json" ]] && { cp -p "$argv_json" "$work/argv.json.backup"; shasum "$argv_json" > "$work/argv.json.sum"; }
@@ -172,6 +171,13 @@ for app in $apps; do
       [[ -n "$scratch_pid" ]] || { print -r -- "| VSCode | - | scratch instance did not start; NOT RUN |" >> "$work/rows"; continue; }
       PROBE_APP_PID="$scratch_pid" PROBE_ELECTRON=1 PROBE_APP_CONDITIONS=visible,covered,parked,minimized \
         probe_app "VSCode-$code_version" com.microsoft.VSCode type,click,scroll ax,axValue,pidWindow,pid
+      # Workbench: a pressable control (Explorer activity item) and editor scrolling.
+      ids=(${=$("$probe" windows "$scratch_pid")})
+      if (( ${#ids} >= 2 )); then
+        for id in "${ids[1]}" "${ids[2]}"; do "$probe" workbench-discover "$scratch_pid" "$id" | tee -a "$logs/VSCode-workbench-discover.txt"; done
+        "$probe" workbench "$scratch_pid" "${ids[1]}" "${ids[2]}" "$logs/VSCode-workbench.jsonl" | tee "$logs/VSCode-workbench.txt"
+        "$probe" report "$logs/VSCode-workbench.jsonl" | sed "s/^| \\([a-zA-Z]*\\) |/| VSCode-workbench \\1 |/" >> "$work/tables"
+      fi
       stop_scratch_vscode
       restore_vscode_argv || exit 1
       sleep 3

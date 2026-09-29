@@ -1028,6 +1028,15 @@ case "elements":
         }
         print(parts.joined(separator: " "))
     }
+case "workbench":
+    // workbench <pid> <windowA> <windowB> <results.jsonl>: VS Code pressable click and editor scroll.
+    guard args.count == 5, let pid = pid_t(args[1]), let a = CGWindowID(args[2]), let b = CGWindowID(args[3]) else {
+        fail("usage: InputProbe workbench <pid> <windowA> <windowB> <results.jsonl>")
+    }
+    runWorkbench(pid: pid, a: a, b: b, results: args[4])
+case "workbench-discover":
+    guard args.count == 3, let pid = pid_t(args[1]), let id = CGWindowID(args[2]) else { fail("usage: workbench-discover <pid> <window>") }
+    discoverWorkbench(pid: pid, window: id)
 case "pagestatus":
     // pagestatus <pid> <window>: the text page's status JSON (Scripts/bench/text.html).
     guard args.count == 3, let pid = pid_t(args[1]), let id = CGWindowID(args[2]) else { fail("usage: pagestatus <pid> <window>") }
