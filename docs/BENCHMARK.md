@@ -14,6 +14,7 @@ This page explains what Dropy measures, how to reproduce the numbers, and what t
 | `status` | Frames by ScreenCaptureKit status (`complete`, `idle`, `blank`, `suspended`, …) | — |
 | `mailboxDrops` | Complete frames replaced before the main thread took them (latest-frame policy) | — |
 | `presented` / `notPresented` | Frames the compositor reported shown, or never shown (for example a replaced drawable) | — |
+| `drawableMisses` | Drawable attempts not shown, including retries whose frame later succeeds | — |
 | `captureToCallback` | `SCStreamFrameInfo.displayTime` → Dropy's callback | mach host time on both sides |
 | `callbackToPresent` | Callback → `MTLDrawable.presentedTime` | mach time vs Core Animation media time |
 | `frameAge` | `displayTime` → on-glass presentation, per shown frame | as above |
@@ -124,6 +125,14 @@ Findings:
 3. **An unchanged source is not yet cheap enough.** Byte-identical frames are skipped (936 of 976), but the stream switched between the 10 fps idle rate and 60 fps 41 times in 36 s, so it averaged 27 frames/s and 4.3% CPU against a 2% budget. So the captured image changes about once a second although the page is static; what changes (Chromium compositor output, window chrome) is not yet identified. The renderer also reported 48 not-presented against 42 presented frames in that phase, with frame age up to 104 ms. The cause is not yet known.
 4. **A 60 fps source fits the CPU budget** (10.8% ≤ 12%) and presented 2014 of 2015 frames, but its frame-age p95 (50.3 ms) is at the 50 ms budget in run 2 and well under it in run 1.
 
+## PR #30 review measurements
+
+[Review rerun](benchmarks/2026-09-29-pr30-review.md): unchanged source **1.9% CPU**, 10.8 complete frames/s, one switch to idle and no switch back; all three forwarded frames presented. Active source **10.9% CPU**, 57.5 complete frames/s, frame-age p95 **34.0 ms**, 2028 presented and no final not-presented frames. Closed overlay: 0.0% CPU. The Mac still had unrelated background load; this is a loaded-system comparison, not a quiet-system release validation.
+
+The static source's rate reconfiguration produced a changed frame, which previously immediately requested full rate and caused another change. Rate hysteresis now requires two consecutive changed samples to resume full rate; every changed frame still reaches the renderer immediately. An isolated static update stays at 10 fps, while continuing motion resumes 60 fps within two idle sampling intervals (up to roughly 200 ms). Byte-exact comparison and the original shader are retained; shadow exclusion and alpha-only comparison did not solve the oscillation and were removed.
+
+`notPresented` now counts final frame outcomes once. Zero-time drawable attempts are counted separately as `drawableMisses`; retrying and later successfully showing the same frame cannot count it both shown and unshown. This corrects the earlier static presentation-budget failure. Idle frame-age p95 remains **100.4 ms**, based on only three changed frames, above the provisional 50 ms target; idle response latency and quiet-system replication remain M4 work.
+
 ## Provisional budgets
 
 These come from the baseline above and are **not yet release gates**. They should be confirmed with at least five runs per workload on an idle system and on a second Mac model before they gate anything.
@@ -133,11 +142,11 @@ These come from the baseline above and are **not yet release gates**. They shoul
 | Streams running after close | 0 (hard gate) | Pass |
 | `captureToCallback` p99 | ≤ 10 ms | Pass |
 | `frameAge` p95 | ≤ 50 ms | Mixed (35–59 ms; 2026-09-29 active 34.0 and 50.3 ms, idle 68–101 ms) |
-| Frames presented | ≥ 95% of those sent to the renderer | Active passes (2014 presented, 1 not); **unchanged source fails** (42 presented, 48 not, 2026-09-29) |
+| Frames presented | ≥ 95% of those sent to the renderer | Review rerun passes (idle 3/3, active 2028/2028); earlier static failure counted retry attempts as frames |
 | Warm reveal p95 | ≤ 300 ms | Pass (261 ms) |
 | Cold reveal | ≤ 600 ms | Mixed (426–775 ms) |
 | Dropy CPU mean while previewing at 60 fps | ≤ 12% | Pass (10.8–11.0%, 2026-09-29) |
-| Dropy CPU when the source is unchanged | ≤ 2% | **Fails** (4.1–4.3%, 2026-09-29; rate keeps returning to 60 fps) |
+| Dropy CPU when the source is unchanged | ≤ 2% | Review rerun passes at 1.9%; quiet-system replication remains open |
 | Added system GPU utilization | ≤ 20 points | Pass (+1.8 unchanged, +4.0 at 60 fps, 2026-09-29) |
 | Dropy footprint | ≤ 64 MB | Pass (≤ 37 MB) |
 | Dropy CPU with the overlay closed | ≈ 0% | Pass (0.0%, 0.2 wakeups/s, pointer still, 2026-09-29) |

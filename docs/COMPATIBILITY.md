@@ -25,12 +25,16 @@ Electron specifics, from 192 trials against a disposable two-window app with a t
 
 **Routing safety** ([report](device-checks/2026-09-29-interactive-routing.md)): the preview maps a point only through the frame actually drawn and only when that frame's stream geometry matches the source's current size and the current selection (`PreviewInputGate`); the router re-checks the live window size. Device checks passed for a click mapped at a stale size, a real source resize between mapping and sending (click and scroll), 25 rapid source switches (no typing target survives), a replaced text field (stale element refused, not retried), a hidden source, and quit/relaunch (the old identity is refused for click, scroll and typing, and the relaunched instance is untouched). Pointer, frontmost app and desktop never changed.
 
+**PR #30 review:** mappings are published only after a successful drawable presentation; pending frames cannot impersonate a drawn frame. Resize/mode changes revoke the mapping until redrawn. Source size is recovered from each sample's ScreenCaptureKit metadata, so old frames cannot be relabelled by a completed reconfiguration, including proportional resizes with identical output dimensions. Continuous animation retains the latest confirmed mapping; the Electron animation-click regression passes. Device sessions use a kernel lock before builds or backup-directory publication, and restore preferences before releasing ownership. Full results: [review](device-checks/2026-09-29-pr30-review.md).
+
 **Containment and recovery** (`Scripts/device-checks.sh`)
 
 | Target | offscreen | parked | minimize | hideApp | Your move wins | Crash while parked | Report |
 |---|---|---|---|---|---|---|---|
 | TextEdit 1.21 | restored; 1.3% visible, capture live | restored; 0.000 uncovered, capture live | restored; capture pauses | restored; capture pauses | kept | restored from journal | [2026-09-29](device-checks/2026-09-29-recovery-textedit.md) |
 | Electron 43.2.0 fixture | restored; 2.4% visible, capture live (354 frames shown) | restored; 0.000 uncovered, capture live | restored; capture pauses | restored; capture pauses | kept | restored from journal | [2026-09-29](device-checks/2026-09-29-recovery-electron.md) |
+
+Reviewer recovery reruns: [Electron](device-checks/2026-09-29-pr30-review-electron.md) passed eight checks, including normal/crash parked recovery on another desktop. [TextEdit](device-checks/2026-09-29-pr30-review-textedit.md) passed the six standard checks; its added cross-desktop setup could not switch desktops and is recorded NOT RUN. Parking remains experimental.
 
 Not verified anywhere: IME composition, dead keys, editing keys, shortcuts, context menus, sheets and file dialogs, drag and drop, hover, momentum scrolling, full-screen and Stage Manager sources, multi-display, a real third-party Electron app (only the disposable fixture was tested, so personal workspaces were never driven). Parking remains experimental.
 

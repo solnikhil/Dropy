@@ -289,9 +289,11 @@ final class InputRouter {
         var fallback: AXUIElement?
         func search(_ element: AXUIElement, depth: Int) -> AXUIElement? {
             guard depth < 40, budget > 0 else { return nil }
-            let containing = children(element).reversed().filter { child in
+            var containing: [AXUIElement] = []
+            for child in children(element).reversed() {
+                guard budget > 0 else { break }
                 budget -= 1
-                return frame(of: child)?.contains(point) == true
+                if frame(of: child)?.contains(point) == true { containing.append(child) }
             }
             if containing.isEmpty {
                 if fallback == nil, !CFEqual(element, window) { fallback = element }
