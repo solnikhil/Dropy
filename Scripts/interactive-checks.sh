@@ -36,6 +36,12 @@ fi
 swiftc -O -swift-version 6 -o "$hid" "$repo_dir/Scripts/bench/HIDTool/main.swift"
 swiftc -O -swift-version 6 -o "$probe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
 swiftc -O -swift-version 6 -o "$tool" "$repo_dir"/Scripts/bench/WindowTool/*.swift
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/DeviceInputRouterChecks" \
+  "$repo_dir/Tests/DeviceInputRouterCheck.swift" "$repo_dir/Sources/Dropy/InputRouter.swift" \
+  "$repo_dir/Sources/Dropy/PlacementJournal.swift" "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
+  "$repo_dir/Sources/Dropy/WindowCatalog.swift"
+"$probe" check-modifiers
 mkdir -p "$logs"
 work="$(mktemp -d)"
 defaults export "$prefs_domain" "$work/prefs.plist" 2>/dev/null || true
@@ -43,8 +49,13 @@ pointer_start=(${=$("$hid" pointer)})
 fixture_log="$logs/fixture.jsonl"
 dropy_pid=""
 rows=()
+owned_textedit=false
 
 cleanup() {
+  if [[ "$owned_textedit" == true ]]; then
+    osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
+    owned_textedit=false
+  fi
   "$hid" release >/dev/null 2>&1 || true
   [[ -n "$dropy_pid" ]] && { kill "$dropy_pid" 2>/dev/null || true; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""; }
   "$probe" send quit >/dev/null 2>&1 || true
@@ -98,7 +109,7 @@ defaults write "$prefs_domain" "$prefs_key" -data "$(print -rn -- "$json" | xxd 
 
 run_case() {
   local condition="$1" log="$logs/dropy-$1.log"
-  DROPY_DEBUG_WINDOW_ID="$A" DROPY_DEBUG_QUIT_AFTER=45 "$dropy" --show > "$log" 2>&1 &
+  DROPY_DEBUG_INPUT_EVENTS=1 DROPY_DEBUG_WINDOW_ID="$A" DROPY_DEBUG_QUIT_AFTER=45 "$dropy" --show > "$log" 2>&1 &
   dropy_pid=$!
   for i in {1..60}; do grep -q 'Dropy input: preview=' "$log" && break; sleep 0.25; done
   if ! grep -q 'Dropy input: preview=' "$log"; then
@@ -133,6 +144,7 @@ run_case() {
 
   mark="$(log_mark)"; point=($(preview_point "${scroll[1]}" "${scroll[2]}"))
   "$hid" move "${point[1]}" "${point[2]}"
+  print -r -- "  $condition scroll target=${point[1]},${point[2]} actual=$("$hid" pointer)"
   for i in {1..3}; do "$hid" scroll -120; sleep 0.2; done
   sleep 1
   local scrolled="$(effects_since "$mark" scroll)"
@@ -159,6 +171,7 @@ h=(${=home}); "$tool" move "$fixture_pid" "$A" "${h[1]}" "${h[2]}"
 textedit_case() {
   pgrep -xq TextEdit && { record TextEdit all "-" "NOT RUN: TextEdit was already running"; return; }
   for n in A B; do for i in {1..60}; do print "Dropy interactive check $n line $i"; done > "$work/interactive-$n.txt"; done
+  owned_textedit=true
   open -a TextEdit "$work/interactive-A.txt" "$work/interactive-B.txt"; sleep 3
   osascript -e 'tell application "TextEdit"
     close (every window whose name is not "interactive-A.txt" and name is not "interactive-B.txt") saving no
@@ -202,7 +215,10 @@ textedit_case() {
   fi
   kill "$dropy_pid" 2>/dev/null || true; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
   osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
+  owned_textedit=false
 }
+"$build_dir/DeviceInputRouterChecks" "$fixture_pid" "$A" "$(grep '"kind":"ready"' "$fixture_log" | grep -oE '"B":[0-9]+' | cut -d: -f2)" > "$logs/router-regressions.txt"
+print -r -- "$(cat "$logs/router-regressions.txt")"
 "$probe" send quit; sleep 1
 textedit_case
 
@@ -218,3 +234,9 @@ textedit_case
 } > "$report"
 cat "$report"
 print -r -- "Report saved to $report"
+
+# A report containing failures or skipped checks is not a successful verification run.
+(( ${#rows} == 11 )) || { print -u2 "Expected 11 completed checks; see $report"; exit 1; }
+for row in $rows; do
+  [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
+done

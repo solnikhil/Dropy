@@ -93,6 +93,18 @@ final class InteractivePreviewTests: XCTestCase {
                        .interactive([.pointerClick]))
     }
 
+    func testHiddenAppsStayViewOnlyWithoutHiddenEvidence() {
+        let trials = [FocusState.otherWindowKey, .appInactive].map {
+            InputTrial(route: .accessibility, kind: .text, condition: .visible, focus: $0,
+                       outcome: .pass, sideEffects: [])
+        }
+        let capabilities = InputCapabilities(trials: trials)
+        XCTAssertEqual(InputPlanner.support(in: .hidden, capabilities: capabilities, policy: .preview), .viewOnly)
+        XCTAssertEqual(InputPlanner.decide(.text, selectedWindowID: 4, resolution: .exact(windowID: 4),
+                                           condition: .hidden, capabilities: capabilities, policy: .preview),
+                       .refuse(.notVerified))
+    }
+
     func testLegacyTrialsAndPreferencesStillDecode() throws {
         let legacy = Data(#"{"route":"accessibility","kind":"text","condition":"otherSpace","focus":"appInactive","outcome":"pass","changesFocus":true}"#.utf8)
         XCTAssertEqual(try JSONDecoder().decode(InputTrial.self, from: legacy).sideEffects, [.unclassifiedFocusChange])

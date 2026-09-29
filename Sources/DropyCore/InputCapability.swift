@@ -64,7 +64,7 @@ public enum InputSideEffect: String, Codable, CaseIterable, Sendable {
 
 /// Where the source window is while Dropy shows it.
 public enum SourceCondition: String, Codable, CaseIterable, Sendable {
-    case visible, covered, parked, otherSpace, minimized
+    case visible, covered, parked, otherSpace, minimized, hidden
 }
 
 /// Which window had focus in the source app when the input was sent.

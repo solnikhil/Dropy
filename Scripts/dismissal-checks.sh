@@ -26,7 +26,7 @@ for app in Dropy DropyFixture DropyInputFixture; do
   pgrep -xq "$app" && { print -u2 "Quit $app first."; exit 1; }
 done
 [[ -e "$journal" ]] && { print -u2 "Recover the pending placement journal first."; exit 1; }
-if pgrep -f 'Scripts/(device-checks|input-probe|dismissal-checks).*\.sh' | grep -vqx "$$"; then
+if pgrep -f 'Scripts/(device-checks|input-probe|dismissal-checks|interactive-checks).*\.sh' | grep -vqx "$$"; then
   print -u2 "Another Dropy device check is running."; exit 1
 fi
 
@@ -181,3 +181,9 @@ stop
 } > "$report"
 cat "$report"
 print -r -- "Report saved to $report"
+
+# A report containing failures or skipped checks is not a successful verification run.
+(( ${#rows} == 8 )) || { print -u2 "Expected 8 completed checks; see $report"; exit 1; }
+for row in $rows; do
+  [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
+done

@@ -96,6 +96,14 @@ case "scroll":
     guard args.count == 2, let dy = Int32(args[1]) else { fail("usage: scroll <dy>") }
     let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0)
     event?.flags = []
+    // Wheel initializers do not promise the current cursor location. Set it explicitly
+    // so a test never posts the scroll to the menu bar or another window by accident.
+    let point = CGEvent(source: nil)?.location ?? .zero
+    event?.location = point
+    let hit = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []).first {
+        bounds($0).contains(point) && ($0[kCGWindowAlpha as String] as? Double ?? 1) > 0
+    }
+    print("wheel pointer=\(Int(point.x)),\(Int(point.y)) hitPID=\(hit?[kCGWindowOwnerPID as String] ?? -1) window=\(hit?[kCGWindowNumber as String] ?? -1)")
     post(event)
 case "pointer":
     let point = CGEvent(source: nil)?.location ?? .zero

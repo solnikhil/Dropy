@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import DropyCore
 
-/// Sends one interaction from the preview to the exact source window (M3 prototype).
+/// Sends one interaction from the preview to the exact source window (M3 beta).
 ///
 /// Every send re-resolves the window by exact identity, asks `InputPlanner` for the
 /// verified routes, and tries them in order. Nothing is sent when the window cannot be
@@ -14,7 +14,7 @@ import DropyCore
 /// - window-targeted event: `postToPid` with event fields 51/91/92 set to the window and
 ///   the private `CGEventSetWindowLocation`; explicit empty modifier flags.
 /// - Accessibility: `AXPress` on the pressable element under the point; the scroll
-///   bar's value; focus plus `AXSelectedText` on the text element last clicked in this window.
+///   bar's value; `AXSelectedText` without changing focus on the text element last clicked in this window.
 @MainActor
 final class InputRouter {
     enum Outcome: Equatable {
@@ -29,7 +29,7 @@ final class InputRouter {
     let evidence: InputEvidence
     private let macOSMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     /// The text element last clicked in each window, so typing goes to that window only.
-    private var textTargets: [UInt32: AXUIElement] = [:]
+    private var textTargets: [WindowIdentity: AXUIElement] = [:]
 
     init(journal: PlacementJournal, evidence: InputEvidence = InputRouter.bundledEvidence()) {
         self.journal = journal
@@ -55,15 +55,16 @@ final class InputRouter {
         InputPlanner.support(in: condition(of: identity), capabilities: capabilities(for: identity), policy: .preview)
     }
 
-    func forget(_ identity: WindowIdentity) { textTargets[identity.windowID] = nil }
+    func forget(_ identity: WindowIdentity) { textTargets[identity] = nil }
 
     /// Where the source is now: parked by Dropy, minimized, on another desktop, or visible.
     func condition(of identity: WindowIdentity) -> SourceCondition {
-        if let entry = journal.entries.first(where: { $0.identity == identity }), entry.mode.movesWindow { return .parked }
+        if NSRunningApplication(processIdentifier: identity.processID)?.isHidden == true { return .hidden }
         if case .found(let window) = try? WindowPlacer.find(identity),
            (attribute(window, kAXMinimizedAttribute) as? Bool) == true { return .minimized }
         if let spaces = Spaces.of(identity.windowID), let active = Spaces.current(),
            !spaces.isEmpty, Set(spaces).isDisjoint(with: active) { return .otherSpace }
+        if let entry = journal.entries.first(where: { $0.identity == identity }), entry.mode.movesWindow { return .parked }
         // Moved beyond every display by someone else: the same situation as parked.
         if let server = WindowPlacer.windowServerInfo(identity.windowID),
            PlacementGeometry.visibleFraction(of: server.bounds, on: WindowPlacer.displayBounds()) < 0.5 { return .parked }
@@ -72,28 +73,32 @@ final class InputRouter {
 
     // MARK: Sending
 
-    /// A click chooses the typing target in this window even when the click itself is
-    /// not sent: typing uses Accessibility and needs only the element, not delivery.
-    func click(_ identity: WindowIdentity, at point: CGPoint) -> Outcome {
-        if case .found(let window) = try? WindowPlacer.find(identity), let origin = Self.origin(of: window) {
+    /// Only a successfully sent click selects a typing target. Rejected geometry or
+    /// a failed caret action must never silently redirect later typing to another field.
+    func click(_ identity: WindowIdentity, at point: CGPoint, expectedWindowSize: CGSize? = nil) -> Outcome {
+        send(.pointerClick, identity, expectedWindowSize: expectedWindowSize) { route, window, origin in
             let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
-            if let hit = Self.hitTest(window, global), Self.isTextElement(hit) { textTargets[identity.windowID] = hit }
-        }
-        return send(.pointerClick, identity) { route, window, origin in
-            let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
+            let hit = Self.hitTest(window, global)
+            let result: String?
             switch route {
             case .windowTargetedEvent:
-                return Self.postWindowTargeted(Self.clickEvents(at: global), identity: identity, local: point)
+                result = Self.postWindowTargeted(Self.clickEvents(at: global), identity: identity, local: point)
             case .accessibility:
-                guard let hit = Self.hitTest(window, global) else { return "nothingPressable" }
-                // In text, a click places the caret: ask the element for the character there.
-                if Self.isTextElement(hit) { return Self.placeCaret(hit, at: global) }
-                guard let pressable = Self.pressable(from: hit) else { return "nothingPressable" }
-                let result = AXUIElementPerformAction(pressable, kAXPressAction as CFString)
-                return result == .success ? nil : "axError(\(result.rawValue))"
+                guard let hit else { return "nothingPressable" }
+                if Self.isTextElement(hit) {
+                    result = Self.placeCaret(hit, at: global)
+                } else {
+                    guard let pressable = Self.pressable(from: hit) else { return "nothingPressable" }
+                    let error = AXUIElementPerformAction(pressable, kAXPressAction as CFString)
+                    result = error == .success ? nil : "axError(\(error.rawValue))"
+                }
             default:
                 return "routeNotImplemented"
             }
+            if result == nil {
+                self.textTargets[identity] = hit.flatMap { Self.isTextElement($0) ? $0 : nil }
+            }
+            return result
         }
     }
 
@@ -113,8 +118,8 @@ final class InputRouter {
         return result == .success ? nil : "axError(\(result.rawValue))"
     }
 
-    func scroll(_ identity: WindowIdentity, at point: CGPoint, delta: CGSize) -> Outcome {
-        send(.scroll, identity) { route, window, origin in
+    func scroll(_ identity: WindowIdentity, at point: CGPoint, delta: CGSize, expectedWindowSize: CGSize? = nil) -> Outcome {
+        send(.scroll, identity, expectedWindowSize: expectedWindowSize) { route, window, origin in
             let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
             switch route {
             case .windowTargetedEvent:
@@ -135,20 +140,19 @@ final class InputRouter {
     func type(_ identity: WindowIdentity, text: String) -> Outcome {
         send(.text, identity) { route, _, _ in
             guard route == .accessibility else { return "routeNotImplemented" }
-            guard let target = self.textTargets[identity.windowID] else { return "noTextElementChosen" }
+            guard let target = self.textTargets[identity] else { return "noTextElementChosen" }
             // The element must still belong to the exact window.
             guard let owner = Self.windowID(of: target), owner == identity.windowID else {
-                self.textTargets[identity.windowID] = nil
+                self.textTargets[identity] = nil
                 return "textElementGone"
             }
-            AXUIElementSetAttributeValue(target, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             let result = AXUIElementSetAttributeValue(target, kAXSelectedTextAttribute as CFString, text as CFString)
             return result == .success ? nil : "axError(\(result.rawValue))"
         }
     }
 
     /// Resolves the exact window, plans, and tries each verified route until one applies.
-    private func send(_ kind: InputKind, _ identity: WindowIdentity,
+    private func send(_ kind: InputKind, _ identity: WindowIdentity, expectedWindowSize: CGSize? = nil,
                       _ perform: (InputRoute, AXUIElement, CGPoint) -> String?) -> Outcome {
         let resolution: InputTargetResolution
         var window: AXUIElement?
@@ -176,7 +180,11 @@ final class InputRouter {
             return .refused(refusal)
         case .success(let list): routes = list
         }
-        guard let window, let origin = Self.origin(of: window) else { return .refused(.ambiguousTarget) }
+        guard let window, let frame = Self.frame(of: window) else { return .refused(.ambiguousTarget) }
+        if let expectedWindowSize, frame.size != expectedWindowSize {
+            return .notApplicable("windowGeometryChanged")
+        }
+        let origin = frame.origin
         var reasons: [String] = []
         for route in routes {
             if let reason = perform(route, window, origin) {
@@ -200,12 +208,13 @@ final class InputRouter {
     private static let eventWindowFields = [51, 91, 92].compactMap { CGEventField(rawValue: $0) }
 
     private static func clickEvents(at point: CGPoint) -> [CGEvent] {
-        [CGEventType.leftMouseDown, .leftMouseUp].compactMap {
+        let events = [CGEventType.leftMouseDown, .leftMouseUp].compactMap {
             let event = CGEvent(mouseEventSource: nil, mouseType: $0, mouseCursorPosition: point, mouseButton: .left)
             event?.flags = []
             event?.setIntegerValueField(.mouseEventClickState, value: 1)
             return event
         }
+        return events.count == 2 ? events : []
     }
 
     private static func postWindowTargeted(_ events: [CGEvent], identity: WindowIdentity, local: CGPoint) -> String? {

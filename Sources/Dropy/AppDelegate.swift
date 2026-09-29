@@ -3,7 +3,7 @@ import DropyCore
 
 @main
 @MainActor
-final class DropyAppDelegate: NSObject, NSApplicationDelegate {
+final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let preferences = PreferenceStore()
     private var overlay: OverlayController!
     private var statusItem: NSStatusItem?
@@ -19,6 +19,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
+    }
+
+    /// Status menus can be tracked by the system without an NSEvent reaching our
+    /// local/global monitors. Opening this menu is an outside interaction regardless
+    /// of which process owns its mouse event; the dismissal preference decides.
+    func menuWillOpen(_ menu: NSMenu) {
+        overlay?.dismiss(.clickOutside)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -44,6 +51,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = "◆"
         item.button?.toolTip = "Dropy"
         let menu = NSMenu(title: "Dropy")
+        menu.delegate = self
         hotKey = GlobalHotKey { [weak self] in self?.overlay.toggle() }
         let openTitle = hotKey == nil ? "Open Dropy" : "Open Dropy (\(GlobalHotKey.defaultDisplay))"
         menu.addItem(NSMenuItem(title: openTitle, action: #selector(toggleOverlay), keyEquivalent: ""))

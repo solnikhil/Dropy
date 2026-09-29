@@ -36,6 +36,13 @@ final class OverlayPanel: NSPanel {
 
     override func cancelOperation(_ sender: Any?) { onEscape?() }
 
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .scrollWheel, ProcessInfo.processInfo.environment["DROPY_DEBUG_INPUT_EVENTS"] == "1" {
+            NSLog("Dropy input event: scroll point=%.0f,%.0f", event.locationInWindow.x, event.locationInWindow.y)
+        }
+        super.sendEvent(event)
+    }
+
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { onEscape?(); return }
         if onKey?(event) == true { return }

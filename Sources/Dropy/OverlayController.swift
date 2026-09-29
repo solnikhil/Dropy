@@ -676,11 +676,11 @@ final class OverlayController: NSObject {
         }
         renderer.onClick = { [weak self] point in
             guard let self, let target = self.windowPoint(point) else { return }
-            self.report(self.inputRouter.click(identity, at: target), kind: .pointerClick)
+            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: self.selectedWindowSize), kind: .pointerClick)
         }
         renderer.onScroll = { [weak self] point, delta in
             guard let self, let target = self.windowPoint(point), let mapping = self.mapping() else { return }
-            self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta)), kind: .scroll)
+            self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta), expectedWindowSize: self.selectedWindowSize), kind: .scroll)
         }
         renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
     }
@@ -735,7 +735,8 @@ final class OverlayController: NSObject {
         case .sent: break
         case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
         case .notApplicable(let reason):
-            flash(reason.contains("noTextElementChosen") ? "Click a text field in the preview first"
+            flash(reason.contains("windowGeometryChanged") ? "Preview resizing · try again in a moment"
+                  : reason.contains("noTextElementChosen") ? "Click a text field in the preview first"
                   : reason.contains("nothingPressable") ? "Nothing to click there" : "Not sent here")
         }
     }
