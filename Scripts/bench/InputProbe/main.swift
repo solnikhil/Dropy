@@ -61,8 +61,7 @@ struct Fixture {
     }
 
     func send(_ command: String) {
-        DistributedNotificationCenter.default().postNotificationName(
-            .init("org.dropy.inputfixture.command"), object: command, userInfo: nil, deliverImmediately: true)
+        sendCommand(command)
         wait(0.05)
     }
 
@@ -83,6 +82,31 @@ struct Fixture {
         guard start < end, end <= all.count else { return [] }
         return Array(all[start..<end])
     }
+}
+
+/// Commands go to the AppKit fixture as distributed notifications, or, when
+/// PROBE_COMMAND_FILE is set (the Electron fixture), as lines appended to that file.
+let commandFile = ProcessInfo.processInfo.environment["PROBE_COMMAND_FILE"]
+
+func sendCommand(_ command: String) {
+    if let commandFile {
+        guard let handle = FileHandle(forWritingAtPath: commandFile) else { fail("cannot write \(commandFile)") }
+        handle.seekToEndOfFile()
+        handle.write(Data((command + "\n").utf8))
+        try? handle.close()
+        return
+    }
+    DistributedNotificationCenter.default().postNotificationName(
+        .init("org.dropy.inputfixture.command"), object: command, userInfo: nil, deliverImmediately: true)
+}
+
+/// Chromium builds its Accessibility tree only when an assistive client asks for it.
+/// `AXManualAccessibility` is Electron's documented switch for that; the probe sets it
+/// for Electron targets and records that it did, since Dropy would have to do the same.
+let enablesManualAccessibility = ProcessInfo.processInfo.environment["PROBE_ELECTRON"] == "1"
+
+func enableManualAccessibility(_ app: AXUIElement) -> Bool {
+    AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
 }
 
 // MARK: Accessibility
@@ -127,10 +151,13 @@ func window(_ fixture: Fixture, _ id: CGWindowID) -> AXUIElement? {
     return nil
 }
 
+/// AppKit exposes `accessibilityIdentifier` as AXIdentifier; Chromium exposes an HTML
+/// `id` as AXDOMIdentifier, several levels deeper.
 func descendant(_ root: AXUIElement, identifier: String, depth: Int = 0) -> AXUIElement? {
-    guard depth < 8 else { return nil }
+    guard depth < 30 else { return nil }
     for child in attribute(root, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
-        if attribute(child, kAXIdentifierAttribute) as? String == identifier { return child }
+        if attribute(child, kAXIdentifierAttribute) as? String == identifier
+            || attribute(child, "AXDOMIdentifier") as? String == identifier { return child }
         if let found = descendant(child, identifier: identifier, depth: depth + 1) { return found }
     }
     return nil
@@ -372,6 +399,45 @@ func releaseModifiers() -> Bool {
     return true
 }
 
+/// Mouse buttons the session believes are down. A trial must never leave one held.
+func buttonsDown() -> [String] {
+    [(CGMouseButton.left, "left"), (.right, "right"), (.center, "center")].compactMap {
+        CGEventSource.buttonState(.combinedSessionState, button: $0.0) || CGEventSource.buttonState(.hidSystemState, button: $0.0)
+            ? $0.1 : nil
+    }
+}
+
+func pointerLocation() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
+
+/// Records pointer, button and modifier state after a trial. Returns true when the
+/// trial left the session unsafe (a held modifier or button), which fails the trial.
+@discardableResult
+func recordSessionState(_ record: inout [String: Any], pointerBefore: CGPoint) -> Bool {
+    let pointerAfter = pointerLocation()
+    if hypot(pointerAfter.x - pointerBefore.x, pointerAfter.y - pointerBefore.y) > 0.5 {
+        record["pointerMoved"] = "\(Int(pointerBefore.x)),\(Int(pointerBefore.y))→\(Int(pointerAfter.x)),\(Int(pointerAfter.y))"
+    }
+    var unsafe = false
+    let held = buttonsDown()
+    if !held.isEmpty {
+        record["buttonsLeftHeld"] = held
+        for button in held {
+            let (type, mouse): (CGEventType, CGMouseButton) = button == "left" ? (.leftMouseUp, .left)
+                : button == "right" ? (.rightMouseUp, .right) : (.otherMouseUp, .center)
+            let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: pointerAfter, mouseButton: mouse)
+            event?.flags = []
+            event?.post(tap: .cghidEventTap)
+        }
+        unsafe = true
+    }
+    if releaseModifiers() {
+        record["modifiersLeftHeld"] = true
+        unsafe = true
+    }
+    if unsafe, !(record["outcome"] as? String ?? "").hasPrefix("wrongWindow") { record["outcome"] = "unsafeSessionState" }
+    return unsafe
+}
+
 /// Undocumented CGEvent fields naming the event's window (51, which AppKit turns into
 /// `NSEvent.windowNumber`) and the window under the pointer (91, 92).
 let eventWindow = CGEventField(rawValue: 51)!
@@ -506,6 +572,8 @@ func judge(inA: Bool, inB: Bool, receivedBy: [String: Int], actionError: String?
 
 func run(fixture: Fixture, results path: String, routes: [Route]) {
     prepareFocusSink()
+    let manualAccessibility = enablesManualAccessibility && enableManualAccessibility(fixture.app)
+    if enablesManualAccessibility { wait(1.0) } // Chromium builds its tree asynchronously
     FileManager.default.createFile(atPath: path, contents: nil)
     let output = FileHandle(forWritingAtPath: path)!
     guard let a = window(fixture, fixture.a), let b = window(fixture, fixture.b),
@@ -521,14 +589,17 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
                 for action in Action.allCases {
                     var record: [String: Any] = ["condition": condition.rawValue, "focus": focus.rawValue,
                                                  "route": route.rawValue, "action": action.rawValue,
-                                                 // Key-window, frontmost-app and desktop changes are recorded
-                                                 // below; InputEvidence accepts only such records.
-                                                 "sideEffectsRecorded": true, "probeVersion": 2]
+                                                 // Key-window, frontmost-app, desktop, pointer and button
+                                                 // changes are recorded below; InputEvidence accepts only such records.
+                                                 "sideEffectsRecorded": true, "probeVersion": 3]
+                    if manualAccessibility { record["axManualAccessibility"] = true }
+                    var pointerBefore = pointerLocation()
                     if let blocked = setUp(condition, focus, fixture: fixture, home: home) {
                         record["outcome"] = "notRun(\(blocked))"
                     } else if let before = fixture.state() {
                         let frontBefore = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
                         let spaceBefore = activeSpaces()
+                        pointerBefore = pointerLocation()
                         let skipped = perform(route, action, fixture: fixture)
                         if lastLookupUsedCache { record["lookup"] = "cachedElement" }
                         if let skipped { record["actionError"] = skipped }
@@ -567,10 +638,7 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
                     } else {
                         record["outcome"] = "noState"
                     }
-                    if releaseModifiers() {
-                        record["modifiersLeftHeld"] = true
-                        if !(record["outcome"] as? String ?? "").hasPrefix("wrongWindow") { record["outcome"] = "unsafeModifiers" }
-                    }
+                    recordSessionState(&record, pointerBefore: pointerBefore)
                     tearDown(fixture: fixture, home: home)
                     let outcome = record["outcome"] as? String ?? "?"
                     tally[outcome.components(separatedBy: "(").first ?? outcome, default: 0] += 1
@@ -612,7 +680,9 @@ func report(_ path: String) {
                 if record["keyWindowChanged"] != nil { notes.append("key") }
                 if record["desktopChanged"] != nil { notes.append("desktop") }
                 if record["lookup"] != nil { notes.append("cached") }
+                if record["pointerMoved"] != nil { notes.append("pointer") }
                 if record["modifiersLeftHeld"] != nil { notes.append("MODIFIER HELD") }
+                if record["buttonsLeftHeld"] != nil { notes.append("BUTTON HELD") }
                 return notes.isEmpty ? cell : "\(cell) (\(notes.joined(separator: ",")))"
             }
             print("| \(route.rawValue) | \(action.rawValue) | " + cells.joined(separator: " | ") + " |")
@@ -676,6 +746,7 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                     let caretBeforeA = caret(a), caretBeforeB = caret(b)
                     let frontBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
                     let spaceBefore = activeSpaces()
+                    let pointerBefore = pointerLocation()
                     let focusedBefore = element(attribute(fixture.app, kAXFocusedWindowAttribute))
                     var focusedIDBefore: CGWindowID = 0
                     if let focusedBefore { _ = getWindow?(focusedBefore, &focusedIDBefore) }
@@ -683,7 +754,7 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                                                  "route": route.rawValue, "action": action.rawValue,
                                                  // Key-window, frontmost-app and desktop changes are recorded
                                                  // below; InputEvidence accepts only such records.
-                                                 "sideEffectsRecorded": true, "probeVersion": 2]
+                                                 "sideEffectsRecorded": true, "probeVersion": 3]
                     let skipped: String?
                     if focus == .bKey && (frontBefore != pid || focusedIDBefore != idB) {
                         skipped = "setupFocusMismatch"
@@ -720,10 +791,7 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                             }
                         }
                     }
-                    if releaseModifiers() {
-                        record["modifiersLeftHeld"] = true
-                        if !(record["outcome"] as? String ?? "").hasPrefix("wrongWindow") { record["outcome"] = "unsafeModifiers" }
-                    }
+                    recordSessionState(&record, pointerBefore: pointerBefore)
                     setPosition(a, homeA.origin)
                     wait(0.3)
                     let data = try! JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
@@ -817,8 +885,7 @@ if args.first == "check-modifiers" {
 if args.first == "report", args.count == 2 { report(args[1]); exit(0) }
 if args.first == "release" { print(releaseModifiers() ? "released held modifiers" : "no modifiers held"); exit(0) }
 if args.first == "send", args.count == 2 {
-    DistributedNotificationCenter.default().postNotificationName(
-        .init("org.dropy.inputfixture.command"), object: args[1], userInfo: nil, deliverImmediately: true)
+    sendCommand(args[1])
     wait(0.2)
     exit(0)
 }

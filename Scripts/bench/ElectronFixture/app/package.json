@@ -1,0 +1,9 @@
+{
+  "name": "dropy-electron-fixture",
+  "productName": "DropyElectronFixture",
+  "version": "1.0.0",
+  "description": "Disposable two-window Electron target for Dropy device checks. Not shipped.",
+  "main": "main.js",
+  "private": true,
+  "license": "MIT"
+}

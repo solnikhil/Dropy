@@ -27,9 +27,7 @@ for app in Dropy DropyFixture DropyInputFixture; do
   pgrep -xq "$app" && { print -u2 "Quit $app first."; exit 1; }
 done
 [[ -e "$journal" ]] && { print -u2 "Recover the pending placement journal first."; exit 1; }
-if pgrep -f 'Scripts/(device-checks|input-probe|dismissal-checks|interactive-checks).*\.sh' | grep -vqx "$$"; then
-  print -u2 "Another Dropy device check is running."; exit 1
-fi
+source "${0:A:h}/lib/device-session.zsh"
 
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
@@ -42,6 +40,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Sources/Dropy/PlacementJournal.swift" "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
   "$repo_dir/Sources/Dropy/WindowCatalog.swift"
 "$probe" check-modifiers
+device_session_begin interactive-checks || exit 1
 mkdir -p "$logs"
 work="$(mktemp -d)"
 defaults export "$prefs_domain" "$work/prefs.plist" 2>/dev/null || true
@@ -52,6 +51,7 @@ rows=()
 owned_textedit=false
 
 cleanup() {
+  [[ -n "${electron_pid:-}" ]] && { kill "$electron_pid" 2>/dev/null || true; electron_pid=""; }
   if [[ "$owned_textedit" == true ]]; then
     osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
     owned_textedit=false
@@ -63,6 +63,7 @@ cleanup() {
   else defaults delete "$prefs_domain" "$prefs_key" 2>/dev/null || true; fi
   (( ${#pointer_start} == 2 )) && "$hid" move "${pointer_start[1]}" "${pointer_start[2]}" >/dev/null 2>&1 || true
   rm -rf "$work"
+  device_session_end
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
@@ -178,7 +179,7 @@ textedit_case() {
   pgrep -xq TextEdit && { record TextEdit all "-" "NOT RUN: TextEdit was already running"; return; }
   for n in A B; do for i in {1..60}; do print "Dropy interactive check $n line $i"; done > "$work/interactive-$n.txt"; done
   owned_textedit=true
-  open -a TextEdit "$work/interactive-A.txt" "$work/interactive-B.txt"; sleep 3
+  open -a TextEdit "$work/interactive-A.txt" "$work/interactive-B.txt" --args -ApplePersistenceIgnoreState YES; sleep 3
   osascript -e 'tell application "TextEdit"
     close (every window whose name is not "interactive-A.txt" and name is not "interactive-B.txt") saving no
     set bounds of window "interactive-A.txt" to {60, 120, 700, 700}
@@ -223,10 +224,99 @@ textedit_case() {
   osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
   owned_textedit=false
 }
-"$build_dir/DeviceInputRouterChecks" "$fixture_pid" "$A" "$(grep '"kind":"ready"' "$fixture_log" | grep -oE '"B":[0-9]+' | cut -d: -f2)" > "$logs/router-regressions.txt"
-print -r -- "$(cat "$logs/router-regressions.txt")"
-"$probe" send quit; sleep 1
+# Router regressions (Tests/DeviceInputRouterCheck.swift): stale geometry, a real source
+# resize, rapid source switching, a replaced text field and a hidden source; then the
+# fixture quits and relaunches, and the old identity must be refused.
+router_status=0
+"$build_dir/DeviceInputRouterChecks" "$fixture_pid" "$A" "$(grep '"kind":"ready"' "$fixture_log" | grep -oE '"B":[0-9]+' | cut -d: -f2)" \
+  > "$logs/router-regressions.txt" 2>&1 || router_status=$?
+cat "$logs/router-regressions.txt"
+old_identity=(${=$(grep '^old-identity ' "$logs/router-regressions.txt" | cut -d' ' -f2-)})
+"$probe" send quit
+for i in {1..40}; do kill -0 "$fixture_pid" 2>/dev/null || break; sleep 0.1; done
+if (( ${#old_identity} == 3 )); then
+  relaunch_log="$logs/fixture-relaunched.jsonl"
+  open -n "$build_dir/DropyInputFixture.app" --args --log "$relaunch_log"
+  for i in {1..40}; do grep -q '"kind":"ready"' "$relaunch_log" 2>/dev/null && break; sleep 0.25; done
+  new_pid="$(grep '"kind":"ready"' "$relaunch_log" | grep -oE '"pid":[0-9]+' | cut -d: -f2)"
+  "$build_dir/DeviceInputRouterChecks" relaunched "${old_identity[@]}" "$new_pid" >> "$logs/router-regressions.txt" 2>&1 \
+    || router_status=$?
+  tail -n +"$(( $(grep -n '^old-identity' "$logs/router-regressions.txt" | cut -d: -f1) + 1 ))" "$logs/router-regressions.txt"
+  "$probe" send quit; sleep 1
+else
+  print -r -- "FAIL relaunch check not run: no old identity" >> "$logs/router-regressions.txt"
+  router_status=1
+fi
 textedit_case
+
+# The disposable Electron fixture (Chromium): A shown while B is its key window. Evidence
+# verifies clicks on pressable elements (Accessibility press, with Chromium's tree switched
+# on by Dropy) and window-targeted scrolling; typing has no verified route and must be
+# refused without reaching either window.
+electron_case() {
+  "$repo_dir/Scripts/bench/build-electron-fixture.sh" >/dev/null
+  local elog="$logs/electron.jsonl" commands="$work/electron-commands.txt"
+  : > "$commands"
+  open -n "$build_dir/DropyElectronFixture.app" --args --log "$elog" --commands "$commands" --profile "$work/electron-profile"
+  for i in {1..60}; do grep -q '"kind":"ready"' "$elog" 2>/dev/null && break; sleep 0.25; done
+  electron_pid="$(grep '"kind":"ready"' "$elog" | grep -oE '"pid":[0-9]+' | cut -d: -f2)"
+  local ea="$(grep '"kind":"ready"' "$elog" | grep -oE '"A":[0-9]+' | cut -d: -f2)"
+  [[ -n "$electron_pid" && -n "$ea" ]] || { record Electron all "-" "NOT RUN: fixture did not start"; return; }
+  PROBE_COMMAND_FILE="$commands" "$probe" send key:B; sleep 0.6
+  local json='{"trigger":"shortcut","openBehavior":"direct","dismissBehavior":"manual","contentMode":"fit","sizePreset":"wide","selectedBundleIdentifier":"org.dropy.electronfixture","lastUsedBundleIdentifier":"org.dropy.electronfixture","interactivePreview":true}'
+  defaults write "$prefs_domain" "$prefs_key" -data "$(print -rn -- "$json" | xxd -p | tr -d '\n')"
+  local log="$logs/dropy-electron.log"
+  DROPY_DEBUG_WINDOW_ID="$ea" DROPY_DEBUG_QUIT_AFTER=40 "$dropy" --show > "$log" 2>&1 &
+  dropy_pid=$!
+  for i in {1..60}; do grep -q 'Dropy input: preview=' "$log" && break; sleep 0.25; done
+  if ! grep -q 'Dropy input: preview=' "$log"; then
+    record Electron all "-" "NOT RUN: interactive preview not ready"
+  else
+    sleep 2 # Chromium builds its Accessibility tree after Dropy switches it on
+    preview="$(grep -oE 'preview=[0-9.,-]+' "$log" | tail -1 | cut -d= -f2)"
+    print -r -- "  Electron: label=\"$(grep -oE 'support=.*' "$log" | tail -1 | cut -d= -f2-)\" $(grep -oE 'manualAccessibility pid=[0-9]+ result=-?[0-9]+' "$log" | tail -1)"
+    local elements="$(PROBE_COMMAND_FILE="$commands" "$probe" elements "$elog" | grep '^A ')"
+    window_size="$(print -r -- "$elements" | grep -oE 'size=[0-9]+x[0-9]+' | cut -d= -f2 | tr x ,)"
+    local button=(${(s:,:)$(print -r -- "$elements" | grep -oE 'button=[0-9,]+' | cut -d= -f2)})
+    local list=(${(s:,:)$(print -r -- "$elements" | grep -oE 'scroll=[0-9,]+' | cut -d= -f2)})
+    local text=(${(s:,:)$(print -r -- "$elements" | grep -oE 'text=[0-9,]+' | cut -d= -f2)})
+    local saved_log="$fixture_log" mark point
+    fixture_log="$elog"
+    if (( ${#button} == 2 && ${#list} == 2 && ${#text} == 2 )); then
+      mark="$(log_mark)"; point=($(preview_point "${button[1]}" "${button[2]}"))
+      "$hid" click "${point[1]}" "${point[2]}"; sleep 1
+      local presses="$(effects_since "$mark" press)"
+      [[ "$presses" == "A=1 B=0" ]] && record Electron click PASS "$presses; $(grep -oE 'kind=pointerClick [^ ]+ route=[a-zA-Z]+' "$log" | tail -1)" \
+        || record Electron click FAIL "$presses; $(grep -E 'kind=pointerClick' "$log" | tail -1 | cut -c 60-)"
+      mark="$(log_mark)"; point=($(preview_point "${list[1]}" "${list[2]}"))
+      "$hid" move "${point[1]}" "${point[2]}"
+      for i in {1..3}; do "$hid" scroll -120; sleep 0.2; done
+      sleep 1
+      local scrolled="$(effects_since "$mark" scroll)"
+      [[ "$scrolled" == A=[1-9]*" B=0" ]] && record Electron scroll PASS "$scrolled; $(grep -oE 'kind=scroll [^ ]+ route=[a-zA-Z]+' "$log" | tail -1)" \
+        || record Electron scroll FAIL "$scrolled; $(grep -E 'kind=scroll' "$log" | tail -1 | cut -c 60-)"
+      mark="$(log_mark)"; point=($(preview_point "${text[1]}" "${text[2]}"))
+      "$hid" click "${point[1]}" "${point[2]}"; sleep 0.6
+      for key in 2 7 26; do "$hid" key "$key"; done
+      sleep 1
+      local typed="$(effects_since "$mark" text)"
+      [[ "$typed" == "A=0 B=0" ]] && record Electron "typing refused" PASS "$typed; $(grep -oE 'kind=text [^ ]+ refused=[a-zA-Z]+' "$log" | tail -1)" \
+        || record Electron "typing refused" FAIL "$typed"
+    else
+      record Electron all "-" "NOT RUN: fixture elements not exposed ($elements)"
+    fi
+    fixture_log="$saved_log"
+    local front="$("$hid" frontmost)"
+    [[ "$front" == org.dropy.app ]] && record Electron "focus stays with Dropy" PASS "frontmost=$front" \
+      || record Electron "focus stays with Dropy" FAIL "frontmost=$front"
+  fi
+  kill "$dropy_pid" 2>/dev/null || true; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
+  print quit >> "$commands"; sleep 1
+  kill "$electron_pid" 2>/dev/null || true
+  electron_pid=""
+}
+electron_pid=""
+electron_case
 
 {
   print -r -- "# Dropy interactive preview checks"
@@ -237,12 +327,22 @@ textedit_case
   print -r -- "| Source | Input | Result | Observed |"
   print -r -- "|---|---|---|---|"
   for row in $rows; do print -r -- "$row"; done
+  print
+  print -r -- "## Router regressions"
+  print
+  print -r -- "Direct \`InputRouter\` sends against the input fixture (Tests/DeviceInputRouterCheck.swift)."
+  print
+  print -r -- '```'
+  grep -E '^(PASS|FAIL|Native)' "$logs/router-regressions.txt"
+  print -r -- '```'
 } > "$report"
 cat "$report"
 print -r -- "Report saved to $report"
 
 # A report containing failures or skipped checks is not a successful verification run.
-(( ${#rows} == 13 )) || { print -u2 "Expected 13 completed checks; see $report"; exit 1; }
+(( router_status == 0 )) && ! grep -q '^FAIL' "$logs/router-regressions.txt" \
+  || { print -u2 "A router regression failed; see $report"; exit 1; }
+(( ${#rows} == 17 )) || { print -u2 "Expected 17 completed checks; see $report"; exit 1; }
 for row in $rows; do
   [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
 done

@@ -47,6 +47,7 @@ Development-only drivers make runs repeatable without input automation:
 
 ```sh
 # Terminal with Screen Recording; TextEdit and Safari not running; Mac otherwise idle.
+caffeinate -d ./Scripts/benchmark-phases.sh 30     # coordinated: none / closed / idle / active
 caffeinate -d ./Scripts/benchmark.sh 20            # all workloads, 20 s per phase
 ./Scripts/benchmark.sh 20 animation                # one workload
 env DROPY_DEBUG_CYCLES=20,800 DROPY_DEBUG_QUIT_AFTER=60 \
@@ -61,7 +62,7 @@ Setup: M2 MacBook Air (`Mac14,2`), macOS 27.0 (26A428), built-in 2560×1664 Reti
 
 **The system was not idle.** WindowServer used about 44% CPU with or without Dropy. Cloudflare WARP (about 31%), `mediaanalysisd` (about 18%) and browser helper processes playing media were running. Swapping the Aerial wallpaper for a still one changed nothing measurable. Treat these results as a loaded-system baseline.
 
-**Dropy CPU figures in these reports and the follow-up checks below are invalid.** The sampler treated `proc_pid_rusage` nanoseconds as mach ticks and multiplied them by this Mac's 125/3 timebase. The sampler was fixed after these runs; rerun the workloads before using Dropy CPU for a budget or comparison. WindowServer CPU came from `ps` and is unaffected.
+**Correction (2026-09-29): the Dropy CPU figures in these two reports are valid; the later "fix" was wrong.** They were computed by converting `proc_pid_rusage` times from mach ticks with this Mac's 125/3 timebase. That conversion was then removed on the belief that the fields are nanoseconds. A direct check disproves it: a 1 s busy loop read 23.9 M units against 0.995 s of `CLOCK_PROCESS_CPUTIME_ID`, i.e. ticks. Every Sampler CPU figure between that change and 2026-09-29 was about 42× too low. The Sampler converts ticks again and runs `Sampler self-check` (rusage against the process CPU clock, must agree within 5%) before every benchmark. WindowServer CPU came from `ps` and was never affected.
 
 | Workload | Run | GPU util without → with Dropy | Complete frames/s | Not presented | Frame age p50 / p95 / p99 (ms) | Cold reveal |
 |---|---|---|---|---|---|---|
@@ -95,11 +96,33 @@ Open/close cycles (static TextEdit, 20 cycles, 800 ms hold): all 20 reached a li
 Same Mac and display, same loaded background. These were controlled A/B checks rather than full benchmark runs.
 
 - **Title bars make static windows look busy.** A borderless opaque test window captured `complete=2`, then only `idle` frames. The same window with a standard title bar produced a complete, fully dirty frame on every refresh, even over a static backdrop. For TextEdit, 291 of 294 of those frames were byte-identical to the previous one, so the dirty rects give Dropy no signal. Dropy now compares each frame's bytes on the capture queue (about 0.6 ms at the medium stream size) and drops identical frames before the main thread. After 30 unchanged frames it captures at 10 fps, and the first change restores 60 fps.
-  - Static TextEdit: 855 of 857 frames were skipped before the adaptive rate was added. The recorded CPU percentages are invalid because of the sampler bug. TextEdit's blinking caret legitimately switches it back to full rate about once a second.
+  - Static TextEdit: 855 of 857 frames were skipped before the adaptive rate was added. The CPU percentages recorded in this check came from the Sampler build that under-reported CPU about 42× (see the correction above) and are not used. TextEdit's blinking caret legitimately switches it back to full rate about once a second.
 - **Most of the GPU cost was the panel's shadow.** With the overlay open and nothing captured, system GPU utilization was 31%. Without the panel shadow it was **4%**, and it was also low when Dropy did not activate itself. Plain test windows added nothing. The panel now has no shadow, a hairline border instead, and no tree masks.
-- **Closed overlay recorded low wakeups:** 0.3 wakeups/s and 11 MB, measured with the pointer still. Its recorded CPU percentage is invalid. Hover and click now use a tracking-area panel over the notch instead of global event monitors, so pointer movement elsewhere no longer wakes Dropy on notched screens. Its cost while the pointer moves has not been measured yet.
+- **Closed overlay recorded low wakeups:** 0.3 wakeups/s and 11 MB, measured with the pointer still. Its recorded CPU percentage came from the under-reporting Sampler; the 2026-09-29 run below re-measured it. Hover and click now use a tracking-area panel over the notch instead of global event monitors, so pointer movement elsewhere no longer wakes Dropy on notched screens. Its cost while the pointer moves has not been measured yet.
 - **Presentation latency did not move.** Drawing immediately instead of through `setNeedsDisplay`, and using two drawables, left callback-to-screen at about 25–42 ms p50. That looks like the window compositor's floor for a windowed app, not Dropy's queueing.
 - **Not yet re-measured:** a full benchmark after these changes. The only run attempted had the screen lock during the static and scroll phases (streams reported `suspended`), so those results were discarded.
+
+## Coordinated benchmark, 2026-09-29
+
+`Scripts/benchmark-phases.sh 30`: one session, the same two disposable Electron 43.2.0 fixture windows throughout (520×380 pt, `static.html` and `animation.html` side by side, throwaway profiles), measured without Dropy, with Dropy running but the overlay closed, with the overlay open on the static page, and open on the animating page. Overlay medium, fit, 1040×760 stream. Dropy selected each window by exact ID. The desktop lock was held and no input had occurred for 35 minutes. Report: [run 2](benchmarks/2026-09-29-coordinated-phases.md) (used below), [run 1](benchmarks/2026-09-29-coordinated-phases-run1.md) (same script, 4 minutes earlier; its closed row shows "( unchanged)" from a report-formatting bug fixed before run 2, and its raw samples are complete).
+
+**The Mac was not idle.** WindowServer used about 45% CPU without Dropy, and a macOS `BackgroundShortcutRunner` (63–67%) and Cloudflare WARP (~19%) were running. Those belong to the person's setup and were left alone. As in the first baseline, read these as a loaded-system measurement.
+
+| Phase | Dropy CPU mean / p95 | Footprint | Interrupt wakeups | WindowServer CPU | GPU util mean | Complete frames/s | Presented / not | Frame age p50 / p95 / p99 (ms) |
+|---|---|---|---|---|---|---|---|---|
+| Dropy not running | — | — | — | 45.4% | 22.7% | — | — | — |
+| Overlay closed | 0.0% / 0.0% | 12.5 MB | 0.2/s | 45.0% | 23.4% | — | — | — |
+| Open, source unchanged | 4.3% / 6.3% | 30.6 MB | 2.1/s | 44.6% | 24.5% | 27.1 (936 of 976 unchanged) | 42 / 48 | 43.3 / 100.9 / 103.7 |
+| Open, source animating | 10.8% / 11.5% | 30.9 MB | 1.5/s | 47.2% | 26.7% | 57.4 | 2014 / 1 | 41.4 / 50.3 / 51.3 |
+
+Run 1 agreed on CPU (idle 4.1%, active 11.0%), footprint and GPU, and differed in frame age: active p50 25.1 / p95 34.0 ms and idle p50 34.0 / p95 68.3 ms. This matches the earlier observation that presentation lands one or two refreshes after the callback, varying between runs.
+
+Findings:
+
+1. **Closed costs nothing measurable:** 0.0% CPU, 0.2 wakeups/s, 12.5 MB, and no GPU change beyond noise (+0.7 points).
+2. **Capture adds little GPU on this path:** +1.8 points for an unchanged source and +4.0 for a 60 fps one, far below the 22–36 points of the first baseline (the panel shadow, since removed).
+3. **An unchanged source is not yet cheap enough.** Byte-identical frames are skipped (936 of 976), but the stream switched between the 10 fps idle rate and 60 fps 41 times in 36 s, so it averaged 27 frames/s and 4.3% CPU against a 2% budget. So the captured image changes about once a second although the page is static; what changes (Chromium compositor output, window chrome) is not yet identified. The renderer also reported 48 not-presented against 42 presented frames in that phase, with frame age up to 104 ms. The cause is not yet known.
+4. **A 60 fps source fits the CPU budget** (10.8% ≤ 12%) and presented 2014 of 2015 frames, but its frame-age p95 (50.3 ms) is at the 50 ms budget in run 2 and well under it in run 1.
 
 ## Provisional budgets
 
@@ -109,14 +132,14 @@ These come from the baseline above and are **not yet release gates**. They shoul
 |---|---|---|
 | Streams running after close | 0 (hard gate) | Pass |
 | `captureToCallback` p99 | ≤ 10 ms | Pass |
-| `frameAge` p95 | ≤ 50 ms | Mixed (35–59 ms) |
-| Frames presented | ≥ 95% of those sent to the renderer | Fails once (animation run 1) |
+| `frameAge` p95 | ≤ 50 ms | Mixed (35–59 ms; 2026-09-29 active 34.0 and 50.3 ms, idle 68–101 ms) |
+| Frames presented | ≥ 95% of those sent to the renderer | Active passes (2014 presented, 1 not); **unchanged source fails** (42 presented, 48 not, 2026-09-29) |
 | Warm reveal p95 | ≤ 300 ms | Pass (261 ms) |
 | Cold reveal | ≤ 600 ms | Mixed (426–775 ms) |
-| Dropy CPU mean while previewing at 60 fps | ≤ 12% | Not assessed; sampler CPU bug |
-| Dropy CPU when the source is unchanged | ≤ 2% | Not assessed; sampler CPU bug |
-| Added system GPU utilization | ≤ 20 points | Panel alone now ≈ 0 (was +25); with capture: to be re-measured |
+| Dropy CPU mean while previewing at 60 fps | ≤ 12% | Pass (10.8–11.0%, 2026-09-29) |
+| Dropy CPU when the source is unchanged | ≤ 2% | **Fails** (4.1–4.3%, 2026-09-29; rate keeps returning to 60 fps) |
+| Added system GPU utilization | ≤ 20 points | Pass (+1.8 unchanged, +4.0 at 60 fps, 2026-09-29) |
 | Dropy footprint | ≤ 64 MB | Pass (≤ 37 MB) |
-| Dropy CPU with the overlay closed | ≈ 0% | Not assessed; 0.3 wakeups/s with pointer still |
+| Dropy CPU with the overlay closed | ≈ 0% | Pass (0.0%, 0.2 wakeups/s, pointer still, 2026-09-29) |
 
 Not covered yet: input-to-updated-frame (M3), WindowServer wakeups and footprint (need `powermetrics`), energy impact, a real media-decoder workload, and multi-display or full-screen placements.

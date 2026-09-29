@@ -57,6 +57,22 @@ final class InputRouter {
 
     func forget(_ identity: WindowIdentity) { textTargets[identity] = nil }
 
+    /// Processes whose Accessibility tree Dropy switched on.
+    private var manualAccessibility: Set<Int32> = []
+
+    /// Prepares a source for interaction. For apps whose evidence was recorded with
+    /// `AXManualAccessibility` on (Electron), switches it on once per process, ahead of
+    /// the first click, because Chromium builds its tree asynchronously. Nothing is
+    /// changed for any other app.
+    func prepare(_ identity: WindowIdentity) {
+        guard evidence.requiresManualAccessibility(for: identity.bundleIdentifier, macOSMajor: macOSMajor),
+              !manualAccessibility.contains(identity.processID) else { return }
+        let result = AXUIElementSetAttributeValue(AXUIElementCreateApplication(identity.processID),
+                                                  "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        NSLog("Dropy input: manualAccessibility pid=%d result=%d", identity.processID, result.rawValue)
+        if result == .success { manualAccessibility.insert(identity.processID) }
+    }
+
     /// Where the source is now: parked by Dropy, minimized, on another desktop, or visible.
     func condition(of identity: WindowIdentity) -> SourceCondition {
         if NSRunningApplication(processIdentifier: identity.processID)?.isHidden == true { return .hidden }
@@ -181,7 +197,7 @@ final class InputRouter {
         case .success(let list): routes = list
         }
         guard let window, let frame = Self.frame(of: window) else { return .refused(.ambiguousTarget) }
-        if let expectedWindowSize, frame.size != expectedWindowSize {
+        if let expectedWindowSize, !PreviewInputGate.sizesMatch(frame.size, expectedWindowSize) {
             return .notApplicable("windowGeometryChanged")
         }
         let origin = frame.origin
@@ -260,16 +276,37 @@ final class InputRouter {
     /// The deepest element of this window whose frame contains the point. Walking the
     /// window's own tree, instead of asking the system what is under the point, keeps the
     /// hit test inside the exact window even when it is covered or off every display.
+    ///
+    /// Later children are drawn above earlier ones and are tried first. A branch that
+    /// contains the point but holds nothing actionable there is backtracked: Chromium
+    /// stacks empty full-size groups beside the web content, so the topmost group at a
+    /// point is often not the one holding the button under it. Without an actionable
+    /// element anywhere, the deepest element on the topmost branch is returned.
     static func hitTest(_ window: AXUIElement, _ point: CGPoint) -> AXUIElement? {
-        var current = window
-        for _ in 0..<40 {
-            // Later children are drawn above earlier ones; prefer them.
-            guard let next = children(current).reversed().first(where: { frame(of: $0)?.contains(point) == true }) else {
-                break
+        var budget = 4000
+        var fallback: AXUIElement?
+        func search(_ element: AXUIElement, depth: Int) -> AXUIElement? {
+            guard depth < 40, budget > 0 else { return nil }
+            let containing = children(element).reversed().filter { child in
+                budget -= 1
+                return frame(of: child)?.contains(point) == true
             }
-            current = next
+            if containing.isEmpty {
+                if fallback == nil, !CFEqual(element, window) { fallback = element }
+                return nil
+            }
+            for child in containing {
+                if let found = search(child, depth: depth + 1) { return found }
+                if isActionable(child) { return child }
+            }
+            return nil
         }
-        return CFEqual(current, window) ? nil : current
+        return search(window, depth: 0) ?? fallback
+    }
+
+    /// Something a click can act on: a pressable element or a text element.
+    private static func isActionable(_ element: AXUIElement) -> Bool {
+        actions(element).contains(kAXPressAction as String) || isTextElement(element)
     }
 
     private static func actions(_ element: AXUIElement) -> [String] {

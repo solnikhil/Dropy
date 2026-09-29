@@ -20,9 +20,8 @@ apps=(${=apps})
 for app in Dropy DropyFixture DropyInputFixture; do
   if pgrep -xq "$app"; then print -u2 "Quit $app before running the input probe."; exit 1; fi
 done
-if pgrep -f 'Scripts/(device-checks|input-probe).*\.sh' | grep -vqx "$$"; then
-  print -u2 "Another Dropy device check is running."; exit 1
-fi
+source "${0:A:h}/lib/device-session.zsh"
+device_session_begin input-probe-apps || exit 1
 work="$(mktemp -d)"
 owned=()
 sink_pid=""
@@ -42,6 +41,7 @@ cleanup() {
   [[ -n "${sink_pid:-}" ]] && { kill "$sink_pid" 2>/dev/null || true; sink_pid=""; }
   for app in $owned; do osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1 || true; done
   rm -rf "$work"
+  device_session_end
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
@@ -76,7 +76,7 @@ for app in $apps; do
       pgrep -xq TextEdit && { print -u2 "Quit TextEdit first"; exit 1; }
       owned+=(TextEdit)
       for n in A B; do for i in {1..200}; do print "Dropy input probe document $n line $i"; done > "$work/probe-$n.txt"; done
-      open -a TextEdit "$work/probe-A.txt" "$work/probe-B.txt"; sleep 3
+      open -a TextEdit "$work/probe-A.txt" "$work/probe-B.txt" --args -ApplePersistenceIgnoreState YES; sleep 3
       osascript -e 'tell application "TextEdit"
         close (every window whose name is not "probe-A.txt" and name is not "probe-B.txt") saving no
         set bounds of window "probe-A.txt" to {60, 120, 700, 700}
@@ -91,7 +91,7 @@ for app in $apps; do
         { print "<!doctype html><title>Dropy input $n</title><textarea rows=6 cols=60></textarea>"
           for i in {1..300}; do print "<p>Dropy input probe page $n paragraph $i</p>"; done } > "$work/input-$n.html"
       done
-      open -a Safari "$work/input-A.html"; sleep 3
+      open -a Safari "$work/input-A.html" --args -ApplePersistenceIgnoreState YES; sleep 3
       # A new document is a separate window; `open` would add a tab.
       osascript -e "tell application \"Safari\" to make new document with properties {URL:\"file://$work/input-B.html\"}" >/dev/null
       sleep 3

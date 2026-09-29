@@ -46,6 +46,13 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     var presentedPixelSize: CGSize? {
         currentPixelBuffer.map { CGSize(width: CVPixelBufferGetWidth($0), height: CVPixelBufferGetHeight($0)) }
     }
+    /// Stream geometry of the frame on screen; cleared with the frame.
+    private(set) var presentedGeometry: CaptureGeometry?
+
+    /// The frame on screen and the geometry it was captured with, for preview input.
+    var presentedFrame: PresentedFrame? {
+        presentedPixelSize.map { PresentedFrame(pixelSize: $0, geometry: presentedGeometry) }
+    }
 
     private func topLeftPoint(_ event: NSEvent) -> CGPoint {
         let point = convert(event.locationInWindow, from: nil)
@@ -164,7 +171,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         }
     }
 
-    func present(_ pixelBuffer: CVPixelBuffer, stamp: FrameStamp? = nil) {
+    func present(_ pixelBuffer: CVPixelBuffer, stamp: FrameStamp? = nil, geometry: CaptureGeometry? = nil) {
         precondition(Thread.isMainThread)
         // A frame replaced before any draw never reaches the screen.
         pendingStamp?.recorder.recordNotPresented()
@@ -175,6 +182,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         drawableRetryTask = nil
         drawableRetryDelayMilliseconds = 16
         currentPixelBuffer = pixelBuffer
+        presentedGeometry = geometry
         // Draw now instead of waiting for the next display cycle; the deferred
         // path showed about two refreshes of avoidable frame age.
         draw()
@@ -191,6 +199,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     func clear() {
         precondition(Thread.isMainThread)
         currentPixelBuffer = nil
+        presentedGeometry = nil
         pendingStamp?.recorder.recordNotPresented()
         pendingStamp = nil
         frameSequence += 1

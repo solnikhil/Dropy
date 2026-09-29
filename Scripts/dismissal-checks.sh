@@ -26,14 +26,13 @@ for app in Dropy DropyFixture DropyInputFixture; do
   pgrep -xq "$app" && { print -u2 "Quit $app first."; exit 1; }
 done
 [[ -e "$journal" ]] && { print -u2 "Recover the pending placement journal first."; exit 1; }
-if pgrep -f 'Scripts/(device-checks|input-probe|dismissal-checks|interactive-checks).*\.sh' | grep -vqx "$$"; then
-  print -u2 "Another Dropy device check is running."; exit 1
-fi
+source "${0:A:h}/lib/device-session.zsh"
 
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$hid" "$repo_dir/Scripts/bench/HIDTool/main.swift"
 swiftc -O -swift-version 6 -o "$build_dir/WindowTool" "$repo_dir"/Scripts/bench/WindowTool/*.swift
+device_session_begin dismissal-checks || exit 1
 mkdir -p "$logs"
 work="$(mktemp -d)"
 defaults export "$prefs_domain" "$work/prefs.plist" 2>/dev/null || true
@@ -50,6 +49,7 @@ cleanup() {
   else defaults delete "$prefs_domain" "$prefs_key" 2>/dev/null || true; fi
   (( ${#pointer_start} == 2 )) && "$hid" move "${pointer_start[1]}" "${pointer_start[2]}" >/dev/null 2>&1 || true
   rm -rf "$work"
+  device_session_end
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT

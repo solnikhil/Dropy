@@ -38,6 +38,7 @@ func trial(_ record: [String: Any]) -> InputTrial? {
     if record["keyWindowChanged"] != nil { effects.insert(.sourceKeyWindow) }
     if record["frontmostChanged"] != nil { effects.insert(.frontmostApp) }
     if record["desktopChanged"] != nil { effects.insert(.desktop) }
+    if record["pointerMoved"] != nil { effects.insert(.pointer) }
     if let changes = record["focusChanges"] as? [String] {
         if changes.contains("becameKey") { effects.insert(.sourceKeyWindow) }
         if changes.contains("appActive") || changes.contains("appInactive") { effects.insert(.frontmostApp) }
@@ -63,6 +64,8 @@ if args == ["self-test"] {
     precondition(trial(record(["focusChanges": ["appActive", "becameKey"]]))?.sideEffects == [.sourceKeyWindow, .frontmostApp])
     precondition(trial(record(["focusChangedDuringTrial": true]))?.sideEffects == [.unclassifiedFocusChange])
     precondition(trial(record(["desktopChanged": "1→4", "route": "activate"]))?.sideEffects == [.desktop, .pointer])
+    precondition(trial(record(["pointerMoved": "10,10→20,20"]))?.sideEffects == [.pointer], "a moved pointer is a side effect")
+    precondition(trial(record(["outcome": "unsafeSessionState", "buttonsLeftHeld": ["left"]]))?.outcome == .noEffect)
     precondition(trial(record(["focus": "appInactive", "route": "ax", "action": "type"])) ==
                  InputTrial(route: .accessibility, kind: .text, condition: .parked, focus: .appInactive, outcome: .pass,
                             sideEffects: []))
@@ -89,8 +92,10 @@ for index in stride(from: 1, to: args.count, by: 4) {
     let trials = records.compactMap(trial)
     skipped += records.count - trials.count
     guard !trials.isEmpty else { fail("\(args[index + 3]): no trials with recorded side effects") }
+    // Trials that ran with AXManualAccessibility on are only valid when Dropy does the same.
+    let manual = records.contains { $0["axManualAccessibility"] as? Bool == true }
     sources.append(.init(bundleIdentifier: args[index], appVersion: args[index + 1] == "-" ? nil : args[index + 1],
-                         report: args[index + 2], trials: trials))
+                         report: args[index + 2], trials: trials, requiresManualAccessibility: manual ? true : nil))
 }
 let version = ProcessInfo.processInfo.operatingSystemVersion
 let macOS = "\(version.majorVersion).\(version.minorVersion)"
