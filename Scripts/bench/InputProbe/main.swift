@@ -185,13 +185,61 @@ struct Home { var a: CGRect; var b: CGRect }
 
 let typedText = "dx7"
 
+/// Makes an app frontmost through Accessibility. Since macOS 14 activation is cooperative:
+/// a background app asking to activate itself, or another app asking for it, is often
+/// refused, which the setup check showed as focus-state mismatches.
+@discardableResult
+func makeFrontmost(_ pid: pid_t) -> Bool {
+    AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+    wait(0.4)
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return true }
+    // AX refuses an app whose only windows are minimized; a direct request still works then.
+    NSRunningApplication(processIdentifier: pid)?.activate()
+    wait(0.4)
+    return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+}
+
+/// A windowless-looking app to hand focus to for "app inactive": the placement fixture
+/// with its only window minimized, so activating it switches neither desktop nor windows.
+/// Activating Finder instead switched desktops in the first runs.
+let focusSink: pid_t? = ProcessInfo.processInfo.environment["PROBE_FOCUS_SINK_PID"].flatMap(pid_t.init)
+
+func prepareFocusSink() {
+    guard let focusSink else { return }
+    let app = AXUIElementCreateApplication(focusSink)
+    for window in attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
+        AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+    }
+    wait(0.8)
+}
+
+func makeOtherAppFrontmost() {
+    if let focusSink {
+        makeFrontmost(focusSink)
+        prepareFocusSink() // keep its window out of the way if activation restored it
+    }
+    else { NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.apple.finder" }?.activate(); wait(0.5) }
+}
+
+/// Parked the way Dropy parks: AppKit keeps a small strip on screen (Dropy covers it).
+func isParked(_ extent: CGRect) -> Bool {
+    let area = extent.width * extent.height
+    guard area > 0 else { return false }
+    let visible = displays().reduce(CGFloat(0)) { total, display in
+        let overlap = extent.intersection(display)
+        return overlap.isNull ? total : total + overlap.width * overlap.height
+    }
+    return visible / area < 0.05
+}
+
 /// Sets up a condition; returns nil when it cannot be reached (e.g. one desktop only).
 func setUp(_ condition: Condition, _ focus: Focus, fixture: Fixture, home: Home) -> String? {
     guard let a = window(fixture, fixture.a), let b = window(fixture, fixture.b) else { return "windowNotFound" }
-    switch focus {
-    case .aKey: fixture.send("key:A")
-    case .bKey, .appInactive: fixture.send("key:B")
-    }
+    makeFrontmost(fixture.pid)
+    let key = focus == .aKey ? a : b
+    setBool(key, kAXMainAttribute, true)
+    AXUIElementPerformAction(key, kAXRaiseAction as CFString)
+    fixture.send(focus == .aKey ? "key:A" : "key:B")
     wait(0.4)
     switch condition {
     case .visible: break
@@ -211,10 +259,7 @@ func setUp(_ condition: Condition, _ focus: Focus, fixture: Fixture, home: Home)
         setBool(a, kAXMinimizedAttribute, true)
         wait(0.8)
     }
-    if focus == .appInactive {
-        NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.apple.finder" }?.activate()
-        wait(0.5)
-    }
+    if focus == .appInactive { makeOtherAppFrontmost() }
     wait(0.3)
     guard let state = fixture.state()?.state,
           let aState = state["A"] as? [String: Any], let bState = state["B"] as? [String: Any],
@@ -232,9 +277,7 @@ func setUp(_ condition: Condition, _ focus: Focus, fixture: Fixture, home: Home)
     case .covered:
         guard let extent = frame(b), extent.origin == home.a.origin else { return "setupCoverFailed" }
     case .parked:
-        guard let extent = frame(a), !displays().contains(where: { $0.intersects(extent) }) else {
-            return "setupParkingFailed"
-        }
+        guard let extent = frame(a), isParked(extent) else { return "setupParkingFailed" }
     case .minimized:
         guard aState["minimized"] as? Bool == true else { return "setupMinimizeFailed" }
     case .otherSpace:
@@ -402,8 +445,9 @@ func perform(_ route: Route, _ action: Action, fixture: Fixture) -> String? {
     case .ax:
         switch action {
         case .type:
+            // Insert without focusing first: Dropy's router does the same, and focusing an
+            // element of a window on another desktop switched desktops in the first run.
             guard let field = descendant(a, identifier: "text") else { return "elementNotFound" }
-            setBool(field, kAXFocusedAttribute, true)
             let result = AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, typedText as CFString)
             if result != .success { return "axError(\(result.rawValue))" }
         case .click:
@@ -461,6 +505,7 @@ func judge(inA: Bool, inB: Bool, receivedBy: [String: Int], actionError: String?
 }
 
 func run(fixture: Fixture, results path: String, routes: [Route]) {
+    prepareFocusSink()
     FileManager.default.createFile(atPath: path, contents: nil)
     let output = FileHandle(forWritingAtPath: path)!
     guard let a = window(fixture, fixture.a), let b = window(fixture, fixture.b),
@@ -475,7 +520,10 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
             for route in routes {
                 for action in Action.allCases {
                     var record: [String: Any] = ["condition": condition.rawValue, "focus": focus.rawValue,
-                                                 "route": route.rawValue, "action": action.rawValue]
+                                                 "route": route.rawValue, "action": action.rawValue,
+                                                 // Key-window, frontmost-app and desktop changes are recorded
+                                                 // below; InputEvidence accepts only such records.
+                                                 "sideEffectsRecorded": true, "probeVersion": 2]
                     if let blocked = setUp(condition, focus, fixture: fixture, home: home) {
                         record["outcome"] = "notRun(\(blocked))"
                     } else if let before = fixture.state() {
@@ -501,7 +549,12 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
                                 $0["kind"] as? String == "focus" &&
                                 ["becameKey", "appActive", "appInactive"].contains($0["change"] as? String ?? "")
                             }
-                            if !focusEvents.isEmpty { record["focusChangedDuringTrial"] = true }
+                            if !focusEvents.isEmpty {
+                                record["focusChangedDuringTrial"] = true
+                                // Which changes, so evidence can tell "A became key inside its
+                                // app" from "the app was activated", even if it was handed back.
+                                record["focusChanges"] = Array(Set(focusEvents.compactMap { $0["change"] as? String })).sorted()
+                            }
                             if activeSpaces() != spaceBefore { record["desktopChanged"] = "\(spaceBefore)→\(activeSpaces())" }
                             let frontAfter = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
                             if frontAfter != frontBefore { record["frontmostChanged"] = "\(frontBefore)→\(frontAfter)" }
@@ -582,12 +635,21 @@ func firstDescendant(_ root: AXUIElement, role: String, depth: Int = 0) -> AXUIE
 }
 
 func appState(_ window: AXUIElement) -> (text: String, scroll: Double) {
-    let text = firstDescendant(window, role: kAXTextAreaRole as String).flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
+    let area = firstDescendant(window, role: kAXTextAreaRole as String)
+    let text = area.flatMap { attribute($0, kAXValueAttribute) as? String } ?? ""
     let bar = firstDescendant(window, role: kAXScrollBarRole as String).flatMap { bar -> AXUIElement? in
         attribute(bar, kAXOrientationAttribute) as? String == kAXVerticalOrientationValue as String ? bar : nil
     } ?? firstDescendant(window, role: kAXScrollAreaRole as String).flatMap { element(attribute($0, kAXVerticalScrollBarAttribute)) }
     let scroll = bar.flatMap { attribute($0, kAXValueAttribute) as? Double } ?? -1
     return (text, scroll)
+}
+
+/// Caret location in the window's first text area; a click there moves it.
+func caret(_ window: AXUIElement) -> Int {
+    guard let area = firstDescendant(window, role: kAXTextAreaRole as String),
+          let range = attribute(area, kAXSelectedTextRangeAttribute), CFGetTypeID(range) == AXValueGetTypeID() else { return -1 }
+    var value = CFRange()
+    return AXValueGetValue(range as! AXValue, .cfRange, &value) ? value.location : -1
 }
 
 func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: String, actions: [Action], routes: [Route]) {
@@ -596,12 +658,12 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
     FileManager.default.createFile(atPath: path, contents: nil)
     let output = FileHandle(forWritingAtPath: path)!
     let frontmost = NSWorkspace.shared.frontmostApplication
-    let application = NSRunningApplication(processIdentifier: pid)
+    prepareFocusSink()
     for condition in [Condition.visible, .parked] {
         for focus in [Focus.bKey, .appInactive] {
             for route in routes {
                 for action in actions {
-                    application?.activate()
+                    makeFrontmost(pid)
                     setBool(b, kAXMainAttribute, true)
                     AXUIElementPerformAction(b, kAXRaiseAction as CFString)
                     wait(0.4)
@@ -609,21 +671,25 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                         let right = displays().map(\.maxX).max() ?? 0, bottom = displays().map(\.maxY).max() ?? 0
                         setPosition(a, CGPoint(x: right + 200, y: bottom + 200))
                     }
-                    if focus == .appInactive { frontmost?.activate(); wait(0.5) }
+                    if focus == .appInactive { makeOtherAppFrontmost() }
                     let beforeA = appState(a), beforeB = appState(b)
+                    let caretBeforeA = caret(a), caretBeforeB = caret(b)
                     let frontBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
                     let spaceBefore = activeSpaces()
                     let focusedBefore = element(attribute(fixture.app, kAXFocusedWindowAttribute))
                     var focusedIDBefore: CGWindowID = 0
                     if let focusedBefore { _ = getWindow?(focusedBefore, &focusedIDBefore) }
                     var record: [String: Any] = ["condition": condition.rawValue, "focus": focus.rawValue,
-                                                 "route": route.rawValue, "action": action.rawValue]
+                                                 "route": route.rawValue, "action": action.rawValue,
+                                                 // Key-window, frontmost-app and desktop changes are recorded
+                                                 // below; InputEvidence accepts only such records.
+                                                 "sideEffectsRecorded": true, "probeVersion": 2]
                     let skipped: String?
                     if focus == .bKey && (frontBefore != pid || focusedIDBefore != idB) {
                         skipped = "setupFocusMismatch"
                     } else if focus == .appInactive && frontBefore == pid {
                         skipped = "setupFocusMismatch"
-                    } else if condition == .parked && frame(a).map({ extent in displays().contains { $0.intersects(extent) } }) != false {
+                    } else if condition == .parked && frame(a).map(isParked) != true {
                         skipped = "setupParkingFailed"
                     } else {
                         skipped = performOnApp(route, action, window: a, fixture: fixture)
@@ -635,7 +701,8 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                         let changed: ((text: String, scroll: Double), (text: String, scroll: Double)) -> Bool = { old, new in
                             action == .type ? old.text != new.text : old.scroll != new.scroll
                         }
-                        let inA = changed(beforeA, afterA), inB = changed(beforeB, afterB)
+                        var inA = changed(beforeA, afterA), inB = changed(beforeB, afterB)
+                        if action == .click { inA = caret(a) != caretBeforeA; inB = caret(b) != caretBeforeB }
                         record["outcome"] = judge(inA: inA, inB: inB, receivedBy: [:], actionError: skipped)
                         var focusedIDAfter: CGWindowID = 0
                         if let focused = element(attribute(fixture.app, kAXFocusedWindowAttribute)) {
@@ -671,15 +738,29 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
 }
 
 func performOnApp(_ route: Route, _ action: Action, window a: AXUIElement, fixture: Fixture) -> String? {
-    let targetElement = action == .type ? firstDescendant(a, role: kAXTextAreaRole as String)
+    let targetElement = action == .type || action == .click ? firstDescendant(a, role: kAXTextAreaRole as String)
         : firstDescendant(a, role: kAXScrollAreaRole as String) ?? firstDescendant(a, role: kAXTextAreaRole as String)
     guard let targetElement, let target = frame(targetElement) else { return "notSent(elementNotFound)" }
     let point = CGPoint(x: target.midX, y: min(target.midY, target.minY + 200))
     switch route {
     case .ax:
         if action == .type {
-            setBool(targetElement, kAXFocusedAttribute, true)
             let result = AXUIElementSetAttributeValue(targetElement, kAXSelectedTextAttribute as CFString, typedText as CFString)
+            return result == .success ? nil : "notSent(axError(\(result.rawValue)))"
+        }
+        if action == .click {
+            // In text, a click places the caret; Dropy's router asks the element for the
+            // character at the point and selects an empty range there, as done here.
+            var position = point
+            var value: CFTypeRef?
+            guard AXUIElementCopyParameterizedAttributeValue(targetElement, kAXRangeForPositionParameterizedAttribute as CFString,
+                                                             AXValueCreate(.cgPoint, &position)!, &value) == .success,
+                  let value, CFGetTypeID(value) == AXValueGetTypeID() else { return "notSent(noRangeAtPoint)" }
+            var range = CFRange()
+            AXValueGetValue(value as! AXValue, .cfRange, &range)
+            var caretRange = CFRange(location: range.location, length: 0)
+            let result = AXUIElementSetAttributeValue(targetElement, kAXSelectedTextRangeAttribute as CFString,
+                                                      AXValueCreate(.cfRange, &caretRange)!)
             return result == .success ? nil : "notSent(axError(\(result.rawValue)))"
         }
         guard let bar = element(attribute(targetElement, kAXVerticalScrollBarAttribute))
@@ -689,7 +770,12 @@ func performOnApp(_ route: Route, _ action: Action, window a: AXUIElement, fixtu
     case .pid, .pidWindow:
         let origin = frame(a)?.origin ?? .zero
         if route == .pidWindow, setWindowLocation == nil { return "notApplicable(noSetWindowLocation)" }
-        for event in action == .type ? keyEvents(typedText) : scrollEvents(at: point) {
+        let events = switch action {
+        case .type: keyEvents(typedText)
+        case .click: clickEvents(at: point)
+        default: scrollEvents(at: point)
+        }
+        for event in events {
             if route == .pidWindow {
                 event.setIntegerValueField(eventWindow, value: Int64(fixture.a))
                 event.setIntegerValueField(windowUnderPointer, value: Int64(fixture.a))
@@ -750,6 +836,29 @@ case "app":
     let actions = args[5].split(separator: ",").compactMap { Action(rawValue: String($0)) }
     let routes = args.count > 6 ? args[6].split(separator: ",").compactMap { Route(rawValue: String($0)) } : [.pid, .pidWindow, .ax]
     runApp(pid: pid, a: a, b: b, results: args[4], actions: actions, routes: routes)
+case "elements":
+    // elements <fixture-log>: A's and B's control centres in window-relative points, and window sizes.
+    guard args.count == 2 else { fail("usage: elements <fixture-log>") }
+    let fixture = Fixture.attach(log: args[1])
+    for (name, id) in [("A", fixture.a), ("B", fixture.b)] {
+        guard let w = window(fixture, id), let wf = frame(w) else { fail("window \(name) not reachable") }
+        var parts = ["\(name) window=\(id) size=\(Int(wf.width))x\(Int(wf.height))"]
+        for identifier in ["text", "button", "scroll"] {
+            guard let f = descendant(w, identifier: identifier).flatMap(frame) else { continue }
+            parts.append("\(identifier)=\(Int(f.midX - wf.minX)),\(Int(f.midY - wf.minY))")
+        }
+        print(parts.joined(separator: " "))
+    }
+case "textstate":
+    // textstate <pid> <window>: "length caret" of the window's first text area, and "size=WxH text=x,y"
+    // with the text area's centre in window-relative points.
+    guard args.count == 3, let pid = pid_t(args[1]), let id = CGWindowID(args[2]) else { fail("usage: textstate <pid> <window>") }
+    let fixture = Fixture(log: "/dev/null", pid: pid, a: id, b: id, app: AXUIElementCreateApplication(pid))
+    guard let w = window(fixture, id), let wf = frame(w),
+          let area = firstDescendant(w, role: kAXTextAreaRole as String), let af = frame(area) else { fail("no text area") }
+    let text = attribute(area, kAXValueAttribute) as? String ?? ""
+    let visibleTop = max(af.minY, wf.minY)
+    print(text.count, caret(w), "size=\(Int(wf.width))x\(Int(wf.height)) text=\(Int(af.midX - wf.minX)),\(Int(min(visibleTop + 120, af.maxY) - wf.minY))")
 case "windows":
     // windows <pid>: exact IDs of the app's windows on the active desktop, largest first.
     guard args.count == 2, let pid = pid_t(args[1]), let getWindow else { fail("usage: windows <pid>") }

@@ -1,22 +1,17 @@
 import AppKit
+import Carbon.HIToolbox
 import DropyCore
 import ScreenCaptureKit
-
-final class OverlayPanel: NSPanel {
-    var onEscape: (() -> Void)?
-    override var canBecomeKey: Bool { true }
-
-    override func cancelOperation(_ sender: Any?) { onEscape?() }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onEscape?() } else { super.keyDown(with: event) }
-    }
-}
 
 @MainActor
 final class OverlayController: NSObject {
     private let preferences: PreferenceStore
+    private let inputRouter: InputRouter
     private let capture = CaptureController()
+    /// Size in points of the window being previewed, for mapping preview input.
+    private var selectedWindowSize: CGSize?
+    private var interactionStatus: NSTextField?
+    private var interactionMessage: DispatchWorkItem?
     private var panel: OverlayPanel?
     private var list: NSStackView?
     private var status: NSTextField?
@@ -51,8 +46,9 @@ final class OverlayController: NSObject {
     var currentSelection: WindowIdentity? { selectedIdentity }
     func captureCounts() -> CaptureCounts? { capture.currentCounts() }
 
-    init(preferences: PreferenceStore) {
+    init(preferences: PreferenceStore, inputRouter: InputRouter) {
         self.preferences = preferences
+        self.inputRouter = inputRouter
         super.init()
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(applicationTerminated(_:)),
@@ -81,17 +77,7 @@ final class OverlayController: NSObject {
                                          preferredSize: preferences.value.sizePreset.dimensions)
         let compact = CGRect(x: screen.frame.midX - 104, y: screen.frame.maxY - 38,
                              width: 208, height: 38)
-        let panel = OverlayPanel(contentRect: compact, styleMask: [.borderless],
-                                 backing: .buffered, defer: false)
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
-        panel.isOpaque = true
-        // An active window's shadow was re-rendered on every composite while content
-        // behind it changed, adding about 25 points of GPU utilization with nothing
-        // captured. A hairline border separates the panel instead.
-        panel.hasShadow = false
-        panel.isReleasedWhenClosed = false
+        let panel = OverlayPanel.make(contentRect: compact)
         buildContent(in: panel, size: full.size)
         opensInProcess += 1
         let openedAt = CACurrentMediaTime()
@@ -104,6 +90,7 @@ final class OverlayController: NSObject {
         }
         self.panel = panel
         panel.onEscape = { [weak self] in self?.dismiss(.escape) }
+        panel.onKey = { [weak self] event in self?.handleKey(event) ?? false }
         let frontmost = NSWorkspace.shared.frontmostApplication
         previousApplication = frontmost?.processIdentifier == getpid() ? nil : frontmost
         installSessionWatchers(on: panel, finalFrame: full)
@@ -124,7 +111,9 @@ final class OverlayController: NSObject {
         generation = UUID()
         overlaySession = UUID()
         setState(.closed)
+        if let selectedIdentity { inputRouter.forget(selectedIdentity) }
         selectedIdentity = nil
+        selectedWindowSize = nil
         identityTask?.cancel()
         identityTask = nil
         removeSessionWatchers()
@@ -132,6 +121,9 @@ final class OverlayController: NSObject {
         panel = nil
         list = nil
         status = nil
+        interactionStatus = nil
+        interactionMessage?.cancel()
+        interactionMessage = nil
         privacyButton = nil
         renderer?.clear()
         renderer = nil
@@ -165,10 +157,15 @@ final class OverlayController: NSObject {
         // Pointer-leave arms only once the pointer has been inside, so opening from
         // the menu or the shortcut with the pointer elsewhere does not close at once.
         pointerHasEntered = finalFrame.contains(NSEvent.mouseLocation)
-        if let root = panel.contentView {
+        // The root view owns the tracking area and overrides the NSResponder methods.
+        // With this controller as owner, Swift exported `mouseEntered(with:)` as
+        // `mouseEnteredWith:`, AppKit never called it, and pointer-leave never closed.
+        if let root = panel.contentView as? PointerTrackingView {
+            root.onEntered = { [weak self] in self?.pointerEntered() }
+            root.onExited = { [weak self] in self?.pointerExited() }
             let area = NSTrackingArea(rect: .zero,
                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                      owner: self)
+                                      owner: root)
             root.addTrackingArea(area)
             trackingArea = area
         }
@@ -184,13 +181,15 @@ final class OverlayController: NSObject {
         pointerHasEntered = false
     }
 
-    @objc func mouseEntered(with event: NSEvent) {
+    private func pointerEntered() {
+        if !pointerHasEntered { NSLog("Dropy dismiss: pointer entered") }
         pointerHasEntered = true
         pendingPointerLeave?.cancel()
         pendingPointerLeave = nil
     }
 
-    @objc func mouseExited(with event: NSEvent) {
+    private func pointerExited() {
+        NSLog("Dropy dismiss: pointer left (armed=%@)", pointerHasEntered ? "yes" : "no")
         guard pointerHasEntered, preferences.value.dismissBehavior.closes(on: .pointerLeft) else { return }
         pendingPointerLeave?.cancel()
         let session = overlaySession
@@ -275,10 +274,11 @@ final class OverlayController: NSObject {
             status?.stringValue = next.message ?? ""
         }
         privacyButton?.isHidden = next.failure?.opensPrivacySettings != true
+        if !next.isCapturing { configureInteraction() }
     }
 
     private func buildContent(in panel: NSPanel, size: CGSize) {
-        let root = NSView(frame: CGRect(origin: .zero, size: size))
+        let root = PointerTrackingView(frame: CGRect(origin: .zero, size: size))
         root.wantsLayer = true
         // No rounded mask on the root: the panel is opaque, so the corners were never
         // visible, and masking a layer tree forces an offscreen pass on every composite.
@@ -351,12 +351,23 @@ final class OverlayController: NSObject {
             previewShell.addSubview(failure)
         }
 
+        let rowWidth = max(100, size.width - 310)
         let status = NSTextField(labelWithString: "Finding open windows…")
-        status.frame = CGRect(x: 288, y: 20, width: max(100, size.width - 310), height: 20)
+        status.frame = CGRect(x: 288, y: 20, width: rowWidth * 0.55, height: 20)
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
+        status.lineBreakMode = .byTruncatingTail
         root.addSubview(status)
         self.status = status
+
+        let interaction = NSTextField(labelWithString: "")
+        interaction.frame = CGRect(x: 288 + rowWidth * 0.55, y: 20, width: rowWidth * 0.45, height: 20)
+        interaction.font = .systemFont(ofSize: 11)
+        interaction.textColor = .secondaryLabelColor
+        interaction.alignment = .right
+        interaction.lineBreakMode = .byTruncatingTail
+        root.addSubview(interaction)
+        interactionStatus = interaction
     }
 
     private func rebuildWindowList() {
@@ -414,7 +425,9 @@ final class OverlayController: NSObject {
         generation = request
         identityTask?.cancel()
         identityTask = nil
+        if let previous = selectedIdentity { inputRouter.forget(previous) }
         selectedIdentity = selected.identity
+        selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
         restartedAfterInterruption = false
         if let bundleID = selected.bundleIdentifier {
@@ -484,7 +497,9 @@ final class OverlayController: NSObject {
     /// Minimized, hidden and other-Space windows stop producing frames; say so
     /// instead of presenting a frozen image as live.
     private func showVisibility(of window: SCWindow) {
+        selectedWindowSize = window.frame.size
         setState(window.isOnScreen ? .viewing : .paused(applicationName: selectedApplicationName))
+        configureInteraction()
     }
 
     private func monitorWindow(_ identity: WindowIdentity, request: UUID,
@@ -606,6 +621,7 @@ final class OverlayController: NSObject {
         guard request == generation, state.isCapturing else { return }
         generation = UUID()
         let failedGeneration = generation
+        if let selectedIdentity { inputRouter.forget(selectedIdentity) }
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
@@ -626,6 +642,114 @@ final class OverlayController: NSObject {
               application.bundleIdentifier == identity.bundleIdentifier else { return }
         let request = generation
         Task { await fail(.targetQuit(applicationName: selectedApplicationName), request: request) }
+    }
+
+    // MARK: Interactive preview (M3 prototype)
+
+    /// Connects or disconnects preview input for the current source, and labels what is
+    /// verified. Runs on selection, visibility changes and every identity check, because
+    /// the source's condition (parked, minimized, other desktop) can change.
+    func configureInteraction() {
+        guard let renderer else { return }
+        let enabled = preferences.value.interactivePreview
+        let trusted = WindowPlacer.isTrusted
+        guard enabled, trusted, state.isCapturing, let identity = selectedIdentity else {
+            renderer.onClick = nil
+            renderer.onScroll = nil
+            renderer.onUnsupported = nil
+            if interactionMessage == nil {
+                interactionStatus?.stringValue = state.isCapturing
+                    ? InteractionLabel.text(for: .viewOnly, enabled: enabled, trusted: trusted) : ""
+            }
+            return
+        }
+        let support = inputRouter.support(for: identity)
+        if renderer.onClick == nil, let window = renderer.window {
+            // Where the preview is, for device checks: global top-left points.
+            let frame = window.convertToScreen(renderer.convert(renderer.bounds, to: nil))
+            let top = (NSScreen.screens.first?.frame.maxY ?? frame.maxY) - frame.maxY
+            NSLog("Dropy input: preview=%.0f,%.0f,%.0f,%.0f support=%@", frame.minX, top, frame.width, frame.height,
+                  InteractionLabel.text(for: support, enabled: true, trusted: true))
+        }
+        if interactionMessage == nil {
+            interactionStatus?.stringValue = InteractionLabel.text(for: support, enabled: true, trusted: true)
+        }
+        renderer.onClick = { [weak self] point in
+            guard let self, let target = self.windowPoint(point) else { return }
+            self.report(self.inputRouter.click(identity, at: target), kind: .pointerClick)
+        }
+        renderer.onScroll = { [weak self] point, delta in
+            guard let self, let target = self.windowPoint(point), let mapping = self.mapping() else { return }
+            self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta)), kind: .scroll)
+        }
+        renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
+    }
+
+    private func mapping() -> PreviewPointMapping? {
+        guard let renderer, let pixels = renderer.presentedPixelSize, let windowSize = selectedWindowSize else { return nil }
+        return PreviewPointMapping(viewSize: renderer.bounds.size,
+                                   backingScale: renderer.window?.backingScaleFactor ?? 2,
+                                   capturePixelSize: pixels, windowSize: windowSize,
+                                   mode: preferences.value.contentMode)
+    }
+
+    /// The source-window point under a preview point; nil over letterbox areas, where
+    /// nothing is sent.
+    private func windowPoint(_ viewPoint: CGPoint) -> CGPoint? {
+        mapping()?.windowPoint(for: viewPoint)
+    }
+
+    /// Typing in the preview: committed characters only. Shortcuts, editing keys and
+    /// input methods are refused and labelled rather than approximated.
+    private func handleKey(_ event: NSEvent) -> Bool {
+        guard preferences.value.interactivePreview, WindowPlacer.isTrusted, state.isCapturing,
+              let identity = selectedIdentity else { return false }
+        if !event.modifierFlags.intersection([.command, .control]).isEmpty {
+            flash(InteractionLabel.text(for: .notVerified, kind: .keyShortcut))
+            return true
+        }
+        if Self.inputMethodIsActive() {
+            flash(InteractionLabel.text(for: .notVerified, kind: .imeComposition))
+            return true
+        }
+        guard let characters = event.characters, !characters.isEmpty,
+              characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && $0.value < 0xF700 })
+        else {
+            flash("This key is not supported in the preview yet")
+            return true
+        }
+        report(inputRouter.type(identity, text: characters), kind: .text)
+        return true
+    }
+
+    /// True when the current keyboard input source composes text (e.g. Japanese, Chinese).
+    private static func inputMethodIsActive() -> Bool {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let pointer = TISGetInputSourceProperty(source, kTISPropertyInputSourceType) else { return false }
+        let type = Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
+        return type != (kTISTypeKeyboardLayout as String)
+    }
+
+    private func report(_ outcome: InputRouter.Outcome, kind: InputKind) {
+        switch outcome {
+        case .sent: break
+        case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
+        case .notApplicable(let reason):
+            flash(reason.contains("noTextElementChosen") ? "Click a text field in the preview first"
+                  : reason.contains("nothingPressable") ? "Nothing to click there" : "Not sent here")
+        }
+    }
+
+    /// Shows a short message in place of the interaction label, then restores the label.
+    private func flash(_ message: String) {
+        interactionMessage?.cancel()
+        interactionStatus?.stringValue = message
+        let work = DispatchWorkItem { [weak self] in
+            self?.interactionMessage = nil
+            self?.configureInteraction()
+        }
+        interactionMessage = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
     @objc private func privacyClicked() {

@@ -25,6 +25,7 @@ if pgrep -f 'Scripts/(device-checks|input-probe).*\.sh' | grep -vqx "$$"; then
 fi
 work="$(mktemp -d)"
 owned=()
+sink_pid=""
 # Refuse shared recovery state before changing windows or preferences.
 if [[ -e "$HOME/Library/Application Support/Dropy/placement-journal.json" ]]; then
   print -u2 "Recover pending Dropy placements before running the input probe."
@@ -32,11 +33,13 @@ if [[ -e "$HOME/Library/Application Support/Dropy/placement-journal.json" ]]; th
 fi
 mkdir -p "$logs"
 swiftc -O -swift-version 6 -o "$probe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+"$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 
 "$probe" check-modifiers
 
 cleanup() {
   "$probe" release 2>/dev/null || true
+  [[ -n "${sink_pid:-}" ]] && { kill "$sink_pid" 2>/dev/null || true; sink_pid=""; }
   for app in $owned; do osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1 || true; done
   rm -rf "$work"
 }
@@ -57,6 +60,15 @@ probe_app() {
   print >> "$work/tables"
 }
 
+# Focus sink for "app inactive" trials: the placement fixture with its window minimized.
+open -n "$build_dir/DropyFixture.app"
+for i in {1..40}; do
+  sink_pid="$(lsappinfo info -only pid -app org.dropy.fixture 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+  [[ -n "$sink_pid" ]] && break
+  sleep 0.25
+done
+export PROBE_FOCUS_SINK_PID="$sink_pid"
+sleep 1
 : > "$work/tables"; : > "$work/rows"
 for app in $apps; do
   case "$app" in
@@ -70,7 +82,7 @@ for app in $apps; do
         set bounds of window "probe-A.txt" to {60, 120, 700, 700}
         set bounds of window "probe-B.txt" to {760, 120, 1400, 640}
       end tell' >/dev/null
-      probe_app TextEdit com.apple.TextEdit type,scroll
+      probe_app TextEdit com.apple.TextEdit type,click,scroll
       osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true ;;
     safari)
       pgrep -xq Safari && { print -u2 "Quit Safari first"; exit 1; }
@@ -88,7 +100,7 @@ for app in $apps; do
         set bounds of (first window whose name is "Dropy input A") to {60, 120, 700, 700}
         set bounds of (first window whose name is "Dropy input B") to {760, 120, 1400, 640}
       end tell' >/dev/null 2>&1 || true
-      probe_app Safari com.apple.Safari type,scroll
+      probe_app Safari com.apple.Safari type,click,scroll
       osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true ;;
     notion)
       probe_app Notion notion.id scroll ;;

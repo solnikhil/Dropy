@@ -28,6 +28,65 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         didSet { setNeedsDisplay(bounds) }
     }
 
+    // MARK: Interaction (M3 prototype)
+    //
+    // Set only while interactive preview is on; otherwise the view ignores input as before.
+    // Points are in view coordinates with a top-left origin, like the source window.
+
+    /// A click (mouse down and up without dragging) at a point.
+    var onClick: ((CGPoint) -> Void)?
+    /// A scroll at a point, with AppKit's deltas (positive y scrolls toward the top).
+    var onScroll: ((CGPoint, CGSize) -> Void)?
+    /// Input the preview cannot send yet, such as a drag or a right-click.
+    var onUnsupported: ((InputKind) -> Void)?
+    private var pressPoint: CGPoint?
+    private var dragged = false
+
+    /// Pixel size of the frame on screen, or nil before the first frame.
+    var presentedPixelSize: CGSize? {
+        currentPixelBuffer.map { CGSize(width: CVPixelBufferGetWidth($0), height: CVPixelBufferGetHeight($0)) }
+    }
+
+    private func topLeftPoint(_ event: NSEvent) -> CGPoint {
+        let point = convert(event.locationInWindow, from: nil)
+        return CGPoint(x: point.x, y: bounds.height - point.y)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { onClick != nil }
+
+    override func mouseDown(with event: NSEvent) {
+        guard onClick != nil else { return super.mouseDown(with: event) }
+        pressPoint = topLeftPoint(event)
+        dragged = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let pressPoint, onClick != nil else { return super.mouseDragged(with: event) }
+        let point = topLeftPoint(event)
+        if !dragged, hypot(point.x - pressPoint.x, point.y - pressPoint.y) > 4 {
+            dragged = true
+            onUnsupported?(.drag)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let press = pressPoint, let onClick else { return super.mouseUp(with: event) }
+        pressPoint = nil
+        if !dragged { onClick(press) }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard onClick != nil else { return super.rightMouseDown(with: event) }
+        onUnsupported?(.contextMenu)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let onScroll else { return super.scrollWheel(with: event) }
+        // Line-based wheels report small deltas; scale them to points as AppKit does.
+        let factor: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+        onScroll(topLeftPoint(event), CGSize(width: event.scrollingDeltaX * factor, height: event.scrollingDeltaY * factor))
+    }
+
     static func make(frame: CGRect) throws -> MetalFrameView {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else {

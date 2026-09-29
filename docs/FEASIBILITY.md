@@ -74,7 +74,31 @@ Conclusions so far, on one fixture and two apps:
 
 `DropyCore/InputCapability.swift` (issue #10) turns trials like these into decisions: a route is verified for an input kind and source condition only when every recorded trial passed, including with another window key *and* with the app inactive; any wrong-window trial disqualifies it, and mixed pass/failure repeats stay unreliable. `InputPlanner` refuses to send when the target is ambiguous, unreachable or changed, prefers exact-element Accessibility actions, uses the private window-targeted route or routes with observed focus/desktop changes only when the policy allows them, and labels a source view-only unless some kinds are verified.
 
-Not yet covered: IME, dead keys, context menus, sheets and file dialogs, drag and drop, hover, momentum scrolling, Electron/Chromium, and wiring input into Dropy's preview.
+Not yet covered: IME, dead keys, context menus, sheets and file dialogs, drag and drop, hover, momentum scrolling and Electron/Chromium. For preview wiring, see the next section.
+
+## Interactive preview prototype (M3, 2026-09-29, second session)
+
+The preview can now send input to the source window, behind **Interactive preview (beta)** in the menu (off by default; it needs Accessibility). The owner accepted the private window-targeted route for pointer input. Every click, scroll or key goes through the same steps. The exact window is re-resolved and its window ID confirmed. `PreviewPointMapping` maps the point through the image actually drawn (fit, fill, native scale; letterbox areas send nothing). `InputPlanner` picks only routes verified for that app, input kind and source condition in the shipped `Resources/InputEvidence.json`. The label says what is verified ("Interactive (beta): click, scroll, type") and each refusal says why. An untested app, or another macOS major version, stays view-only.
+
+Routes as shipped:
+
+- **Clicks** through the window-targeted event when verified, else an Accessibility press, or, in text, the caret placed at the character under the point (`AXRangeForPosition`).
+- **Scrolling** through the window-targeted event, else the scroll bar's value.
+- **Typing** is committed characters only, inserted with `AXSelectedText` into the text element last clicked in that window. It is **not focused first**: focusing an element of an off-desktop window switched desktops, and insertion works without it (fixture, TextEdit). Shortcuts, editing keys (arrows, delete, return) and input methods are refused and labelled. Keyboard events are never sent: no route delivered them to a non-key window.
+
+Evidence changes:
+
+- Trials now record side effects by kind (source key window, frontmost app, desktop, pointer). The preview policy allows only "target became key inside its own app", which the window-targeted click causes. Anything that switches the person's app, desktop or pointer is refused.
+- **The first harness run's setup was wrong for many trials**: cooperative activation on macOS 14+ refused `activate()` from a background process, so "B key" and "app inactive" were often not the real states. The probe now makes apps frontmost through Accessibility, uses a minimized fixture as the "other app" instead of Finder (which switched desktops), verifies the focus state before sending, and records setup failures as not run. The earlier 2026-09-29 tables remain as history; the evidence was regenerated only from records that carry side effects ([fixture](input-probe/2026-09-29b-fixture.md), [apps](input-probe/2026-09-29b-apps.md), [raw](input-probe/raw/2026-09-29b/)).
+- **Safari (WebKit)**: `AXSelectedText` and the window-targeted click do nothing in a page `textarea` (only replacing `AXValue` changes it, which would overwrite the field), and caret placement had no effect either. So Safari is scroll-only. TextEdit: click (caret), typing and scrolling pass visible and parked. The window-targeted click did not move TextEdit's caret, so clicks there use Accessibility.
+
+End-to-end through Dropy with real HID input on the preview ([report](device-checks/2026-09-29-interactive-preview.md)): on the input fixture, with window A visible and moved beyond the displays while window B is the fixture's key window, click, typing and scroll reached A and never B, and Dropy stayed frontmost. On TextEdit, a click on the preview placed A's caret and three typed characters appeared there, with B unchanged.
+
+Dismissal with real HID events ([report](device-checks/2026-09-29-dismissal.md)): Esc, the global shortcut, click outside in another app, click on Dropy's own menu-bar item, and pointer-leave all passed, and focus returned to the previously frontmost app. Opening with the pointer elsewhere stayed open, and manual mode ignored outside clicks. The checks found and fixed two real bugs. The panel hid itself whenever Dropy deactivated (`hidesOnDeactivate`), so manual and pointer-leave overlays vanished on any outside click while Dropy still considered them open. Pointer-leave never fired, because the tracking-area owner's Swift methods were exported as `mouseEnteredWith:` and AppKit never called them.
+
+TextEdit recovery rerun on one desktop ([report](device-checks/2026-09-29-textedit-recovery.md)): all four placement modes restored, a move during placement was kept (`keptUserChange`), and killing Dropy while parked left a journal that the next launch restored.
+
+Not covered: Electron/Chromium input, IME, dead keys, editing keys, context menus, dialogs, drag and drop, hover, momentum scrolling, and multi-display previews.
 
 ## Platform facts and open questions
 

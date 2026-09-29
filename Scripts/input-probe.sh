@@ -40,10 +40,12 @@ mkdir -p "$logs"
 fixture_log="$logs/fixture.jsonl"
 results="$logs/results.jsonl"
 fixture_pid=""
+sink_pid=""
 "$build_dir/InputProbe" check-modifiers
 
 cleanup() {
   "$build_dir/InputProbe" release 2>/dev/null || true
+  [[ -n "${sink_pid:-}" ]] && { kill "$sink_pid" 2>/dev/null || true; sink_pid=""; }
   [[ -n "$fixture_pid" ]] || return 0
   "$build_dir/InputProbe" send space:home 2>/dev/null || true
   "$build_dir/InputProbe" send quit 2>/dev/null || true
@@ -57,6 +59,15 @@ trap 'cleanup; exit 143' TERM
 # zsh skips EXIT traps when errexit fires inside a function; ZERR covers that.
 trap '(( ZSH_SUBSHELL == 0 )) && cleanup' ZERR
 
+# Focus sink for "app inactive" trials: the placement fixture with its window minimized.
+open -n "$build_dir/DropyFixture.app"
+for i in {1..40}; do
+  sink_pid="$(lsappinfo info -only pid -app org.dropy.fixture 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+  [[ -n "$sink_pid" ]] && break
+  sleep 0.25
+done
+export PROBE_FOCUS_SINK_PID="$sink_pid"
+sleep 1
 # LaunchServices launch, so the fixture has a real launch date like any app Dropy targets.
 open -n "$build_dir/DropyInputFixture.app" --args --log "$fixture_log"
 for i in {1..40}; do

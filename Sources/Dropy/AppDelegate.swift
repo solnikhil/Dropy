@@ -22,7 +22,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        overlay = OverlayController(preferences: preferences)
+        overlay = OverlayController(preferences: preferences, inputRouter: InputRouter(journal: placementJournal))
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
         recovery.onSettled = { [weak self] identity in self?.parkingTabs.remove(identity) }
@@ -116,6 +116,11 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         let contentItem = NSMenuItem(title: "Content view", action: nil, keyEquivalent: "")
         contentItem.submenu = contentModes
         menu.addItem(contentItem)
+        let interactive = NSMenuItem(title: "Interactive preview (beta)", action: #selector(toggleInteractivePreview(_:)),
+                                     keyEquivalent: "")
+        interactive.state = preferences.value.interactivePreview ? .on : .off
+        interactive.toolTip = "Send clicks, scrolling and typing in the preview to the source window, only where verified for that app."
+        menu.addItem(interactive)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Dropy", action: #selector(quit), keyEquivalent: "q"))
         for entry in menu.items { if entry.action != nil { entry.target = self } }
@@ -335,6 +340,17 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate {
         preferences.update { $0.contentMode = mode }
         updateChecks(in: sender.menu, selected: sender)
         if overlay.state != .closed { overlay.close(); overlay.open() }
+    }
+
+    @objc private func toggleInteractivePreview(_ sender: NSMenuItem) {
+        let enabled = !preferences.value.interactivePreview
+        preferences.update { $0.interactivePreview = enabled }
+        sender.state = enabled ? .on : .off
+        // Input to another app needs Accessibility; ask macOS to show its prompt once.
+        if enabled, !WindowPlacer.isTrusted {
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        }
+        overlay.configureInteraction()
     }
 
     @objc private func changeOpenBehavior(_ sender: NSMenuItem) {
