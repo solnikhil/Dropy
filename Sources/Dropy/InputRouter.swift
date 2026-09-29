@@ -36,10 +36,12 @@ final class InputRouter {
     private let trustCheck: () -> Bool
 
     init(journal: PlacementJournal, evidence: InputEvidence = InputRouter.bundledEvidence(),
-         trustCheck: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+         trustCheck: @escaping () -> Bool = { AXIsProcessTrusted() },
+         versionLookup: @escaping (WindowIdentity) -> String? = InputRouter.runningVersion) {
         self.journal = journal
         self.evidence = evidence
         self.trustCheck = trustCheck
+        self.versionLookup = versionLookup
     }
 
     /// `InputEvidence.json` from the app bundle; empty (everything view-only) when missing.
@@ -53,8 +55,34 @@ final class InputRouter {
         return evidence
     }
 
+    /// The running app's version, read once per process launch. Nil (so nothing is
+    /// granted) when the process is gone, is a different launch, or has no version.
+    private var appVersions: [Int32: (launch: Date, version: String?)] = [:]
+    /// Replaceable so regressions can simulate an updated or unversioned app.
+    private let versionLookup: (WindowIdentity) -> String?
+
+    func appVersion(of identity: WindowIdentity) -> String? {
+        if let cached = appVersions[identity.processID], cached.launch == identity.processLaunchDate { return cached.version }
+        let version = versionLookup(identity)
+        appVersions[identity.processID] = (identity.processLaunchDate, version)
+        return version
+    }
+
+    /// `CFBundleShortVersionString` of the exact running process's bundle.
+    nonisolated static func runningVersion(_ identity: WindowIdentity) -> String? {
+        guard let app = NSRunningApplication(processIdentifier: identity.processID),
+              app.launchDate == identity.processLaunchDate, app.bundleIdentifier == identity.bundleIdentifier,
+              let url = app.bundleURL, let bundle = Bundle(url: url) else { return nil }
+        return bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    }
+
+    func evidenceMatch(for identity: WindowIdentity) -> InputEvidence.Match {
+        evidence.match(for: identity.bundleIdentifier, appVersion: appVersion(of: identity), macOSMajor: macOSMajor)
+    }
+
+    /// Capabilities for this exact app version; empty for an untested or unknown version.
     func capabilities(for identity: WindowIdentity) -> InputCapabilities {
-        evidence.capabilities(for: identity.bundleIdentifier, macOSMajor: macOSMajor)
+        evidence.capabilities(for: identity.bundleIdentifier, appVersion: appVersion(of: identity), macOSMajor: macOSMajor)
     }
 
     func support(for identity: WindowIdentity) -> InteractionSupport {
@@ -71,7 +99,8 @@ final class InputRouter {
     /// the first click, because Chromium builds its tree asynchronously. Nothing is
     /// changed for any other app.
     func prepare(_ identity: WindowIdentity) {
-        guard evidence.requiresManualAccessibility(for: identity.bundleIdentifier, macOSMajor: macOSMajor),
+        guard evidence.requiresManualAccessibility(for: identity.bundleIdentifier, appVersion: appVersion(of: identity),
+                                                   macOSMajor: macOSMajor),
               manualAccessibility[identity.processID] != identity.processLaunchDate,
               let app = NSRunningApplication(processIdentifier: identity.processID),
               app.launchDate == identity.processLaunchDate, app.bundleIdentifier == identity.bundleIdentifier else { return }

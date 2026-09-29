@@ -131,7 +131,18 @@ struct DeviceInputRouterChecks {
         settle(0.3)
         check(textField(a).map(value) == beforeRevoke && value(fieldB) == beforeB, "revoked permission sent nothing")
 
-        // 7. Hidden source: not verified, refused. (Hiding is the check's own action.)
+        // 7. An updated app: evidence for fixture 1.0 grants nothing to another version,
+        //    or to a process whose version cannot be read.
+        for (label, running) in [("an updated app version", "2.0"), ("an unknown app version", nil)] as [(String, String?)] {
+            let other = InputRouter(journal: PlacementJournal(url: root.appendingPathComponent("journal-\(label.count).json")),
+                                    evidence: testEvidence(), versionLookup: { _ in running })
+            check(other.click(identity, at: point, expectedWindowSize: windowFrame.size) == .refused(.notVerified)
+                  && other.type(identity, text: "must-not-send") == .refused(.notVerified)
+                  && other.support(for: identity) == .viewOnly, "input to \(label) is refused")
+        }
+        check(textField(a).map(value) == beforeRevoke && value(fieldB) == beforeB, "version mismatch sent nothing")
+
+        // 8. Hidden source: not verified, refused. (Hiding is the check's own action.)
         let front = NSWorkspace.shared.frontmostApplication
         app.hide()
         settle(0.4)
@@ -202,7 +213,7 @@ struct DeviceInputRouterChecks {
         }
         let version = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         return InputEvidence(macOS: String(version), macOSMajor: version, sources: [
-            .init(bundleIdentifier: "org.dropy.inputfixture", appVersion: nil, report: "test-only", trials: trials)
+            .init(bundleIdentifier: "org.dropy.inputfixture", appVersion: "1.0", report: "test-only", trials: trials)
         ])
     }
 

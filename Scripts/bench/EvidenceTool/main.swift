@@ -94,8 +94,10 @@ if args.count == 2, args[0] == "policy" {
           let evidence = try? JSONDecoder().decode(InputEvidence.self, from: data) else { fail("\(args[1]) unreadable") }
     let major = evidence.macOSMajor
     var problems: [String] = []
+    // The version each app was tested at; the contract is per app version.
+    func version(_ bundle: String) -> String? { evidence.sources.first { $0.bundleIdentifier == bundle }?.appVersion }
     func expect(_ bundle: String, _ condition: SourceCondition, kinds: Set<InputKind>, clickTargets: Set<InputTargetClass>) {
-        let caps = evidence.capabilities(for: bundle, macOSMajor: major)
+        let caps = evidence.capabilities(for: bundle, appVersion: version(bundle), macOSMajor: major)
         let got = caps.verifiedKinds(in: condition, policy: .preview)
         if got != kinds { problems.append("\(bundle) \(condition.rawValue): kinds \(got.map(\.rawValue).sorted()) != \(kinds.map(\.rawValue).sorted())") }
         let targets = caps.verifiedTargets(.pointerClick, in: condition, policy: .preview)
@@ -105,7 +107,8 @@ if args.count == 2, args[0] == "policy" {
     // Never enabled anywhere: keyboard shortcuts, drag, IME, context menus.
     for source in evidence.sources {
         for condition in SourceCondition.allCases {
-            let kinds = evidence.capabilities(for: source.bundleIdentifier, macOSMajor: major).verifiedKinds(in: condition, policy: .preview)
+            let kinds = evidence.capabilities(for: source.bundleIdentifier, appVersion: source.appVersion, macOSMajor: major)
+                .verifiedKinds(in: condition, policy: .preview)
             let forbidden = kinds.intersection([.keyShortcut, .drag, .imeComposition, .contextMenu])
             if !forbidden.isEmpty { problems.append("\(source.bundleIdentifier) \(condition.rawValue): refused kinds enabled \(forbidden)") }
             // A hidden app is refused for every app (the contract's "cannot be safely targeted").
@@ -131,7 +134,20 @@ if args.count == 2, args[0] == "policy" {
         expect("org.dropy.inputfixture", .hidden, kinds: [], clickTargets: [])
     }
     expect("org.dropy.inputfixture", .visible, kinds: [.pointerClick, .scroll, .text], clickTargets: all)
-    if !evidence.requiresManualAccessibility(for: "org.dropy.electronfixture", macOSMajor: major) {
+    // Every source must name the app version it was tested at, or it grants nothing.
+    for source in evidence.sources where (source.appVersion ?? "").isEmpty {
+        problems.append("\(source.bundleIdentifier) (\(source.report)): no app version recorded")
+    }
+    // One app version must never be granted by another version's evidence.
+    for source in evidence.sources {
+        let other = (source.appVersion ?? "") + ".untested"
+        if !evidence.capabilities(for: source.bundleIdentifier, appVersion: other, macOSMajor: major)
+            .verifiedKinds(in: .visible, policy: .preview).isEmpty {
+            problems.append("\(source.bundleIdentifier): an untested version inherits capabilities")
+        }
+    }
+    if !evidence.requiresManualAccessibility(for: "org.dropy.electronfixture", appVersion: version("org.dropy.electronfixture"),
+                                             macOSMajor: major) {
         problems.append("Electron evidence must require AXManualAccessibility")
     }
     guard problems.isEmpty else { fail("Shipped input policy differs from the M3 contract:\n" + problems.joined(separator: "\n")) }

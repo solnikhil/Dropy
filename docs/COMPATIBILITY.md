@@ -6,7 +6,7 @@ This is a **development observation log**, not a supported-app list. A green cap
 
 This is the written contract that M3's exit condition refers to. Results below are judged against it; nothing is promoted by a demo.
 
-**Support levels**, per app, app version, macOS major version, input kind, element class and source condition:
+**Support levels**, per app, app version, macOS major version, input kind, element class and source condition. The app version is enforced at runtime (since 2026-09-30): Dropy reads the running process's `CFBundleShortVersionString` and grants only evidence recorded for exactly that version. An updated app, an unreadable version, or evidence without a recorded version grants nothing, and the preview says, for example, "View only · verified for version 27.0, running 27.1". Before this, evidence was matched by bundle identifier and macOS major version only, so an updated app would have inherited the old version's grants. Shipped evidence covers TextEdit 1.21, Safari 27.0, Electron fixture 43.2.0 and input fixture 1.0, the versions installed when it was recorded.
 
 | Level | Meaning |
 |---|---|

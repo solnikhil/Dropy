@@ -42,20 +42,53 @@ public struct InputEvidence: Codable, Equatable, Sendable {
         self.sources = sources
     }
 
-    /// Capabilities for one running app. Empty for an unknown format, another macOS
-    /// major version or an app that was never tested.
-    public func capabilities(for bundleIdentifier: String?, macOSMajor running: Int) -> InputCapabilities {
-        guard format == Self.currentFormat, running == macOSMajor, let bundleIdentifier else {
-            return InputCapabilities(trials: [])
-        }
-        return InputCapabilities(trials: sources.filter { $0.bundleIdentifier == bundleIdentifier }.flatMap(\.trials))
+    /// How a running app relates to the evidence. Only `.matched` grants anything.
+    public enum Match: Equatable, Sendable {
+        /// Evidence recorded for exactly this bundle, app version and macOS major version.
+        case matched(InputCapabilities)
+        case unknownFormat
+        case otherMacOS(tested: Int)
+        case noEvidence
+        /// The running app's version could not be read; nothing is granted.
+        case appVersionUnknown
+        /// Evidence exists for this app, but only for other versions (e.g. the app updated).
+        case appVersionUntested(running: String, tested: [String])
     }
 
-    /// Whether Accessibility routes for this app were verified only with its tree
-    /// switched on through `AXManualAccessibility`.
-    public func requiresManualAccessibility(for bundleIdentifier: String?, macOSMajor running: Int) -> Bool {
-        guard format == Self.currentFormat, running == macOSMajor, let bundleIdentifier else { return false }
-        return sources.contains { $0.bundleIdentifier == bundleIdentifier && $0.requiresManualAccessibility == true }
+    /// Evidence for one running app. Support is per app version: an update can change
+    /// the Accessibility tree, event handling or focus behaviour, so evidence recorded
+    /// against one version grants nothing to another. Sources without a recorded
+    /// version never match. Versions compare exactly (`CFBundleShortVersionString`).
+    public func match(for bundleIdentifier: String?, appVersion: String?, macOSMajor running: Int) -> Match {
+        guard format == Self.currentFormat else { return .unknownFormat }
+        guard running == macOSMajor else { return .otherMacOS(tested: macOSMajor) }
+        guard let bundleIdentifier else { return .noEvidence }
+        let forApp = sources.filter { $0.bundleIdentifier == bundleIdentifier }
+        guard !forApp.isEmpty else { return .noEvidence }
+        guard let appVersion, !appVersion.isEmpty else { return .appVersionUnknown }
+        let exact = forApp.filter { $0.appVersion == appVersion }
+        guard !exact.isEmpty else {
+            return .appVersionUntested(running: appVersion,
+                                       tested: Array(Set(forApp.compactMap(\.appVersion))).sorted())
+        }
+        return .matched(InputCapabilities(trials: exact.flatMap(\.trials)))
+    }
+
+    /// Capabilities for one running app: empty unless `match` is `.matched`.
+    public func capabilities(for bundleIdentifier: String?, appVersion: String?, macOSMajor running: Int) -> InputCapabilities {
+        if case .matched(let capabilities) = match(for: bundleIdentifier, appVersion: appVersion, macOSMajor: running) {
+            return capabilities
+        }
+        return InputCapabilities(trials: [])
+    }
+
+    /// Whether Accessibility routes for this exact app version were verified only with
+    /// its tree switched on through `AXManualAccessibility`.
+    public func requiresManualAccessibility(for bundleIdentifier: String?, appVersion: String?, macOSMajor running: Int) -> Bool {
+        guard case .matched = match(for: bundleIdentifier, appVersion: appVersion, macOSMajor: running) else { return false }
+        return sources.contains {
+            $0.bundleIdentifier == bundleIdentifier && $0.appVersion == appVersion && $0.requiresManualAccessibility == true
+        }
     }
 }
 
@@ -127,6 +160,18 @@ public enum InteractionLabel {
             let names = [(InputKind.pointerClick, "click"), (.scroll, "scroll"), (.text, "type")]
                 .filter { kinds.contains($0.0) }.map(\.1)
             return "Interactive (beta): " + names.joined(separator: ", ")
+        }
+    }
+
+    /// Why an app with no granted input is view-only, when the evidence says more than
+    /// "untested" (another version or macOS); nil otherwise.
+    public static func viewOnlyReason(_ match: InputEvidence.Match) -> String? {
+        switch match {
+        case .appVersionUntested(let running, let tested):
+            return "View only · verified for version \(tested.joined(separator: ", ")), running \(running)"
+        case .appVersionUnknown: return "View only · app version unknown"
+        case .otherMacOS(let tested): return "View only · verified on macOS \(tested) only"
+        case .matched, .unknownFormat, .noEvidence: return nil
         }
     }
 

@@ -673,7 +673,9 @@ final class OverlayController: NSObject {
                   InteractionLabel.text(for: support, enabled: true, trusted: true))
         }
         if interactionMessage == nil {
-            interactionStatus?.stringValue = InteractionLabel.text(for: support, enabled: true, trusted: true)
+            // An app that updated past its evidence says so instead of a generic "untested".
+            let reason = support == .viewOnly ? InteractionLabel.viewOnlyReason(inputRouter.evidenceMatch(for: identity)) : nil
+            interactionStatus?.stringValue = reason ?? InteractionLabel.text(for: support, enabled: true, trusted: true)
         }
         // Each event re-checks that the drawn frame is this selection's window at its
         // current size; the router then confirms that size against the live window.
