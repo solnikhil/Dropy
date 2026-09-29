@@ -94,7 +94,11 @@ final class InputRouter {
     /// Only a successfully sent click selects a typing target. Rejected geometry or
     /// a failed caret action must never silently redirect later typing to another field.
     func click(_ identity: WindowIdentity, at point: CGPoint, expectedWindowSize: CGSize? = nil) -> Outcome {
-        send(.pointerClick, identity, expectedWindowSize: expectedWindowSize) { route, window, origin in
+        // Evidence is per element class: a verified button press says nothing about
+        // placing a caret, so the class under the pointer decides which routes may act.
+        send(.pointerClick, identity, expectedWindowSize: expectedWindowSize, classify: { window, origin in
+            Self.targetClass(Self.hitTest(window, CGPoint(x: origin.x + point.x, y: origin.y + point.y)))
+        }) { route, window, origin in
             let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
             let hit = Self.hitTest(window, global)
             let result: String?
@@ -169,8 +173,17 @@ final class InputRouter {
         }
     }
 
+    /// The element class of a hit-test result.
+    static func targetClass(_ hit: AXUIElement?) -> InputTargetClass {
+        guard let hit else { return .other }
+        if isTextElement(hit) { return .text }
+        return pressable(from: hit) == nil ? .other : .pressable
+    }
+
     /// Resolves the exact window, plans, and tries each verified route until one applies.
+    /// `classify` names the element class under the pointer for pointer kinds.
     private func send(_ kind: InputKind, _ identity: WindowIdentity, expectedWindowSize: CGSize? = nil,
+                      classify: ((AXUIElement, CGPoint) -> InputTargetClass)? = nil,
                       _ perform: (InputRoute, AXUIElement, CGPoint) -> String?) -> Outcome {
         let resolution: InputTargetResolution
         var window: AXUIElement?
@@ -188,13 +201,16 @@ final class InputRouter {
             resolution = .ambiguous
         }
         let condition = condition(of: identity)
+        var target: InputTargetClass?
+        if let classify, let window, let origin = Self.frame(of: window)?.origin { target = classify(window, origin) }
         let planned = InputPlanner.candidates(kind, selectedWindowID: identity.windowID, resolution: resolution,
                                               condition: condition, capabilities: capabilities(for: identity),
-                                              policy: .preview)
+                                              policy: .preview, target: target)
         let routes: [InputRoute]
         switch planned {
         case .failure(let refusal):
-            NSLog("Dropy input: kind=%@ condition=%@ refused=%@", kind.rawValue, condition.rawValue, String(describing: refusal))
+            NSLog("Dropy input: kind=%@ condition=%@ refused=%@ target=%@", kind.rawValue, condition.rawValue,
+                  String(describing: refusal), target?.rawValue ?? "-")
             return .refused(refusal)
         case .success(let list): routes = list
         }
@@ -209,7 +225,8 @@ final class InputRouter {
                 reasons.append("\(route.rawValue):\(reason)")
                 continue
             }
-            NSLog("Dropy input: kind=%@ condition=%@ route=%@", kind.rawValue, condition.rawValue, route.rawValue)
+            NSLog("Dropy input: kind=%@ condition=%@ route=%@ target=%@", kind.rawValue, condition.rawValue, route.rawValue,
+                  target?.rawValue ?? "-")
             return .sent(route)
         }
         NSLog("Dropy input: kind=%@ condition=%@ notApplicable=%@", kind.rawValue, condition.rawValue,

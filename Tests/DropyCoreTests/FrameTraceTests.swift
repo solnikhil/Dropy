@@ -20,6 +20,7 @@ final class FrameTraceTests: XCTestCase {
         XCTAssertEqual(trace.misses, 1)
         XCTAssertTrue(trace.logLine.contains("age=60.0"))
         XCTAssertTrue(trace.logLine.contains("inputToPresent=160.0"))
+        XCTAssertTrue(trace.logLine.contains("drawLog=+1.0:miss,+33.0:shown"))
     }
 
     func testUnpresentedFrameSaysSo() {

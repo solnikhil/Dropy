@@ -1028,6 +1028,13 @@ case "elements":
         }
         print(parts.joined(separator: " "))
     }
+case "pagestatus":
+    // pagestatus <pid> <window>: the text page's status JSON (Scripts/bench/text.html).
+    guard args.count == 3, let pid = pid_t(args[1]), let id = CGWindowID(args[2]) else { fail("usage: pagestatus <pid> <window>") }
+    let fixture = Fixture(log: "/dev/null", pid: pid, a: id, b: id, app: AXUIElementCreateApplication(pid))
+    guard let w = window(fixture, id), let status = pageStatus(w),
+          let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]) else { fail("no page status") }
+    print(String(decoding: data, as: UTF8.self))
 case "element":
     // element <pid> <window> <identifier>: "size=WxH at=x,y", the element's centre in
     // window-relative points (AXIdentifier or AXDOMIdentifier).
@@ -1035,9 +1042,15 @@ case "element":
     let app = AXUIElementCreateApplication(pid)
     if ProcessInfo.processInfo.environment["PROBE_ELECTRON"] == "1" { _ = enableManualAccessibility(app); wait(2) }
     let fixture = Fixture(log: "/dev/null", pid: pid, a: id, b: id, app: app)
-    guard let w = window(fixture, id), let wf = frame(w), let e = descendant(w, identifier: args[3]).flatMap(frame) else {
-        fail("element \(args[3]) not found")
+    // Chromium publishes its tree some time after it is switched on; retry briefly.
+    var found: (CGRect, CGRect)?
+    for _ in 0..<10 {
+        if let w = window(fixture, id), let wf = frame(w), let e = descendant(w, identifier: args[3]).flatMap(frame) {
+            found = (wf, e); break
+        }
+        wait(1)
     }
+    guard let (wf, e) = found else { fail("element \(args[3]) not found") }
     print("size=\(Int(wf.width))x\(Int(wf.height)) at=\(Int(e.midX - wf.minX)),\(Int(e.midY - wf.minY))")
 case "textstate":
     // textstate <pid> <window>: "length caret" of the window's first text area, and "size=WxH text=x,y"

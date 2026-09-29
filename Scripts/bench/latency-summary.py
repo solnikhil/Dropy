@@ -33,8 +33,10 @@ def parse(path):
             continue
         body = line.split("Dropy frame trace:", 1)[1]
         fields = dict(re.findall(r"(\w+)=([-\w.]+)", body))
+        draw_log = re.search(r"drawLog=(\S+)", body)
         frame = {k: float(v) for k, v in fields.items() if re.fullmatch(r"-?[0-9.]+", v)}
         frame["presented"] = fields.get("outcome") != "notPresented"
+        frame["drawLog"] = draw_log.group(1) if draw_log else ""
         frames.append(frame)
     return frames
 
@@ -67,12 +69,12 @@ def main():
     lines += table("Response frames (idle input to visible update)", response) + [""]
     lines += table("Follow-up frames after an input", follow) + [""]
     lines += table("Frames with no input (quiet period)", none) + [""]
-    lines += ["### Per click", "", "| # | inputToDisplay | inputToPresent | capture | main | draw | compose | draws | misses |",
-              "|---|---|---|---|---|---|---|---|---|"]
+    lines += ["### Per click", "", "| # | inputToDisplay | inputToPresent | capture | main | draw | compose | draws | misses | draw log (ms after delivery) |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
     for index, f in enumerate(response, 1):
         lines.append(f"| {index} | {fmt(f.get('inputToDisplay'))} | {fmt(f.get('inputToPresent'))} | {fmt(f.get('capture'))} | "
                      f"{fmt(f.get('main'))} | {fmt(f.get('draw'))} | {fmt(f.get('compose'))} | {int(f.get('draws', 0))} | "
-                     f"{int(f.get('misses', 0))} |")
+                     f"{int(f.get('misses', 0))} | {f.get('drawLog') or '—'} |")
     print("\n".join(lines))
 
 

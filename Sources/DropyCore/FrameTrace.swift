@@ -62,6 +62,12 @@ public struct FrameTrace: Equatable, Sendable {
     public var logLine: String {
         var parts = stages.map { String(format: "%@=%.1f", $0.name, $0.milliseconds) }
         parts.append("draws=\(draws.count)")
+        // Each draw as "+commit(ms after delivery):shown|miss", so a miss pattern is visible.
+        if let delivered, !draws.isEmpty {
+            parts.append("drawLog=" + draws.map {
+                String(format: "+%.1f:%@", $0.committed - delivered, $0.presented == nil ? "miss" : "shown")
+            }.joined(separator: ","))
+        }
         parts.append("misses=\(misses)")
         if let display, let presented { parts.append(String(format: "age=%.1f", presented - display)) }
         if let input {

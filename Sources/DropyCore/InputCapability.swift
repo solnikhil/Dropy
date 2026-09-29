@@ -67,6 +67,18 @@ public enum SourceCondition: String, Codable, CaseIterable, Sendable {
     case visible, covered, parked, otherSpace, minimized, hidden
 }
 
+/// What kind of element a pointer input lands on. Evidence for one class says nothing
+/// about another: pressing a button through Accessibility (verified in Safari) is not
+/// placing a caret in a text field (no effect in Safari), so each is verified separately.
+public enum InputTargetClass: String, Codable, CaseIterable, Sendable {
+    /// An element that supports `AXPress` (button, link, checkbox, menu button).
+    case pressable
+    /// A text element: a click places the caret or chooses the typing target.
+    case text
+    /// Anything else under the pointer (canvas, empty space, custom content).
+    case other
+}
+
 /// Which window had focus in the source app when the input was sent.
 public enum FocusState: String, Codable, CaseIterable, Sendable {
     /// The target window is the app's key window.
@@ -96,17 +108,26 @@ public struct InputTrial: Codable, Equatable, Sendable {
     public let outcome: Outcome
     /// Changes observed outside the target window during the action.
     public let sideEffects: Set<InputSideEffect>
+    /// The element class the input was aimed at; nil for trials recorded before target
+    /// classes, which then count for every class (and so can only make a class fail).
+    public let target: InputTargetClass?
     /// Includes key-window, frontmost-app or desktop changes observed during the action.
     public var changesFocus: Bool { !sideEffects.isEmpty }
 
     public init(route: InputRoute, kind: InputKind, condition: SourceCondition, focus: FocusState, outcome: Outcome,
-                sideEffects: Set<InputSideEffect>) {
+                sideEffects: Set<InputSideEffect>, target: InputTargetClass? = nil) {
         self.route = route
         self.kind = kind
         self.condition = condition
         self.focus = focus
         self.outcome = outcome
         self.sideEffects = sideEffects
+        self.target = target
+    }
+
+    /// Whether this trial is evidence for an input aimed at `target` (nil: any target).
+    public func applies(to target: InputTargetClass?) -> Bool {
+        target == nil || self.target == nil || self.target == target
     }
 
     /// A trial that only says whether some focus change was observed.
@@ -116,7 +137,7 @@ public struct InputTrial: Codable, Equatable, Sendable {
                   sideEffects: changesFocus ? [.unclassifiedFocusChange] : [])
     }
 
-    private enum CodingKeys: String, CodingKey { case route, kind, condition, focus, outcome, sideEffects, changesFocus }
+    private enum CodingKeys: String, CodingKey { case route, kind, condition, focus, outcome, sideEffects, changesFocus, target }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -131,6 +152,7 @@ public struct InputTrial: Codable, Equatable, Sendable {
             // Older records carried only a flag.
             sideEffects = try container.decodeIfPresent(Bool.self, forKey: .changesFocus) == true ? [.unclassifiedFocusChange] : []
         }
+        target = try container.decodeIfPresent(InputTargetClass.self, forKey: .target)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -141,6 +163,7 @@ public struct InputTrial: Codable, Equatable, Sendable {
         try container.encode(focus, forKey: .focus)
         try container.encode(outcome, forKey: .outcome)
         try container.encode(sideEffects.sorted { $0.rawValue < $1.rawValue }, forKey: .sideEffects)
+        try container.encodeIfPresent(target, forKey: .target)
     }
 }
 
@@ -168,8 +191,10 @@ public struct InputCapabilities: Equatable, Sendable {
     /// where that state was tested).
     public static let requiredFocusStates: Set<FocusState> = [.otherWindowKey, .appInactive]
 
-    public func verdict(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> RouteVerdict {
-        let relevant = trials.filter { $0.route == route && $0.kind == kind && $0.condition == condition }
+    /// `target` narrows the evidence to one element class; nil considers every trial.
+    public func verdict(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition,
+                        target: InputTargetClass? = nil) -> RouteVerdict {
+        let relevant = relevant(route, kind, condition, target)
         guard !relevant.isEmpty else { return .untested }
         if relevant.contains(where: { $0.outcome == .wrongWindow }) { return .wrongWindowObserved }
         let tested = relevant.filter { $0.outcome != .notApplicable }
@@ -180,30 +205,47 @@ public struct InputCapabilities: Equatable, Sendable {
         return required.isSubset(of: passed) ? .verified : .unreliable
     }
 
-    /// Route side effects are evidence-dependent: even AX actions can change focus or Spaces.
-    public func sideEffects(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> Set<InputSideEffect> {
-        trials.filter { $0.route == route && $0.kind == kind && $0.condition == condition }
-            .reduce(route.inherentSideEffects) { $0.union($1.sideEffects) }
+    private func relevant(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition,
+                          _ target: InputTargetClass?) -> [InputTrial] {
+        trials.filter { $0.route == route && $0.kind == kind && $0.condition == condition && $0.applies(to: target) }
     }
 
-    public func requiresFocusChange(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> Bool {
-        !sideEffects(route, kind, condition).isEmpty
+    /// Route side effects are evidence-dependent: even AX actions can change focus or Spaces.
+    public func sideEffects(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition,
+                            target: InputTargetClass? = nil) -> Set<InputSideEffect> {
+        relevant(route, kind, condition, target).reduce(route.inherentSideEffects) { $0.union($1.sideEffects) }
+    }
+
+    public func requiresFocusChange(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition,
+                                    target: InputTargetClass? = nil) -> Bool {
+        !sideEffects(route, kind, condition, target: target).isEmpty
     }
 
     /// Whether focus must be handed back to Dropy after sending.
-    public func needsHandback(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition) -> Bool {
-        sideEffects(route, kind, condition).contains(where: \.needsHandback)
+    public func needsHandback(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition,
+                              target: InputTargetClass? = nil) -> Bool {
+        sideEffects(route, kind, condition, target: target).contains(where: \.needsHandback)
     }
 
-    public func allows(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition, policy: InputPolicy) -> Bool {
-        policy.allows(route) && sideEffects(route, kind, condition).isSubset(of: policy.allowedSideEffects)
+    public func allows(_ route: InputRoute, _ kind: InputKind, _ condition: SourceCondition, policy: InputPolicy,
+                       target: InputTargetClass? = nil) -> Bool {
+        policy.allows(route) && sideEffects(route, kind, condition, target: target).isSubset(of: policy.allowedSideEffects)
     }
 
-    /// Kinds with at least one verified route for the condition under the policy.
-    public func verifiedKinds(in condition: SourceCondition, policy: InputPolicy) -> Set<InputKind> {
-        Set(InputKind.allCases.filter { kind in
-            InputRoute.allCases.contains { allows($0, kind, condition, policy: policy) && verdict($0, kind, condition) == .verified }
+    /// Element classes for which the kind has a verified, allowed route.
+    public func verifiedTargets(_ kind: InputKind, in condition: SourceCondition, policy: InputPolicy) -> Set<InputTargetClass> {
+        Set(InputTargetClass.allCases.filter { target in
+            InputRoute.allCases.contains {
+                allows($0, kind, condition, policy: policy, target: target)
+                    && verdict($0, kind, condition, target: target) == .verified
+            }
         })
+    }
+
+    /// Kinds with at least one verified route for the condition under the policy, for
+    /// some element class.
+    public func verifiedKinds(in condition: SourceCondition, policy: InputPolicy) -> Set<InputKind> {
+        Set(InputKind.allCases.filter { !verifiedTargets($0, in: condition, policy: policy).isEmpty })
     }
 }
 
@@ -284,32 +326,35 @@ public enum InputPlanner {
     /// next; every candidate targets the exact window.
     public static func candidates(_ kind: InputKind, selectedWindowID: UInt32, resolution: InputTargetResolution,
                                   condition: SourceCondition, capabilities: InputCapabilities,
-                                  policy: InputPolicy) -> Result<[InputRoute], InputRefusal> {
+                                  policy: InputPolicy, target: InputTargetClass? = nil) -> Result<[InputRoute], InputRefusal> {
         switch decide(kind, selectedWindowID: selectedWindowID, resolution: resolution, condition: condition,
-                      capabilities: capabilities, policy: policy) {
+                      capabilities: capabilities, policy: policy, target: target) {
         case .refuse(let refusal): return .failure(refusal)
         case .send:
             return .success(routeOrder(for: kind).filter {
-                capabilities.allows($0, kind, condition, policy: policy) && capabilities.verdict($0, kind, condition) == .verified
+                capabilities.allows($0, kind, condition, policy: policy, target: target)
+                    && capabilities.verdict($0, kind, condition, target: target) == .verified
             })
         }
     }
 
+    /// `target` is the element class under the pointer, for pointer kinds; the route must
+    /// be verified for that class.
     public static func decide(_ kind: InputKind, selectedWindowID: UInt32, resolution: InputTargetResolution,
                               condition: SourceCondition, capabilities: InputCapabilities,
-                              policy: InputPolicy) -> InputDecision {
+                              policy: InputPolicy, target: InputTargetClass? = nil) -> InputDecision {
         switch resolution {
         case .ambiguous: return .refuse(.ambiguousTarget)
         case .unreachable(let diagnosis): return .refuse(.targetUnreachable(diagnosis))
         case .exact(let windowID):
             guard windowID == selectedWindowID else { return .refuse(.targetChanged) }
         }
-        let allowed = routeOrder(for: kind).filter { capabilities.allows($0, kind, condition, policy: policy) }
-        if let route = allowed.first(where: { capabilities.verdict($0, kind, condition) == .verified }) {
-            return .send(route, handBackFocus: capabilities.needsHandback(route, kind, condition))
+        let allowed = routeOrder(for: kind).filter { capabilities.allows($0, kind, condition, policy: policy, target: target) }
+        if let route = allowed.first(where: { capabilities.verdict($0, kind, condition, target: target) == .verified }) {
+            return .send(route, handBackFocus: capabilities.needsHandback(route, kind, condition, target: target))
         }
         // Report the risk when every allowed route that was actually tried hit the wrong window.
-        let tried = allowed.map { capabilities.verdict($0, kind, condition) }
+        let tried = allowed.map { capabilities.verdict($0, kind, condition, target: target) }
             .filter { $0 != .untested && $0 != .notApplicable }
         if !tried.isEmpty, tried.allSatisfy({ $0 == .wrongWindowObserved }) { return .refuse(.wrongWindowRisk) }
         return .refuse(.notVerified)

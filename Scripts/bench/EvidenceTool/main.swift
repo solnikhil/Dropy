@@ -1,6 +1,9 @@
 // Turns InputProbe results into the input evidence Dropy ships (Resources/InputEvidence.json).
 //
-//   EvidenceTool <out.json> <bundle-id> <app-version|-> <report-path> <results.jsonl> [<bundle-id> ...]
+//   EvidenceTool <out.json> <bundle-id> <app-version|-> <report-path> <results.jsonl>[@target] [<bundle-id> ...]
+//
+// `@pressable` or `@text` names the element class that file's clicks were aimed at (a
+// button, or caret placement in text), for records that do not carry "target".
 //
 // Only records written by a probe that recorded side effects ("sideEffectsRecorded": true)
 // are accepted; older records cannot prove that nothing else changed. Setup failures
@@ -22,7 +25,9 @@ let kinds: [String: InputKind] = ["type": .text, "click": .pointerClick, "scroll
 let focusStates: [String: FocusState] = ["aKey": .targetKey, "bKey": .otherWindowKey, "appInactive": .appInactive]
 
 /// Nil for records that are not trials.
-func trial(_ record: [String: Any]) -> InputTrial? {
+/// `clickTarget` is the element class a results file aimed its clicks at, when its records
+/// do not say (`<results.jsonl>@pressable`, `@text`).
+func trial(_ record: [String: Any], clickTarget: InputTargetClass? = nil) -> InputTrial? {
     guard record["sideEffectsRecorded"] as? Bool == true,
           let route = (record["route"] as? String).flatMap({ routes[$0] }),
           let kind = (record["action"] as? String).flatMap({ kinds[$0] }),
@@ -48,7 +53,10 @@ func trial(_ record: [String: Any]) -> InputTrial? {
         effects.insert(.unclassifiedFocusChange)
     }
     if route == .activateAndPost { effects.insert(.pointer) }
-    return InputTrial(route: route, kind: kind, condition: condition, focus: focus, outcome: outcome, sideEffects: effects)
+    let target = (record["target"] as? String).flatMap(InputTargetClass.init(rawValue:))
+        ?? (kind == .pointerClick ? clickTarget : nil)
+    return InputTrial(route: route, kind: kind, condition: condition, focus: focus, outcome: outcome, sideEffects: effects,
+                      target: target)
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -64,6 +72,9 @@ if args == ["self-test"] {
     precondition(trial(record(["outcome": "unsafeModifiers"]))?.outcome == .noEffect)
     precondition(trial(record(["outcome": "partialEffect(noInputEvent)"]))?.outcome == .noEffect, "a partial edit is not a pass")
     precondition(trial(record(["route": "axValue", "action": "type"])) == nil, "candidate routes are not evidence")
+    precondition(trial(record([:]), clickTarget: .pressable)?.target == .pressable, "a file's click target applies to clicks")
+    precondition(trial(record(["action": "scroll"]), clickTarget: .pressable)?.target == nil, "only clicks carry a target")
+    precondition(trial(record(["target": "text"]), clickTarget: .pressable)?.target == .text, "a record's own target wins")
     precondition(trial(record(["focusChanges": ["becameKey"]]))?.sideEffects == [.sourceKeyWindow])
     precondition(trial(record(["focusChanges": ["appActive", "becameKey"]]))?.sideEffects == [.sourceKeyWindow, .frontmostApp])
     precondition(trial(record(["focusChangedDuringTrial": true]))?.sideEffects == [.unclassifiedFocusChange])
@@ -89,13 +100,20 @@ guard args.count >= 5, (args.count - 1) % 4 == 0 else {
 var sources: [InputEvidence.Source] = []
 var skipped = 0
 for index in stride(from: 1, to: args.count, by: 4) {
-    guard let text = try? String(contentsOfFile: args[index + 3], encoding: .utf8) else { fail("cannot read \(args[index + 3])") }
+    let spec = args[index + 3].split(separator: "@", maxSplits: 1).map(String.init)
+    let path = spec[0]
+    var clickTarget: InputTargetClass?
+    if spec.count == 2 {
+        guard let parsed = InputTargetClass(rawValue: spec[1]) else { fail("unknown click target \(spec[1])") }
+        clickTarget = parsed
+    }
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { fail("cannot read \(path)") }
     let records = text.split(separator: "\n").compactMap {
         try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
     }
-    let trials = records.compactMap(trial)
+    let trials = records.compactMap { trial($0, clickTarget: clickTarget) }
     skipped += records.count - trials.count
-    guard !trials.isEmpty else { fail("\(args[index + 3]): no trials with recorded side effects") }
+    guard !trials.isEmpty else { fail("\(path): no trials with recorded side effects") }
     // Trials that ran with AXManualAccessibility on are only valid when Dropy does the same.
     let manual = records.contains { $0["axManualAccessibility"] as? Bool == true }
     sources.append(.init(bundleIdentifier: args[index], appVersion: args[index + 1] == "-" ? nil : args[index + 1],

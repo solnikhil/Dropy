@@ -53,6 +53,7 @@ rows=()
 owned_textedit=false
 
 cleanup() {
+  [[ "${owned_safari:-false}" == true ]] && { osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true; owned_safari=false; }
   [[ -n "${electron_pid:-}" ]] && { kill "$electron_pid" 2>/dev/null || true; electron_pid=""; }
   if [[ "$owned_textedit" == true ]]; then
     osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
@@ -327,6 +328,83 @@ electron_case() {
 electron_pid=""
 electron_case
 
+# Safari: two windows of a local copy of the text page. Evidence verifies Accessibility
+# presses on page buttons only; a click on a text field and typing must be refused, and
+# window B must never change.
+owned_safari=false
+safari_case() {
+  pgrep -xq Safari && { record Safari all "-" "NOT RUN: Safari was already running"; return; }
+  for n in A B; do cp "$repo_dir/Scripts/bench/text.html" "$work/dropy-text-$n.html"; done
+  owned_safari=true
+  open -a Safari "$work/dropy-text-A.html" --args -ApplePersistenceIgnoreState YES; sleep 3
+  osascript -e "tell application \"Safari\" to make new document with properties {URL:\"file://$work/dropy-text-B.html\"}" >/dev/null
+  sleep 3
+  osascript <<APPLESCRIPT >/dev/null
+tell application "Safari"
+  repeat with w in (every window)
+    set u to ""
+    try
+      set u to URL of current tab of w
+    end try
+    if u does not contain "dropy-text-" then close w
+  end repeat
+  repeat with w in (every window)
+    if URL of current tab of w contains "dropy-text-A" then set bounds of w to {60, 120, 700, 640}
+    if URL of current tab of w contains "dropy-text-B" then
+      set bounds of w to {760, 120, 1400, 640}
+      set index of w to 1
+    end if
+  end repeat
+end tell
+APPLESCRIPT
+  sleep 1
+  local pid="$(lsappinfo info -only pid -app com.apple.Safari | grep -oE '[0-9]+' | head -1)"
+  local ids=(${=$("$probe" windows "$pid")}) wa wb
+  (( ${#ids} == 2 )) || { record Safari all "-" "NOT RUN: expected two Safari windows, found ${#ids}"; return; }
+  local first=(${=$("$tool" server "${ids[1]}")})
+  if (( ${first[1]%.*} < 400 )); then wa=${ids[1]}; wb=${ids[2]}; else wa=${ids[2]}; wb=${ids[1]}; fi
+  local json='{"trigger":"shortcut","openBehavior":"direct","dismissBehavior":"manual","contentMode":"fit","sizePreset":"wide","selectedBundleIdentifier":"com.apple.Safari","lastUsedBundleIdentifier":"com.apple.Safari","interactivePreview":true}'
+  defaults write "$prefs_domain" "$prefs_key" -data "$(print -rn -- "$json" | xxd -p | tr -d '\n')"
+  local log="$logs/dropy-safari.log"
+  DROPY_DEBUG_WINDOW_ID="$wa" DROPY_DEBUG_QUIT_AFTER=40 "$dropy" --show > "$log" 2>&1 &
+  dropy_pid=$!
+  for i in {1..60}; do grep -q 'Dropy input: preview=' "$log" && break; sleep 0.25; done
+  if ! grep -q 'Dropy input: preview=' "$log"; then
+    record Safari all "-" "NOT RUN: interactive preview not ready"
+  else
+    sleep 1
+    preview="$(grep -oE 'preview=[0-9.,-]+' "$log" | tail -1 | cut -d= -f2)"
+    print -r -- "  Safari: label=\"$(grep -oE 'support=.*' "$log" | tail -1 | cut -d= -f2-)\""
+    local button="$("$probe" element "$pid" "$wa" t-button)" field="$("$probe" element "$pid" "$wa" t-input)"
+    window_size="$(print -r -- "$button" | grep -oE 'size=[0-9]+x[0-9]+' | cut -d= -f2 | tr x ,)"
+    local at=(${(s:,:)$(print -r -- "$button" | grep -oE 'at=[0-9,]+' | cut -d= -f2)})
+    local fat=(${(s:,:)$(print -r -- "$field" | grep -oE 'at=[0-9,]+' | cut -d= -f2)})
+    local sa="$("$probe" pagestatus "$pid" "$wa")" sb="$("$probe" pagestatus "$pid" "$wb")" point
+    point=($(preview_point "${at[1]}" "${at[2]}"))
+    "$hid" click "${point[1]}" "${point[2]}"; sleep 1
+    local pa="$("$probe" pagestatus "$pid" "$wa" | grep -oE '"presses":[0-9]+')" pb="$("$probe" pagestatus "$pid" "$wb" | grep -oE '"presses":[0-9]+')"
+    [[ "$pa" == '"presses":1' && "$pb" == '"presses":0' ]] \
+      && record Safari "button click" PASS "A $pa, B $pb; $(grep -oE 'kind=pointerClick [^ ]+ route=[a-zA-Z]+ target=[a-z]+' "$log" | tail -1)" \
+      || record Safari "button click" FAIL "A $pa, B $pb; $(grep -E 'kind=pointerClick' "$log" | tail -1 | cut -c 60-)"
+    point=($(preview_point "${fat[1]}" "${fat[2]}"))
+    "$hid" click "${point[1]}" "${point[2]}"; sleep 0.6
+    for key in 2 7 26; do "$hid" key "$key"; done
+    sleep 1
+    local ta="$("$probe" pagestatus "$pid" "$wa" | grep -oE '"input":"[^"]*"')" tb="$("$probe" pagestatus "$pid" "$wb" | grep -oE '"input":"[^"]*"')"
+    local refusal="$(grep -oE 'kind=pointerClick [^ ]+ refused=[a-zA-Z]+ target=text' "$log" | tail -1)"
+    [[ "$ta" == '"input":""' && "$tb" == '"input":""' && -n "$refusal" ]] \
+      && record Safari "text click and typing refused" PASS "A and B inputs unchanged; $refusal; $(grep -oE 'kind=text [^ ]+ refused=[a-zA-Z]+' "$log" | tail -1)" \
+      || record Safari "text click and typing refused" FAIL "A $ta B $tb; ${refusal:-click not refused}"
+    local front="$("$hid" frontmost)"
+    [[ "$front" == org.dropy.app ]] && record Safari "focus stays with Dropy" PASS "frontmost=$front" \
+      || record Safari "focus stays with Dropy" FAIL "frontmost=$front"
+  fi
+  kill "$dropy_pid" 2>/dev/null || true; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
+  osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true
+  owned_safari=false
+}
+safari_case
+
 {
   print -r -- "# Dropy interactive preview checks"
   print
@@ -351,7 +429,7 @@ print -r -- "Report saved to $report"
 # A report containing failures or skipped checks is not a successful verification run.
 (( router_status == 0 )) && ! grep -q '^FAIL' "$logs/router-regressions.txt" \
   || { print -u2 "A router regression failed; see $report"; exit 1; }
-(( ${#rows} == 18 )) || { print -u2 "Expected 18 completed checks; see $report"; exit 1; }
+(( ${#rows} == 21 )) || { print -u2 "Expected 21 completed checks; see $report"; exit 1; }
 for row in $rows; do
   [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
 done
