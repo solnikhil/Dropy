@@ -47,10 +47,27 @@ struct CaptureCounts {
 }
 
 /// Carries one complete frame's timestamps from the capture callback to presentation.
-struct FrameStamp: Sendable {
+final class FrameStamp: @unchecked Sendable {
     let displayMilliseconds: Double?
     let callbackMilliseconds: Double
     let recorder: CaptureMetricsRecorder
+    private let outcomeLock = NSLock()
+    private var finalOutcome = false
+
+    init(displayMilliseconds: Double?, callbackMilliseconds: Double, recorder: CaptureMetricsRecorder) {
+        self.displayMilliseconds = displayMilliseconds
+        self.callbackMilliseconds = callbackMilliseconds
+        self.recorder = recorder
+    }
+
+    /// A frame can retry several drawables but has only one final outcome.
+    func claimFinalOutcome() -> Bool {
+        outcomeLock.withLock {
+            guard !finalOutcome else { return false }
+            finalOutcome = true
+            return true
+        }
+    }
 }
 
 /// Thread-safe per-stream metrics. The capture queue, the main thread and Metal's
@@ -121,9 +138,10 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
     func recordPresented(_ stamp: FrameStamp, presentedTime: CFTimeInterval) {
         lock.withLock {
             guard presentedTime > 0 else {
-                metrics.notPresented += 1
+                metrics.drawableMisses += 1
                 return
             }
+            guard stamp.claimFinalOutcome() else { return }
             let presented = presentedTime * 1_000 - metrics.presentClockOffsetMilliseconds
             metrics.recordPresented(
                 callbackToPresent: presented - stamp.callbackMilliseconds,
@@ -131,7 +149,11 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
         }
     }
 
-    func recordNotPresented() { lock.withLock { metrics.notPresented += 1 } }
+    func recordNotPresented(_ stamp: FrameStamp) {
+        lock.withLock {
+            if stamp.claimFinalOutcome() { metrics.notPresented += 1 }
+        }
+    }
 
     /// Logs the summary once. Later calls, e.g. a second stop path, are ignored.
     func finish(reason: String) {

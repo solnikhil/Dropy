@@ -15,6 +15,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private var visibilityGeneration = UUID()
     /// Timestamps for the frame not yet drawn; attached to exactly one drawable.
     private var pendingStamp: FrameStamp?
+    private var pendingGeometry: CaptureGeometry?
     /// Increments per presented frame so a late callback can tell whether it is stale.
     private var frameSequence = 0
     private var presentRetries = 0
@@ -25,7 +26,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     /// which the next captured frame reached the screen.
     var onNextPresented: (@MainActor (CFTimeInterval) -> Void)?
     var contentMode: DropyCore.ContentMode = .fit {
-        didSet { setNeedsDisplay(bounds) }
+        didSet {
+            guard contentMode != oldValue else { return }
+            invalidatePresentedMapping()
+            setNeedsDisplay(bounds)
+        }
     }
 
     // MARK: Interaction (M3 prototype)
@@ -48,10 +53,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
     /// Stream geometry of the frame on screen; cleared with the frame.
     private(set) var presentedGeometry: CaptureGeometry?
+    private var drawnPixelSize: CGSize?
 
     /// The frame on screen and the geometry it was captured with, for preview input.
     var presentedFrame: PresentedFrame? {
-        presentedPixelSize.map { PresentedFrame(pixelSize: $0, geometry: presentedGeometry) }
+        drawnPixelSize.map { PresentedFrame(pixelSize: $0, geometry: presentedGeometry) }
     }
 
     private func topLeftPoint(_ event: NSEvent) -> CGPoint {
@@ -174,7 +180,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     func present(_ pixelBuffer: CVPixelBuffer, stamp: FrameStamp? = nil, geometry: CaptureGeometry? = nil) {
         precondition(Thread.isMainThread)
         // A frame replaced before any draw never reaches the screen.
-        pendingStamp?.recorder.recordNotPresented()
+        if let pendingStamp { pendingStamp.recorder.recordNotPresented(pendingStamp) }
         pendingStamp = stamp
         frameSequence += 1
         presentRetries = 0
@@ -182,7 +188,9 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         drawableRetryTask = nil
         drawableRetryDelayMilliseconds = 16
         currentPixelBuffer = pixelBuffer
-        presentedGeometry = geometry
+        presentedGeometry = nil
+        drawnPixelSize = nil
+        pendingGeometry = geometry
         // Draw now instead of waiting for the next display cycle; the deferred
         // path showed about two refreshes of avoidable frame age.
         draw()
@@ -200,7 +208,9 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         precondition(Thread.isMainThread)
         currentPixelBuffer = nil
         presentedGeometry = nil
-        pendingStamp?.recorder.recordNotPresented()
+        drawnPixelSize = nil
+        pendingGeometry = nil
+        if let pendingStamp { pendingStamp.recorder.recordNotPresented(pendingStamp) }
         pendingStamp = nil
         frameSequence += 1
         drawableRetryTask?.cancel()
@@ -212,7 +222,10 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
     private func retryPresent(_ stamp: FrameStamp, sequence: Int) {
         guard sequence == frameSequence, pendingStamp == nil,
-              currentPixelBuffer != nil else { return }
+              currentPixelBuffer != nil else {
+            stamp.recorder.recordNotPresented(stamp)
+            return
+        }
         presentRetries += 1
         pendingStamp = stamp
         if presentRetries <= Self.fastPresentRetries { setNeedsDisplay(bounds) }
@@ -236,7 +249,15 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         }
     }
 
+    /// A changed viewport must reach the screen before input uses its mapping.
+    private func invalidatePresentedMapping() {
+        visibilityGeneration = UUID()
+        presentedGeometry = nil
+        drawnPixelSize = nil
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        invalidatePresentedMapping()
         setNeedsDisplay(bounds)
     }
 
@@ -291,6 +312,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         encoder.setFragmentTexture(texture, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
+        let geometry = pendingGeometry
+        let pixels = CGSize(width: sourceWidth, height: sourceHeight)
         let stamp = pendingStamp
         pendingStamp = nil
         let generation = visibilityGeneration
@@ -308,7 +331,9 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
             guard presentedTime > 0 else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.visibilityGeneration == generation,
-                      self.currentPixelBuffer != nil else { return }
+                      self.currentPixelBuffer != nil, self.frameSequence == sequence else { return }
+                self.presentedGeometry = geometry
+                self.drawnPixelSize = pixels
                 self.concealmentView.isHidden = true
                 if armed, let reveal = self.onNextPresented {
                     self.onNextPresented = nil
@@ -338,7 +363,9 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
                                   texture2d<float> image [[texture(0)]]) {
         constexpr sampler sampleFilter(coord::normalized, address::clamp_to_edge,
                                        filter::linear);
-        return image.sample(sampleFilter, in.uv);
+        // This preview is opaque. Only RGB reaches the screen; varying window-edge
+        // alpha must not falsely wake unchanged content in the capture comparison.
+        return float4(image.sample(sampleFilter, in.uv).rgb, 1.0);
     }
     """
 }

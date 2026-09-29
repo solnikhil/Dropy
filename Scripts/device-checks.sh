@@ -27,6 +27,8 @@
 #   ONLY=electron Scripts/device-checks.sh --skip-benchmark  the same against the disposable Electron
 #                 fixture (Scripts/bench/ElectronFixture, throwaway profile) showing the animation page.
 #
+#   CHECK_OTHER_DESKTOP=1 adds normal/crash parked recovery on another desktop.
+#
 # Needs a terminal with Screen Recording and Accessibility permission, the display
 # awake, and TextEdit, Safari and the fixture not running. Every window is restored afterwards.
 set -euo pipefail
@@ -66,6 +68,8 @@ fixture_pid=""
 owned_apps=()
 rows=()
 prefs_touched=no
+space_return_key=""
+space_home=""
 
 cleaned_up=no
 cleanup() {
@@ -74,6 +78,7 @@ cleanup() {
   stop_dropy
   stop_fixture
   stop_electron
+  return_test_desktop
   # A placement left behind by an interrupted check is undone by one Dropy launch.
   if [[ -f "$journal" ]]; then
     DROPY_DEBUG_QUIT_AFTER=3 "$dropy" >/dev/null 2>&1 || true
@@ -357,6 +362,84 @@ start_fixture() {
 
 # Moves the fixture window to another desktop and waits for it to report the move.
 # Returns 1 when there is no other desktop.
+# Return only the desktop change this check made; never drive an app's UI.
+return_test_desktop() {
+  [[ -n "$space_return_key" ]] || return 0
+  "$build_dir/HIDTool" key "$space_return_key" ctrl
+  sleep 1.5
+  space_return_key=""
+  [[ "${$(desktop_state)#active=}" == "$space_home "* ]] || {
+    print -u2 "Could not return to the starting desktop; stop device verification."
+    return 1
+  }
+}
+
+# Recovery while the source lives on another desktop. Electron moves its own
+# disposable window; TextEdit stays put while the harness changes desktop and
+# returns afterwards. Both normal dismissal and a killed Dropy are checked.
+source_space_recovery() {
+  local bundle="$1" pid window before after log outcome result active direction
+  pid="$(pid_of "$bundle")"; window="$("$tool" find "$pid")"
+  before="$("$tool" frame "$pid" "$window")"
+  set_direct_open "$bundle"
+  if [[ "$bundle" == com.apple.TextEdit ]]; then
+    swiftc -O -swift-version 6 -o "$build_dir/HIDTool" "$repo_dir/Scripts/bench/HIDTool/main.swift"
+  fi
+  for crash in no yes; do
+    log="$work_dir/$bundle-other-desktop-$crash.log"
+    local hold=8; [[ "$crash" == yes ]] && hold=30
+    start_placement parked "$window" "$log" "$hold" || { stop_dropy; record "$bundle" "other desktop ($crash crash)" - - FAILED; return; }
+    if [[ "$bundle" == org.dropy.electronfixture ]]; then
+      print space:other >> "$work_dir/electron-commands.txt"
+      sleep 1
+      local moved="$(grep '"kind":"space"' "$work_dir/electron.jsonl" | tail -1)"
+      if [[ "$moved" == *'"error"'* || -z "$moved" ]]; then
+        stop_dropy; print space:home >> "$work_dir/electron-commands.txt"
+        record "$bundle" "other desktop ($crash crash)" - "$moved" "NOT RUN: needs another desktop"; return
+      fi
+    else
+      space_home="${${$(desktop_state)#active=}%% *}"
+      for direction in 124 123; do
+        "$build_dir/HIDTool" key "$direction" ctrl; sleep 1.5
+        active="${${$(desktop_state)#active=}%% *}"
+        if [[ "$active" != "$space_home" ]]; then
+          [[ "$direction" == 124 ]] && space_return_key=123 || space_return_key=124
+          break
+        fi
+      done
+      if [[ -z "$space_return_key" ]]; then
+        stop_dropy; record "$bundle" "other desktop ($crash crash)" - - "NOT RUN: cannot switch desktop"; return
+      fi
+    fi
+    if ! "$tool" snapshot "$pid" "$window" | python3 -c 'import json,sys; d=json.load(sys.stdin); w=next((w for w in d.get("serverWindows",[]) if w["id"]==int(sys.argv[1])),{}); a=set(d.get("activeSpaces",[])); b=set(w.get("spaces",[])); sys.exit(0 if a and b and a.isdisjoint(b) else 1)' "$window"; then
+      stop_dropy
+      [[ "$bundle" == org.dropy.electronfixture ]] && print space:home >> "$work_dir/electron-commands.txt"
+      return_test_desktop
+      record "$bundle" "other desktop ($crash crash)" - - "FAILED: source is not on another desktop"
+      return 1
+    fi
+    snapshot "$bundle-other-desktop-before-restore-$crash" "$pid" "$window"
+    if [[ "$crash" == yes ]]; then
+      kill -9 "$dropy_pid"; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
+      DROPY_DEBUG_QUIT_AFTER=5 "$dropy" > "$log.relaunch.log" 2>&1 || true
+      outcome="$(grep -oE "placement recovery: mode=parked window=$window outcome=[^ ]+" "$log.relaunch.log" | tail -1 || true)"
+    else
+      wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
+      outcome="$(grep -oE 'restore=[^ ]+' "$log" | tail -1 || true)"
+    fi
+    after="$("$tool" frame "$pid" "$window" 2>/dev/null || true)"
+    result="restored on another desktop"
+    frames_match "$before" "$after" && [[ "$outcome" == *restored && ! -f "$journal" ]] || result="FAILED: $outcome; $after"
+    record "$bundle" "parked recovery on another desktop (crash=$crash)" - "$outcome" "$result"
+    if [[ "$bundle" == org.dropy.electronfixture ]]; then
+      print space:home >> "$work_dir/electron-commands.txt"; sleep 1
+    else
+      return_test_desktop || return 1
+    fi
+    [[ "$result" != FAILED* ]] || return 1
+  done
+}
+
 fixture_to_other_space() {
   local out="$work_dir/fixture.out" reports now active
   reports="$(grep -c 'space=' "$out")"
@@ -485,6 +568,7 @@ if [[ "$only" == all || "$only" == textedit ]]; then
   if [[ ! -f "$journal" ]] && "$tool" axcheck "$(pid_of com.apple.TextEdit)" >/dev/null 2>&1; then
     user_move_check
     crash_check
+    [[ "${CHECK_OTHER_DESKTOP:-0}" == 1 ]] && source_space_recovery com.apple.TextEdit
   else
     record com.apple.TextEdit "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
   fi
@@ -498,6 +582,7 @@ if [[ "$only" == all || "$only" == electron ]]; then
   if [[ ! -f "$journal" ]] && "$tool" axcheck "$electron_pid" >/dev/null 2>&1; then
     user_move_check org.dropy.electronfixture
     crash_check org.dropy.electronfixture
+    [[ "${CHECK_OTHER_DESKTOP:-0}" == 1 ]] && source_space_recovery org.dropy.electronfixture
   else
     record org.dropy.electronfixture "user move and crash recovery" "-" "$([[ -f $journal ]] && print 'journal still present' || print 'Accessibility unhealthy')" "skipped"
   fi
@@ -548,3 +633,9 @@ if [[ $run_benchmark == yes ]]; then
 fi
 
 print; cat "$report"; print; print -r -- "Report saved to $report"
+
+# Keep the report on failure, but never let an incomplete recovery run look passing.
+if (( ${#rows} == 0 )) || print -r -- "$rows" | grep -Eq 'FAILED|NOT RUN|NOT restored|LEAK:|skipped|stopped:|person switched desktop'; then
+  print -u2 "Device checks failed or were incomplete; see the report above."
+  exit 1
+fi

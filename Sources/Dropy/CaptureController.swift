@@ -15,6 +15,9 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     private var geometry: CaptureGeometry?
     /// The last frame sent toward the renderer, kept to detect unchanged frames.
     private var lastForwarded: CVPixelBuffer?
+    private var lastForwardedGeometry: CaptureGeometry?
+    private var diagnosticFrames = 0
+    private let logsGeometry = ProcessInfo.processInfo.environment["DROPY_DEBUG_FRAME_GEOMETRY"] == "1"
     private var scheduled = false
     private var invalidated = false
     private weak var renderer: MetalFrameView?
@@ -39,6 +42,8 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         guard type == .screen else { return }
         lock.lock()
         let previous = invalidated ? nil : lastForwarded
+        let configuredGeometry = geometry
+        let previousGeometry = lastForwardedGeometry
         let active = !invalidated
         lock.unlock()
         guard active,
@@ -48,7 +53,25 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         // Unchanged content skips the main-thread handoff, the draw and the
         // compositor work entirely. The comparison runs outside the lock; stream
         // callbacks are serial, so only this queue writes `lastForwarded`.
-        if let previous, Self.identical(previous, image) {
+        // Geometry must come from this sample's metadata, not the moment at which
+        // updateConfiguration happened to finish. Old-size frames can arrive later,
+        // including when a proportional resize leaves the output dimensions unchanged.
+        let info = (CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            as? [[SCStreamFrameInfo: Any]])?.first
+        let rect = (info?[.contentRect] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
+        let scale = info?[.contentScale] as? CGFloat
+        let density = info?[.scaleFactor] as? CGFloat
+        let measuredGeometry = configuredGeometry.flatMap { config in
+            CaptureGeometry.measured(windowID: config.windowID, pixelSize: config.pixelSize,
+                                     contentRect: rect, contentScale: scale, scaleFactor: density)
+        }
+        if logsGeometry, diagnosticFrames < 6 {
+            diagnosticFrames += 1
+            NSLog("Dropy frame geometry: rect=%@ contentScale=%@ density=%@ configured=%@ measured=%@",
+                  String(describing: rect), String(describing: scale), String(describing: density),
+                  String(describing: configuredGeometry), String(describing: measuredGeometry))
+        }
+        if let previous, previousGeometry == measuredGeometry, Self.identical(previous, image) {
             metrics.recordUnchanged()
             consecutiveUnchanged += 1
             if consecutiveUnchanged == Self.idleThreshold, !sourceIdle {
@@ -67,8 +90,9 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         lock.lock()
         guard !invalidated else { lock.unlock(); return }
         lastForwarded = image
+        lastForwardedGeometry = measuredGeometry
         if latest != nil { metrics.recordMailboxDrop() }
-        latest = (image, stamp, geometry)
+        latest = (image, stamp, measuredGeometry)
         let shouldSchedule = !scheduled
         if shouldSchedule { scheduled = true }
         lock.unlock()
@@ -116,7 +140,7 @@ extension FrameMailbox {
               let b = CVPixelBufferGetBaseAddress(second) else { return false }
         return FrameComparison.identical(a, rowStride: CVPixelBufferGetBytesPerRow(first),
                                          b, rowStride: CVPixelBufferGetBytesPerRow(second),
-                                         bytesPerRow: width * 4, rows: height)
+                                         bytesPerRow: width * 4, rows: height, ignoringAlpha: true)
     }
 }
 

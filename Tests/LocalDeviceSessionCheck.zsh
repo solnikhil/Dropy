@@ -21,6 +21,17 @@ DROPY_DEVICE_SESSION="" zsh -c "source '$repo_dir/Scripts/lib/device-session.zsh
 device_session_end
 [[ ! -e "$DROPY_DEVICE_LOCK" ]] || fail "lock not released"
 
+# An initializer holding the kernel guard is protected even before owner publication.
+zmodload zsh/system
+( : >> "$device_lock.guard" )
+zsystem flock -t 0 -f guard "$device_lock.guard"
+mkdir "$device_lock"
+DROPY_DEVICE_SESSION="" zsh -c "source '$repo_dir/Scripts/lib/device-session.zsh'; device_session_begin racing" 2>/dev/null \
+  && fail "a racing initializer reclaimed a live empty lock"
+[[ -d "$device_lock" ]] || fail "initializer lock removed"
+rmdir "$device_lock"
+zsystem flock -u "$guard"
+
 # A killed session's preference change is undone by the next session.
 defaults write "$DROPY_PREFS_DOMAIN" "$key" original
 crash

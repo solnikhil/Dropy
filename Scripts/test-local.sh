@@ -84,3 +84,9 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 
 # Desktop-session lock and preference recovery (throwaway lock and preferences domain).
 "$repo_dir/Tests/LocalDeviceSessionCheck.zsh"
+
+# Drawable retries and racing callbacks must produce one final frame outcome.
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/FrameStampChecks" \
+  "$repo_dir/Tests/LocalFrameStampCheck.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift"
+"$build_dir/FrameStampChecks"

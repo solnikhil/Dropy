@@ -37,4 +37,19 @@ final class FrameComparisonTests: XCTestCase {
         XCTAssertFalse(compare(bytes, stride: 8, bytes, stride: 8,
                                bytesPerRow: 4, rows: Int.max))
     }
+    func testOpaqueComparisonIgnoresOnlyAlpha() {
+        let a: [UInt8] = [0, 0, 0, 1, 10, 20, 30, 255]
+        let alpha: [UInt8] = [0, 0, 0, 14, 10, 20, 30, 3]
+        let color: [UInt8] = [1, 0, 0, 14, 10, 20, 30, 3]
+        a.withUnsafeBytes { first in
+            alpha.withUnsafeBytes { second in
+                XCTAssertFalse(FrameComparison.identical(first.baseAddress!, rowStride: 8, second.baseAddress!, rowStride: 8, bytesPerRow: 8, rows: 1))
+                XCTAssertTrue(FrameComparison.identical(first.baseAddress!, rowStride: 8, second.baseAddress!, rowStride: 8, bytesPerRow: 8, rows: 1, ignoringAlpha: true))
+            }
+            color.withUnsafeBytes { second in
+                XCTAssertFalse(FrameComparison.identical(first.baseAddress!, rowStride: 8, second.baseAddress!, rowStride: 8, bytesPerRow: 8, rows: 1, ignoringAlpha: true))
+            }
+        }
+    }
+
 }

@@ -70,6 +70,8 @@ public struct CaptureSessionMetrics: Sendable {
     public var presented = 0
     /// Frames handed to the renderer that were never shown, e.g. a superseded drawable.
     public var notPresented = 0
+    /// Drawable attempts never shown, including attempts whose frame later succeeded.
+    public var drawableMisses = 0
     /// Frame display time to delivery in Dropy's callback. Both are host mach time.
     public var captureToCallback: [Double] = []
     /// Callback to on-glass presentation. Host mach time against Core Animation time.
@@ -125,6 +127,7 @@ public struct CaptureSessionMetrics: Sendable {
             "mailboxDrops=\(mailboxDrops)",
             "presented=\(presented)",
             "notPresented=\(notPresented)",
+            "drawableMisses=\(drawableMisses)",
             "captureToCallback=[\(latency(captureToCallback, offset: 0))]",
             "callbackToPresent=[\(latency(callbackToPresent, offset: presentClockOffsetMilliseconds))]",
             "frameAge=[\(latency(frameAge, offset: presentClockOffsetMilliseconds))]",

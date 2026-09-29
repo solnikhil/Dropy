@@ -114,6 +114,7 @@ phase() {
   sleep 3
   if [[ -n "$window" ]] && ! grep -q "capture started: window=$window" "$log"; then
     print -u2 "phase $name: capture of window $window did not start"
+    return 1
   fi
   samples[$name]="$("$build_dir/Sampler" "$seconds" "dropy=$dropy_pid" "windowserver=$windowserver")"
   print -r -- "${samples[$name]}" > "$work_dir/samples-$name.txt"

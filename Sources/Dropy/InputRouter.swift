@@ -58,7 +58,7 @@ final class InputRouter {
     func forget(_ identity: WindowIdentity) { textTargets[identity] = nil }
 
     /// Processes whose Accessibility tree Dropy switched on.
-    private var manualAccessibility: Set<Int32> = []
+    private var manualAccessibility: [Int32: Date] = [:]
 
     /// Prepares a source for interaction. For apps whose evidence was recorded with
     /// `AXManualAccessibility` on (Electron), switches it on once per process, ahead of
@@ -66,11 +66,13 @@ final class InputRouter {
     /// changed for any other app.
     func prepare(_ identity: WindowIdentity) {
         guard evidence.requiresManualAccessibility(for: identity.bundleIdentifier, macOSMajor: macOSMajor),
-              !manualAccessibility.contains(identity.processID) else { return }
+              manualAccessibility[identity.processID] != identity.processLaunchDate,
+              let app = NSRunningApplication(processIdentifier: identity.processID),
+              app.launchDate == identity.processLaunchDate, app.bundleIdentifier == identity.bundleIdentifier else { return }
         let result = AXUIElementSetAttributeValue(AXUIElementCreateApplication(identity.processID),
                                                   "AXManualAccessibility" as CFString, kCFBooleanTrue)
         NSLog("Dropy input: manualAccessibility pid=%d result=%d", identity.processID, result.rawValue)
-        if result == .success { manualAccessibility.insert(identity.processID) }
+        if result == .success { manualAccessibility[identity.processID] = identity.processLaunchDate }
     }
 
     /// Where the source is now: parked by Dropy, minimized, on another desktop, or visible.
