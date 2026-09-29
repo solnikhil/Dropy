@@ -2,7 +2,7 @@
 
 Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app container around the MacBook notch. The intended experience is to reveal an existing app's live UI in a Dropy-owned overlay, work there, and dismiss the overlay without losing the app's session.
 
-**Current status: early native build, view-only by default.** Dropy can mirror a selected running window. An opt-in **Interactive preview (beta)** sends clicks, scrolling and typed text to the exact source window, but only for input verified on that app (currently TextEdit, scrolling in Safari, and clicks on buttons plus scrolling in a disposable Electron test app; no third-party Electron app is verified yet). It does not yet hide the app's original window outside experiments. The [roadmap](ROADMAP.md) makes those requirements explicit feasibility gates before a full-container claim.
+**Current status: early native build, view-only by default.** Dropy can mirror a selected running window. An opt-in **Interactive preview (beta)** sends clicks, scrolling and typed text to the exact source window, but only for input verified on that app (currently TextEdit; clicks on page buttons and scrolling in Safari; clicks on buttons and scrolling in a disposable Electron test app). Typing works only in TextEdit: no tested route types safely into a Safari or Electron window that is not focused. A scratch-profile VS Code stays view-only. It does not yet hide the app's original window outside experiments. The [roadmap](ROADMAP.md) makes those requirements explicit feasibility gates before a full-container claim.
 
 ## What works today
 
