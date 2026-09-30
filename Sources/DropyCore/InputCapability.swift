@@ -374,4 +374,10 @@ public enum InputPlanner {
 public enum InteractionSupport: Equatable, Sendable {
     case viewOnly
     case interactive(Set<InputKind>)
+
+    /// Whether this kind has a verified, allowed route for the source as it is now.
+    public func verifies(_ kind: InputKind) -> Bool {
+        guard case .interactive(let kinds) = self else { return false }
+        return kinds.contains(kind)
+    }
 }

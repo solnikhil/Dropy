@@ -62,6 +62,8 @@ public enum PreviewInputGate {
         case frameFromOtherWindow
         /// The drawn frame's geometry is stale or unknown; the source is being resized.
         case geometryChanging
+        /// A hand-off has given the real window the person's input; the preview sends none.
+        case handOffActive
     }
 
     /// Sizes within this many points are the same window size (rounding between the
@@ -75,7 +77,10 @@ public enum PreviewInputGate {
     /// The window size (points) to map through, when the drawn frame is certainly the
     /// selected window at its current size.
     public static func check(handler: WindowIdentity, selected: WindowIdentity?, frame: PresentedFrame?,
-                             sourceWindowSize: CGSize?) -> Result<CGSize, Refusal> {
+                             sourceWindowSize: CGSize?, handOffActive: Bool = false) -> Result<CGSize, Refusal> {
+        // The real window has the person's keyboard and pointer; sending a second copy
+        // of their input from the preview would duplicate or contradict it.
+        guard !handOffActive else { return .failure(.handOffActive) }
         guard let selected, selected == handler else { return .failure(.sourceChanged) }
         guard let frame, frame.pixelSize.width > 0, frame.pixelSize.height > 0 else { return .failure(.noFrame) }
         guard let geometry = frame.geometry else { return .failure(.geometryChanging) }

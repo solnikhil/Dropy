@@ -109,4 +109,85 @@ final class HandOffTests: XCTestCase {
         XCTAssertTrue(display.contains(restored.frame))
         XCTAssertEqual(plan.expected, restored)
     }
+
+    func testAnUnfinishedHandOffMustBeRecoveredBeforeAnotherStarts() throws {
+        var interrupted = entry()
+        interrupted.handOff = HandOffRecord(restoredTo: original, startedAt: launch)
+        XCTAssertEqual(start(entry: interrupted, current: parked), .failure(.placementUnresolved))
+        // Once recovery has cleared the record, the same window can be handed over again.
+        XCTAssertEqual(try start(entry: entry(), current: parked).get().reparkMode, .parked)
+    }
+
+    func testTheButtonAppearsOnlyWhereTheHandOffIsWorthItsCost() {
+        // Interactive preview on, a source on screen, and typing not verified there.
+        XCTAssertEqual(HandOff.offer(interactivePreview: true, capturing: true, typingVerified: false, active: false),
+                       .start(title: HandOff.startTitle))
+        // Typing already works in the preview: containment is not given up for nothing.
+        XCTAssertEqual(HandOff.offer(interactivePreview: true, capturing: true, typingVerified: true, active: false),
+                       .hidden)
+        XCTAssertEqual(HandOff.offer(interactivePreview: false, capturing: true, typingVerified: false, active: false),
+                       .hidden)
+        XCTAssertEqual(HandOff.offer(interactivePreview: true, capturing: false, typingVerified: false, active: false),
+                       .hidden)
+        // A running hand-off always offers its end, and says so, whatever else changed.
+        for interactive in [true, false] {
+            for capturing in [true, false] {
+                for verified in [true, false] {
+                    XCTAssertEqual(HandOff.offer(interactivePreview: interactive, capturing: capturing,
+                                                 typingVerified: verified, active: true),
+                                   .end(title: HandOff.endTitle, label: HandOff.label))
+                }
+            }
+        }
+    }
+
+    func testTheRecordIsWrittenOnlyForDropysOwnPlacement() throws {
+        let plan = try start(entry: entry(), current: parked).get()
+        let record = try XCTUnwrap(HandOff.record(plan, on: entry(), at: launch))
+        XCTAssertEqual(record.handOff, HandOffRecord(restoredTo: plan.expected, startedAt: launch))
+        // Everything else about the placement is left exactly as it was.
+        var expected = entry()
+        expected.handOff = record.handOff
+        XCTAssertEqual(record, expected)
+        // A window the person minimized, hid or moved themselves is not Dropy's placement:
+        // inventing a record for it would authorize undoing their own choice later.
+        var minimized = original
+        minimized.isMinimized = true
+        let unplaced = try start(entry: nil, current: minimized).get()
+        XCTAssertNil(HandOff.record(unplaced, on: nil, at: launch))
+    }
+
+    func testTheRecordCarriesNothingThatCouldRepark() throws {
+        // The placement to re-apply lives only in the plan held in memory. Nothing that
+        // reaches the disk can re-park a window the person was typing in.
+        let plan = try start(entry: entry(), current: parked).get()
+        XCTAssertEqual(plan.reparkMode, .parked)
+        let record = try XCTUnwrap(HandOff.record(plan, on: entry(), at: launch)?.handOff)
+        let encoded = try XCTUnwrap(String(data: JSONEncoder().encode(record), encoding: .utf8))
+        for mode in PlacementMode.allCases {
+            XCTAssertFalse(encoded.contains(mode.rawValue), "\(encoded) must name no placement mode")
+        }
+    }
+
+    func testPreviewInputIsRefusedWhileTheRealWindowHasIt() {
+        let frame = PresentedFrame(pixelSize: CGSize(width: 1600, height: 1200),
+                                   geometry: CaptureGeometry(windowID: 7, windowSize: CGSize(width: 800, height: 600),
+                                                             pixelSize: CGSize(width: 1600, height: 1200)))
+        let size = CGSize(width: 800, height: 600)
+        XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: identity, frame: frame,
+                                             sourceWindowSize: size), .success(size))
+        XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: identity, frame: frame,
+                                             sourceWindowSize: size, handOffActive: true),
+                       .failure(.handOffActive))
+        // The hand-off outranks every other reason, so no other refusal can hide it.
+        XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: nil, frame: nil,
+                                             sourceWindowSize: nil, handOffActive: true),
+                       .failure(.handOffActive))
+    }
+
+    func testOnlyVerifiedTypingCountsAsVerifiedTyping() {
+        XCTAssertTrue(InteractionSupport.interactive([.text, .scroll]).verifies(.text))
+        XCTAssertFalse(InteractionSupport.interactive([.pointerClick, .scroll]).verifies(.text))
+        XCTAssertFalse(InteractionSupport.viewOnly.verifies(.text))
+    }
 }

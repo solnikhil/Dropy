@@ -117,7 +117,10 @@ final class InputRouter {
            (attribute(window, kAXMinimizedAttribute) as? Bool) == true { return .minimized }
         if let spaces = Spaces.of(identity.windowID), let active = Spaces.current(),
            !spaces.isEmpty, Set(spaces).isDisjoint(with: active) { return .otherSpace }
-        if let entry = journal.entries.first(where: { $0.identity == identity }), entry.mode.movesWindow { return .parked }
+        // A window given back to the person by a hand-off is not parked, whatever its
+        // placement record still says.
+        if let entry = journal.entries.first(where: { $0.identity == identity && $0.handOff == nil }),
+           entry.mode.movesWindow { return .parked }
         // Moved beyond every display by someone else: the same situation as parked.
         if let server = WindowPlacer.windowServerInfo(identity.windowID),
            PlacementGeometry.visibleFraction(of: server.bounds, on: WindowPlacer.displayBounds()) < 0.5 { return .parked }

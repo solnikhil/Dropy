@@ -7,6 +7,7 @@ import ScreenCaptureKit
 final class OverlayController: NSObject {
     private let preferences: PreferenceStore
     private let inputRouter: InputRouter
+    private let handOff: HandOffSession
     private let capture = CaptureController()
     /// Size in points of the window being previewed, for mapping preview input.
     private var selectedWindowSize: CGSize?
@@ -16,6 +17,7 @@ final class OverlayController: NSObject {
     private var list: NSStackView?
     private var status: NSTextField?
     private var privacyButton: NSButton?
+    private var handOffButton: NSButton?
     private var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
     private var selectedIdentity: WindowIdentity?
@@ -48,10 +50,12 @@ final class OverlayController: NSObject {
     var currentSelection: WindowIdentity? { selectedIdentity }
     func captureCounts() -> CaptureCounts? { capture.currentCounts() }
 
-    init(preferences: PreferenceStore, inputRouter: InputRouter) {
+    init(preferences: PreferenceStore, inputRouter: InputRouter, handOff: HandOffSession) {
         self.preferences = preferences
         self.inputRouter = inputRouter
+        self.handOff = handOff
         super.init()
+        handOff.onChange = { [weak self] in self?.configureInteraction() }
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(applicationTerminated(_:)),
             name: NSWorkspace.didTerminateApplicationNotification, object: nil)
@@ -73,6 +77,9 @@ final class OverlayController: NSObject {
         guard state == .closed else { return }
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
                 ?? NSScreen.main else { return }
+        // Coming back to the preview ends a hand-off, and it must be decided from the
+        // state now, before Dropy activates itself over the source app.
+        handOff.end(reason: "overlayReopened")
         generation = UUID()
         overlaySession = UUID()
         let full = OverlayGeometry.frame(on: screen.frame,
@@ -128,9 +135,12 @@ final class OverlayController: NSObject {
         interactionMessage?.cancel()
         interactionMessage = nil
         privacyButton = nil
+        handOffButton = nil
         renderer?.clear()
         renderer = nil
         Task { await capture.stop(reason: "closed") }
+        // A hand-off is not ended here: with "click outside" dismissal, clicking the
+        // real window to type in it closes the overlay. Reopening it ends the hand-off.
         // Hand focus back to the app that was in front before the overlay opened.
         if NSApplication.shared.isActive, let previousApplication, !previousApplication.isTerminated {
             previousApplication.activate()
@@ -306,6 +316,17 @@ final class OverlayController: NSObject {
         close.frame = CGRect(x: size.width - 90, y: size.height - 65, width: 66, height: 28)
         root.addSubview(close)
 
+        // Hand-off typing: the only way to start one. It carries no key equivalent, so no
+        // key routed from the preview can reach it, and it is hidden unless the offer says
+        // otherwise. Placed above the preview so it is never mistaken for preview content.
+        let handOffControl = NSButton(title: HandOff.startTitle, target: self,
+                                      action: #selector(handOffClicked))
+        handOffControl.frame = CGRect(x: 288, y: size.height - 65, width: 200, height: 28)
+        handOffControl.toolTip = "Put the source window back, bring its app to the front, and type in it directly. Dropy stops containing it until you come back."
+        handOffControl.isHidden = true
+        root.addSubview(handOffControl)
+        handOffButton = handOffControl
+
         let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshClicked))
         refresh.frame = CGRect(x: 22, y: size.height - 124, width: 90, height: 27)
         root.addSubview(refresh)
@@ -424,6 +445,11 @@ final class OverlayController: NSObject {
     private func selectWindow(at index: Int) {
         guard available.indices.contains(index), let renderer else { return }
         let selected = available[index]
+        // A hand-off belongs to the source being shown. Choosing another window ends it by
+        // the same rules, rather than leaving a handed-over window nobody can take back.
+        if handOff.active != nil, !handOff.isActive(for: selected.identity) {
+            handOff.end(reason: "selectionChanged")
+        }
         let request = UUID()
         generation = request
         identityTask?.cancel()
@@ -658,6 +684,13 @@ final class OverlayController: NSObject {
         guard let renderer else { return }
         let enabled = preferences.value.interactivePreview
         let trusted = WindowPlacer.isTrusted
+        // A hand-off has the real window. The installed handlers stay, so anything aimed
+        // at the preview is refused visibly through the gate rather than silently dropped.
+        if handOff.isActive(for: selectedIdentity) {
+            configureHandOff(typingVerified: false)
+            if interactionMessage == nil { interactionStatus?.stringValue = HandOff.label }
+            return
+        }
         guard enabled, trusted, state.isCapturing, let identity = selectedIdentity else {
             renderer.onClick = nil
             renderer.onScroll = nil
@@ -666,10 +699,12 @@ final class OverlayController: NSObject {
                 interactionStatus?.stringValue = state.isCapturing
                     ? InteractionLabel.text(for: .viewOnly, enabled: enabled, trusted: trusted) : ""
             }
+            configureHandOff(typingVerified: false)
             return
         }
         let support = inputRouter.support(for: identity)
         inputRouter.prepare(identity)
+        configureHandOff(typingVerified: support.verifies(.text))
         if renderer.onClick == nil, let window = renderer.window {
             // Where the preview is, for device checks: global top-left points.
             let frame = window.convertToScreen(renderer.convert(renderer.bounds, to: nil))
@@ -698,6 +733,22 @@ final class OverlayController: NSObject {
         renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
     }
 
+    /// Shows the hand-off button only where `HandOff.offer` allows it, and keeps its title
+    /// in step. Called from every path that relabels the preview, so the button appears and
+    /// disappears with the source's condition, not on a timer.
+    private func configureHandOff(typingVerified: Bool) {
+        guard let button = handOffButton else { return }
+        switch HandOff.offer(interactivePreview: preferences.value.interactivePreview,
+                             capturing: state.isCapturing && selectedIdentity != nil,
+                             typingVerified: typingVerified, active: handOff.active != nil) {
+        case .hidden:
+            button.isHidden = true
+        case .start(let title), .end(let title, _):
+            button.title = title
+            button.isHidden = false
+        }
+    }
+
     /// The mapping through the frame actually drawn, or nil (with a visible reason)
     /// when that frame cannot be tied to this selection's window at its current size:
     /// after a switch, before the first frame, or while the source is being resized.
@@ -705,11 +756,11 @@ final class OverlayController: NSObject {
         guard let renderer else { return nil }
         let frame = renderer.presentedFrame
         switch PreviewInputGate.check(handler: identity, selected: selectedIdentity, frame: frame,
-                                      sourceWindowSize: selectedWindowSize) {
+                                      sourceWindowSize: selectedWindowSize,
+                                      handOffActive: handOff.isActive(for: identity)) {
         case .failure(let refusal):
             NSLog("Dropy input: kind=%@ gate=%@", kind.rawValue, String(describing: refusal))
-            flash(refusal == .sourceChanged || refusal == .frameFromOtherWindow
-                  ? "Switching windows · input not sent" : "Preview updating · input not sent")
+            flash(Self.message(for: refusal))
             return nil
         case .success(let windowSize):
             guard let pixels = frame?.pixelSize else { return nil }
@@ -720,9 +771,24 @@ final class OverlayController: NSObject {
         }
     }
 
+    private static func message(for refusal: PreviewInputGate.Refusal) -> String {
+        switch refusal {
+        case .handOffActive: HandOff.inputRefusedLabel
+        case .sourceChanged, .frameFromOtherWindow: "Switching windows · input not sent"
+        case .noFrame, .geometryChanging: "Preview updating · input not sent"
+        }
+    }
+
     /// Typing in the preview: committed characters only. Shortcuts, editing keys and
     /// input methods are refused and labelled rather than approximated.
     private func handleKey(_ event: NSEvent) -> Bool {
+        // The real window has every key while a hand-off lasts. Consuming the key here
+        // keeps the preview from sending a second copy, and keeps any key from reaching
+        // a control: a hand-off starts and ends only from the button.
+        if handOff.isActive(for: selectedIdentity) {
+            flash(HandOff.inputRefusedLabel)
+            return true
+        }
         guard preferences.value.interactivePreview, WindowPlacer.isTrusted, state.isCapturing,
               let identity = selectedIdentity else { return false }
         switch keyInput.classify(characters: event.characters,
@@ -785,4 +851,21 @@ final class OverlayController: NSObject {
     @objc private func closeClicked() { close() }
     @objc private func refreshClicked() { refreshWindows() }
     @objc private func windowClicked(_ button: NSButton) { selectWindow(at: button.tag) }
+
+    /// The person asked for, or asked to end, a hand-off. This is the only caller that may
+    /// pass `.personRequest`.
+    @objc private func handOffClicked() {
+        if handOff.active != nil {
+            handOff.end(reason: "buttonClicked")
+            return
+        }
+        guard let identity = selectedIdentity else { return }
+        Task { @MainActor in
+            switch await handOff.start(identity, trigger: .personRequest) {
+            case .started, .ignored: break
+            case .refused(let refusal): flash(HandOff.message(for: refusal))
+            case .failed: flash(HandOff.failedLabel)
+            }
+        }
+    }
 }
