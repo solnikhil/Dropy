@@ -64,6 +64,9 @@ public struct CaptureSessionMetrics: Sendable {
     /// Switches to the low idle capture rate, and back to the full rate.
     public var idleRateSwitches = 0
     public var fullRateSwitches = 0
+    /// Successful preview input that requested a return to full-rate capture.
+    /// The actual configuration change is counted separately in fullRateSwitches.
+    public var interactionWakeRequests = 0
     /// Complete frames replaced in the mailbox before the main thread took them.
     public var mailboxDrops = 0
     /// Frames the compositor reported as shown.
@@ -124,6 +127,7 @@ public struct CaptureSessionMetrics: Sendable {
             String(format: "completeRate=%.1f/s", rate),
             "unchanged=\(unchanged)",
             "rateChanges=\(idleRateSwitches)idle/\(fullRateSwitches)full",
+            "interactionWakeRequests=\(interactionWakeRequests)",
             "mailboxDrops=\(mailboxDrops)",
             "presented=\(presented)",
             "notPresented=\(notPresented)",

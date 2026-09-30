@@ -680,13 +680,15 @@ final class OverlayController: NSObject {
         renderer.onClick = { [weak self] point in
             guard let self, let mapping = self.mapping(for: identity, kind: .pointerClick),
                   let target = mapping.windowPoint(for: point) else { return }
-            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize), kind: .pointerClick)
+            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize),
+                        kind: .pointerClick, sourceWindowID: identity.windowID)
         }
         renderer.onScroll = { [weak self] point, delta in
             guard let self, let mapping = self.mapping(for: identity, kind: .scroll),
                   let target = mapping.windowPoint(for: point) else { return }
             self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta),
-                                                expectedWindowSize: mapping.windowSize), kind: .scroll)
+                                                expectedWindowSize: mapping.windowSize),
+                        kind: .scroll, sourceWindowID: identity.windowID)
         }
         renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
     }
@@ -732,7 +734,8 @@ final class OverlayController: NSObject {
             flash("This key is not supported in the preview yet")
             return true
         }
-        report(inputRouter.type(identity, text: characters), kind: .text)
+        report(inputRouter.type(identity, text: characters), kind: .text,
+               sourceWindowID: identity.windowID)
         return true
     }
 
@@ -744,9 +747,9 @@ final class OverlayController: NSObject {
         return type != (kTISTypeKeyboardLayout as String)
     }
 
-    private func report(_ outcome: InputRouter.Outcome, kind: InputKind) {
+    private func report(_ outcome: InputRouter.Outcome, kind: InputKind, sourceWindowID: UInt32) {
         switch outcome {
-        case .sent: break
+        case .sent: capture.noteInteraction(for: sourceWindowID)
         case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
         case .notApplicable(let reason):
             flash(reason.contains("windowGeometryChanged") ? "Preview resizing · try again in a moment"

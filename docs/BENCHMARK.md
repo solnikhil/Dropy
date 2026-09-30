@@ -15,6 +15,7 @@ This page explains what Dropy measures, how to reproduce the numbers, and what t
 | `mailboxDrops` | Complete frames replaced before the main thread took them (latest-frame policy) | — |
 | `presented` / `notPresented` | Frames the compositor reported shown, or never shown (for example a replaced drawable) | — |
 | `drawableMisses` | Drawable attempts not shown, including retries whose frame later succeeds | — |
+| `interactionWakeRequests` | Successful preview inputs that asked an idle stream to return to full rate; `rateChanges` confirms completed configuration changes | — |
 | `captureToCallback` | `SCStreamFrameInfo.displayTime` → Dropy's callback | mach host time on both sides |
 | `callbackToPresent` | Callback → `MTLDrawable.presentedTime` | mach time vs Core Animation media time |
 | `frameAge` | `displayTime` → on-glass presentation, per shown frame | as above |
@@ -132,6 +133,14 @@ Findings:
 The static source's rate reconfiguration produced a changed frame, which previously immediately requested full rate and caused another change. Rate hysteresis now requires two consecutive changed samples to resume full rate; every changed frame still reaches the renderer immediately. An isolated static update stays at 10 fps, while continuing motion resumes 60 fps within two idle sampling intervals (up to roughly 200 ms). Byte-exact comparison and the original shader are retained; shadow exclusion and alpha-only comparison did not solve the oscillation and were removed.
 
 `notPresented` now counts final frame outcomes once. Zero-time drawable attempts are counted separately as `drawableMisses`; retrying and later successfully showing the same frame cannot count it both shown and unshown. This corrects the earlier static presentation-budget failure. Idle frame-age p95 remains **100.4 ms**, based on only three changed frames, above the provisional 50 ms target; idle response latency and quiet-system replication remain M4 work.
+
+## M4 interaction wake, pending device validation
+
+An idle source is sampled at 10 fps. A later trace of 20 clicks, each three seconds apart, measured input-to-display p50 63.7 ms / p95 88.1 ms and input-to-presentation p50 124.6 ms / p95 152.9 ms. Of the response frames, 39 drawable attempts were not shown before retry, and draw plus composition each took about 30 ms at p50. See [the latency trace on the M3 branch](https://github.com/solnikhil/Dropy/blob/4c4f6e2/docs/benchmarks/2026-09-30-latency-trace-run3.md) for the per-click breakdown. This trace is an input-response baseline, not a measurement of the change below.
+
+On a successful, verified preview input, Dropy now requests full-rate capture for that same source. The activity tracker resets its unchanged count and returns the stream to 10 fps after 30 unchanged frames. Refused input and input for a source that has since been replaced do not wake the active stream. The `interactionWakeRequests` count records requests; `rateChanges` records completed rate changes. This is intended to reduce the wait for an updated capture without keeping a quiet source at 60 fps.
+
+**Device validation: NOT RUN.** Device checks remain paused at the user's request. This change has passed local build and unit tests, but neither the input latency nor CPU budget has been remeasured. The drawable misses and compositor delay in the trace are separate issues; do not mark the 50 ms frame-age budget as passing on the strength of this change.
 
 ## Provisional budgets
 

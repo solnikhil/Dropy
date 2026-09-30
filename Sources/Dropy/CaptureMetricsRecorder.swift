@@ -119,6 +119,10 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
 
     func recordUnchanged() { lock.withLock { metrics.unchanged += 1 } }
 
+    func recordInteractionWakeRequest() {
+        lock.withLock { metrics.interactionWakeRequests += 1 }
+    }
+
     /// Running totals for experiments that compare before and after an action.
     func counts() -> CaptureCounts {
         lock.withLock {

@@ -14,6 +14,18 @@ public struct CaptureActivityTracker: Sendable {
         self.changedThreshold = changedThreshold
     }
 
+    /// A verified interaction is a reason to sample the source promptly, even
+    /// before its first changed frame arrives at the idle capture rate. Restart
+    /// the unchanged window so a continuing interaction cannot re-enter idle
+    /// immediately after this request.
+    public mutating func resumeForInteraction() -> Bool {
+        let wasIdle = isIdle
+        isIdle = false
+        unchangedCount = 0
+        changedCount = 0
+        return wasIdle
+    }
+
     /// Returns the new rate state only on a transition. Changed frames must always
     /// be rendered, independent of this rate decision. At idle 10 fps, two changes
     /// resume 60 fps within two sampling intervals; a static update stays at 10 fps.

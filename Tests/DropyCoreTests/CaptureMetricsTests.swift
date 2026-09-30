@@ -37,12 +37,14 @@ final class CaptureMetricsTests: XCTestCase {
         metrics.recordStatus("complete")
         metrics.recordStatus("complete")
         metrics.recordStatus("idle")
+        metrics.interactionWakeRequests = 1
         metrics.recordCaptureToCallback(1)
         metrics.recordPresented(callbackToPresent: 30, frameAge: 31)
         let line = metrics.summary(durationSeconds: 2, stopReason: "failed.targetQuit")
         XCTAssertTrue(line.contains("output=1053x790/BGRA"))
         XCTAssertTrue(line.contains("status=[complete=2,idle=1]"))
         XCTAssertTrue(line.contains("completeRate=1.0/s"))
+        XCTAssertTrue(line.contains("interactionWakeRequests=1"))
         XCTAssertTrue(line.contains("frameAge=[n=1 p50=31.0"))
         XCTAssertTrue(line.hasSuffix("stop=failed.targetQuit"))
     }
