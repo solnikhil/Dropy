@@ -92,3 +92,6 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/FrameStampChecks" \
   "$repo_dir/Tests/LocalFrameStampCheck.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift"
 "$build_dir/FrameStampChecks"
+
+# Isolation of third-party apps under test (throwaway tree; no app is launched).
+"$repo_dir/Tests/LocalAppIsolationCheck.zsh"

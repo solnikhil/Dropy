@@ -5,11 +5,12 @@
 #
 #   Scripts/input-probe-apps.sh [textedit] [safari] [notion] [vscode]
 #
-# vscode: Visual Studio Code with a throwaway --user-data-dir and --extensions-dir,
-# extensions disabled, two scratch text files in a temp directory, typing, clicks and
-# scrolling, with Chromium's Accessibility tree switched on (AXManualAccessibility) and
-# the matrix widened to covered and minimized. Refused while any VS Code is running, so
-# a personal window can never be mistaken for a scratch one.
+# vscode: a disposable copy of Visual Studio Code only, named by DROPY_VSCODE_COPY: outside
+# the Applications folders, with its own bundle identifier (re-signed ad hoc), run with its
+# own HOME, profile and extensions directory, extensions off, two scratch text files.
+# The installed VS Code is never driven. Everything it shares with any copy (updater
+# state, caches, preferences, ~/.vscode, the installed bundle) is fingerprinted before
+# and verified after (Scripts/lib/app-isolation.zsh); any change fails the run.
 #
 # TextEdit and Safari use only disposable temp documents and a local test page. Notion
 # is scroll-only against its two frontmost windows (nothing is typed), and it must
@@ -50,23 +51,14 @@ stop_scratch_vscode() {
   sleep 1
 }
 
-# Puts ~/.vscode/argv.json back byte for byte if the scratch VS Code changed it.
-restore_vscode_argv() {
-  [[ -f "$work/argv.json.sum" ]] || return 0
-  shasum -s -c "$work/argv.json.sum" 2>/dev/null && return 0
-  cp -p "$work/argv.json.backup" "$HOME/.vscode/argv.json"
-  if shasum -s -c "$work/argv.json.sum"; then
-    print -u2 "Restored ~/.vscode/argv.json, which the scratch VS Code had changed."
-    print -r -- "| VSCode | - | ~/.vscode/argv.json was changed by the scratch instance and restored |" >> "$work/rows"
-  else
-    print -u2 "Could not restore ~/.vscode/argv.json; the backup is $work/argv.json.backup"; return 1
-  fi
-}
 
 cleanup() {
   "$probe" release 2>/dev/null || true
   stop_scratch_vscode
-  restore_vscode_argv || { print -u2 "Keeping $work for the argv.json backup."; device_session_end; return; }
+  # An interrupted VS Code run still reports whether shared state changed.
+  if [[ -s "$work/isolation.manifest" ]] && ! isolation_verify "$work/isolation.manifest"; then
+    print -u2 "The disposable VS Code changed shared state before the run ended; see the lines above."
+  fi
   [[ -n "${sink_pid:-}" ]] && { kill "$sink_pid" 2>/dev/null || true; sink_pid=""; }
   for app in $owned; do osascript -e "tell application \"$app\" to quit saving no" >/dev/null 2>&1 || true; done
   rm -rf "$work"
@@ -134,57 +126,60 @@ for app in $apps; do
     notion)
       probe_app Notion notion.id scroll ;;
     vscode)
-      code_app="/Applications/Visual Studio Code.app"
-      [[ -d "$code_app" ]] || { print -r -- "| VSCode | - | not installed; NOT RUN |" >> "$work/rows"; continue; }
-      # A live process, not LaunchServices' record, which can outlive the process.
-      if pgrep -qf "Visual Studio Code.app/Contents/MacOS/Code"; then
-        print -u2 "Quit Visual Studio Code first; the probe uses only its own scratch instance."; exit 1
+      # Only a disposable copy (Scripts/lib/app-isolation.zsh): outside the Applications
+      # folders, with its own bundle identifier, and run with its own home directory.
+      # On 2026-09-30 a scratch *profile* of the installed app let its shared updater
+      # install an update into /Applications and rewrite ~/.vscode/argv.json.
+      code_app="${DROPY_VSCODE_COPY:-}"
+      if [[ -z "$code_app" ]]; then
+        print -r -- "| VSCode | - | NOT RUN: set DROPY_VSCODE_COPY to a disposable copy; the installed app is never driven |" >> "$work/rows"
+        continue
       fi
-      code_version="$(defaults read "$code_app/Contents/Info" CFBundleShortVersionString)"
-      mkdir -p "$work/vscode-data/User" "$work/vscode-extensions" "$work/vscode-files"
-      # Nothing from a person's setup is read, and nothing is written outside $work.
-      # No telemetry setting here: changing it makes VS Code rewrite the shared
-      # ~/.vscode/argv.json ("enable-crash-reporter"), which it did on 2026-09-30.
-      # The CLI flags below disable telemetry and crash reporting without that.
+      source "${0:A:h}/lib/app-isolation.zsh"
+      isolation_check_disposable "$code_app" || exit 1
+      code_id="$(isolation_bundle_id "$code_app")"
+      if pgrep -qf "Visual Studio Code.app/Contents/MacOS/Code" || pgrep -qf "${code_app:A}/Contents/MacOS/"; then
+        print -u2 "Quit Visual Studio Code (and any copy) first."; exit 1
+      fi
+      code_version="$(defaults read "${code_app:A}/Contents/Info" CFBundleShortVersionString)"
+      # Everything the person's install shares with any copy of VS Code, before the run.
+      installed_code="/Applications/Visual Studio Code.app"
+      isolation_fingerprint "$work/isolation.manifest" com.microsoft.VSCode Code \
+        "$HOME/.vscode" "$installed_code/Contents/Info.plist" "$installed_code/Contents/_CodeSignature/CodeResources"
+      isolation_fingerprint "$work/isolation-copy.manifest" "$code_id" "$code_id"
+      mkdir -p "$work/vscode-home" "$work/vscode-data/User" "$work/vscode-extensions" "$work/vscode-files"
       print -r -- '{"update.mode":"none","workbench.startupEditor":"none","security.workspace.trust.enabled":false,"window.restoreWindows":"none","editor.accessibilitySupport":"on","window.confirmBeforeClose":"never","extensions.autoCheckUpdates":false,"extensions.autoUpdate":false,"workbench.enableExperiments":false,"git.enabled":false}' \
         > "$work/vscode-data/User/settings.json"
       for n in A B; do for i in {1..200}; do print "Dropy scratch $n line $i"; done > "$work/vscode-files/scratch-$n.txt"; done
-      code_cli=("$code_app/Contents/Resources/app/bin/code" --user-data-dir "$work/vscode-data"
+      # HOME keeps VS Code's dotfile directory (argv.json) inside the run; the basic
+      # password store avoids the keychain, which would raise a prompt.
+      code_cli=(env HOME="$work/vscode-home" "${code_app:A}/Contents/Resources/app/bin/code" --user-data-dir "$work/vscode-data"
         --extensions-dir "$work/vscode-extensions" --disable-extensions --skip-welcome --skip-release-notes
-        --disable-telemetry --disable-crash-reporter --disable-workspace-trust)
-      # ~/.vscode/argv.json is shared with a person's own VS Code: keep an exact copy and
-      # put it back afterwards (cleanup does too), and fail the run if it cannot be.
-      # VS Code's built-in updater (Squirrel/ShipIt) shares state with a person's install
-      # whatever the user-data directory; on 2026-09-30 a scratch instance downloaded
-      # an update and installed it into /Applications on quit, although the scratch
-      # settings say "update.mode": "none". Record the installed version and refuse
-      # to continue if an update is pending, and report any change afterwards.
-      code_version_before="$code_version"
-      if pgrep -qf "ShipIt com.microsoft.VSCode" || ls -d "$HOME/Library/Caches/com.microsoft.VSCode.ShipIt"/update.*(N) | grep -q .; then
-        print -u2 "A VS Code update is staged or installing; the scratch instance would install it on quit. Run later."; exit 1
-      fi
-      argv_json="$HOME/.vscode/argv.json"
-      [[ -f "$argv_json" ]] && { cp -p "$argv_json" "$work/argv.json.backup"; shasum "$argv_json" > "$work/argv.json.sum"; }
+        --disable-telemetry --disable-crash-reporter --disable-workspace-trust --password-store=basic)
       "${code_cli[@]}" -n "$work/vscode-files/scratch-A.txt"; sleep 6
       "${code_cli[@]}" -n "$work/vscode-files/scratch-B.txt"; sleep 5
-      scratch_pid="$(pgrep -f "Visual Studio Code.app/Contents/MacOS/Code --user-data-dir $work/vscode-data" | head -1 || true)"
-      [[ -n "$scratch_pid" ]] || { print -r -- "| VSCode | - | scratch instance did not start; NOT RUN |" >> "$work/rows"; continue; }
-      PROBE_APP_PID="$scratch_pid" PROBE_ELECTRON=1 PROBE_APP_CONDITIONS=visible,covered,parked,minimized \
-        probe_app "VSCode-$code_version" com.microsoft.VSCode type,click,scroll ax,axValue,pidWindow,pid
-      # Workbench: a pressable control (Explorer activity item) and editor scrolling.
-      ids=(${=$("$probe" windows "$scratch_pid")})
-      if (( ${#ids} >= 2 )); then
-        for id in "${ids[1]}" "${ids[2]}"; do "$probe" workbench-discover "$scratch_pid" "$id" | tee -a "$logs/VSCode-workbench-discover.txt"; done
-        "$probe" workbench "$scratch_pid" "${ids[1]}" "${ids[2]}" "$logs/VSCode-workbench.jsonl" | tee "$logs/VSCode-workbench.txt"
-        "$probe" report "$logs/VSCode-workbench.jsonl" | sed "s/^| \\([a-zA-Z]*\\) |/| VSCode-workbench \\1 |/" >> "$work/tables"
+      scratch_pid="$(pgrep -f "${code_app:A}/Contents/MacOS/.* --user-data-dir $work/vscode-data" | head -1 || true)"
+      if [[ -n "$scratch_pid" ]]; then
+        PROBE_APP_PID="$scratch_pid" PROBE_ELECTRON=1 PROBE_APP_CONDITIONS=visible,covered,parked,minimized \
+          probe_app "VSCode-$code_version-copy" "$code_id" type,click,scroll ax,axValue,pidWindow,pid
+        ids=(${=$("$probe" windows "$scratch_pid")})
+        if (( ${#ids} >= 2 )); then
+          for id in "${ids[1]}" "${ids[2]}"; do "$probe" workbench-discover "$scratch_pid" "$id" | tee -a "$logs/VSCode-workbench-discover.txt"; done
+          "$probe" workbench "$scratch_pid" "${ids[1]}" "${ids[2]}" "$logs/VSCode-workbench.jsonl" | tee "$logs/VSCode-workbench.txt"
+          "$probe" report "$logs/VSCode-workbench.jsonl" | sed "s/^| \\([a-zA-Z]*\\) |/| VSCode-workbench \\1 |/" >> "$work/tables"
+        fi
+      else
+        print -r -- "| VSCode | - | disposable copy did not start; NOT RUN |" >> "$work/rows"
       fi
       stop_scratch_vscode
-      restore_vscode_argv || exit 1
       sleep 3
-      code_version_after="$(defaults read "$code_app/Contents/Info" CFBundleShortVersionString 2>/dev/null || print unknown)"
-      if [[ "$code_version_after" != "$code_version_before" ]] || pgrep -qf "ShipIt com.microsoft.VSCode"; then
-        print -r -- "| VSCode | - | WARNING: VS Code's updater changed the installed app ($code_version_before → $code_version_after) |" >> "$work/rows"
-        print -u2 "VS Code's updater changed the installed app during the probe."
+      # Proof of isolation: nothing the person's VS Code uses may have changed.
+      if isolation_verify "$work/isolation.manifest"; then
+        print -r -- "| VSCode | - | isolation verified: installed app, ~/.vscode, caches, updater state and preferences unchanged |" >> "$work/rows"
+      else
+        print -r -- "| VSCode | - | **ISOLATION FAILED**: shared state changed (see stderr); results invalid |" >> "$work/rows"
+        print -u2 "The disposable VS Code changed shared state; treat this run as a failure."
+        exit 1
       fi ;;
   esac
 done
