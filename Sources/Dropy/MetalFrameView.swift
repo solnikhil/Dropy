@@ -70,10 +70,10 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
     override func mouseDown(with event: NSEvent) {
         guard onClick != nil else { return super.mouseDown(with: event) }
-        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
-              event.clickCount == 1 else {
+        if case .refuse(let kind) = PreviewPointerInput.press(clickCount: event.clickCount,
+                                                              modifiers: PreviewModifiers(event.modifierFlags)) {
             pressPoint = nil
-            onUnsupported?(.pointerClick)
+            onUnsupported?(kind)
             return
         }
         pressPoint = topLeftPoint(event)
@@ -83,7 +83,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     override func mouseDragged(with event: NSEvent) {
         guard let pressPoint, onClick != nil else { return super.mouseDragged(with: event) }
         let point = topLeftPoint(event)
-        if !dragged, hypot(point.x - pressPoint.x, point.y - pressPoint.y) > 4 {
+        if !dragged, PreviewPointerInput.isDrag(from: pressPoint, to: point) {
             dragged = true
             onUnsupported?(.drag)
         }
@@ -102,14 +102,14 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
     override func scrollWheel(with event: NSEvent) {
         guard let onScroll else { return super.scrollWheel(with: event) }
-        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
-              event.momentumPhase.isEmpty else {
-            onUnsupported?(.scroll)
-            return
+        switch PreviewPointerInput.scroll(delta: CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY),
+                                          precise: event.hasPreciseScrollingDeltas,
+                                          momentum: !event.momentumPhase.isEmpty,
+                                          modifiers: PreviewModifiers(event.modifierFlags)) {
+        case .send(let delta): onScroll(topLeftPoint(event), delta)
+        case .refuse(let kind): onUnsupported?(kind)
+        case .ignore: break
         }
-        // Line-based wheels report small deltas; scale them to points as AppKit does.
-        let factor: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
-        onScroll(topLeftPoint(event), CGSize(width: event.scrollingDeltaX * factor, height: event.scrollingDeltaY * factor))
     }
 
     static func make(frame: CGRect) throws -> MetalFrameView {
@@ -322,9 +322,10 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         let generation = visibilityGeneration
         let armed = onNextPresented != nil
         let sequence = frameSequence
+        let drawIndex = stamp?.beginDraw()
         drawable.addPresentedHandler { [weak self] drawable in
             let presentedTime = drawable.presentedTime
-            if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime) }
+            if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime, draw: drawIndex) }
             if presentedTime == 0 {
                 if let stamp {
                     Task { @MainActor [weak self] in self?.retryPresent(stamp, sequence: sequence) }
@@ -370,4 +371,14 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         return image.sample(sampleFilter, in.uv);
     }
     """
+}
+
+extension PreviewModifiers {
+    init(_ flags: NSEvent.ModifierFlags) {
+        self = []
+        if flags.contains(.command) { insert(.command) }
+        if flags.contains(.control) { insert(.control) }
+        if flags.contains(.option) { insert(.option) }
+        if flags.contains(.shift) { insert(.shift) }
+    }
 }

@@ -1,0 +1,2 @@
+"step":"com.apple.TextEdit-other-desktop-before-restore-no" "activeSpaces":[24] "classification":"mainOrFocusedOnly:space:otherSpace" "id":3498,"layer":0,"onscreen":false,"spaces":[4]
+"step":"com.apple.TextEdit-other-desktop-before-restore-yes" "activeSpaces":[24] "classification":"mainOrFocusedOnly:space:otherSpace" "id":3498,"layer":0,"onscreen":false,"spaces":[4]

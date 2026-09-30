@@ -35,7 +35,7 @@ trap device_session_end EXIT
 "$repo_dir/Scripts/build-local.sh" >/dev/null
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 swiftc -O -swift-version 6 -o "$hid" "$repo_dir/Scripts/bench/HIDTool/main.swift"
-swiftc -O -swift-version 6 -o "$probe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+swiftc -O -swift-version 6 -o "$probe" "$repo_dir"/Scripts/bench/InputProbe/*.swift
 swiftc -O -swift-version 6 -o "$tool" "$repo_dir"/Scripts/bench/WindowTool/*.swift
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/DeviceInputRouterChecks" \
@@ -44,6 +44,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Sources/Dropy/WindowCatalog.swift"
 "$probe" check-modifiers
 mkdir -p "$logs"
+export DROPY_HID_BLOCK_LOG="$logs/hid-blocked.txt"
 work="$(mktemp -d)"
 defaults export "$prefs_domain" "$work/prefs.plist" 2>/dev/null || true
 pointer_start=(${=$("$hid" pointer)})
@@ -53,6 +54,7 @@ rows=()
 owned_textedit=false
 
 cleanup() {
+  [[ "${owned_safari:-false}" == true ]] && { osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true; owned_safari=false; }
   [[ -n "${electron_pid:-}" ]] && { kill "$electron_pid" 2>/dev/null || true; electron_pid=""; }
   if [[ "$owned_textedit" == true ]]; then
     osascript -e 'tell application "TextEdit" to quit saving no' >/dev/null 2>&1 || true
@@ -160,11 +162,58 @@ run_case() {
   [[ "$scrolled" == A=[1-9]*" B=0" ]] && record "$condition" scroll PASS "$scrolled; $(grep -oE 'kind=scroll [^ ]+ route=[a-zA-Z]+' "$log" | tail -1)" \
     || record "$condition" scroll FAIL "$scrolled; $(grep -E 'kind=scroll' "$log" | tail -1 | cut -c 60-)"
 
+  [[ "$condition" == visible ]] && refusal_checks "$log"
   local front="$("$hid" frontmost)"
   [[ "$front" == org.dropy.app ]] && record "$condition" "focus stays with Dropy" PASS "frontmost=$front" \
     || record "$condition" "focus stays with Dropy" FAIL "frontmost=$front"
   kill "$dropy_pid" 2>/dev/null || true; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
   "$probe" send reset; "$probe" send key:B; sleep 0.5
+}
+
+# Input and effect lines per window since a log line: "A=<events>/<effects> B=<events>/<effects>".
+activity_since() {
+  tail -n +"$(( $1 + 1 ))" "$fixture_log" | python3 -c "
+import json,sys
+c={'A':[0,0],'B':[0,0]}
+for line in sys.stdin:
+    try: d=json.loads(line)
+    except: continue
+    if d.get('w') in c and d.get('kind') in ('event','effect'): c[d['w']][0 if d['kind']=='event' else 1]+=1
+print('A=%d/%d B=%d/%d' % (c['A'][0],c['A'][1],c['B'][0],c['B'][1]))"
+}
+
+# Unsupported workflows must be refused visibly and reach neither window. Runs in the
+# visible condition, after the click/typing/scroll checks (A's field is the typing target).
+refusal_checks() {
+  local log="$1" mark point shown before
+  refused() {  # name, expected message fragment, command...
+    local name="$1" message="$2"; shift 2
+    before="$(grep -c 'Dropy input: shown=' "$log" || true)"
+    mark="$(log_mark)"
+    "$@"; sleep 0.8
+    local activity="$(activity_since "$mark")"
+    shown="$(grep 'Dropy input: shown=' "$log" | tail -n +"$(( before + 1 ))" | grep -F "$message" | tail -1 | grep -oE 'shown="[^"]*"' || true)"
+    [[ "$activity" == "A=0/0 B=0/0" && -n "$shown" ]] && record visible "$name refused" PASS "$activity; $shown" \
+      || record visible "$name refused" FAIL "$activity; ${shown:-no refusal shown}"
+  }
+  point=($(preview_point "${button[1]}" "${button[2]}"))
+  refused "right-click (context menu)" "Right-click not sent" "$hid" rightclick "${point[1]}" "${point[2]}"
+  # A double-click's first click is an ordinary click (apps receive it too); only the
+  # second, click-count-2 press must be refused. So A gets exactly one press, B nothing.
+  before="$(grep -c 'Dropy input: shown=' "$log" || true)"; mark="$(log_mark)"
+  "$hid" doubleclick "${point[1]}" "${point[2]}"; sleep 0.8
+  local presses="$(effects_since "$mark" press)" activity="$(activity_since "$mark")"
+  shown="$(grep 'Dropy input: shown=' "$log" | tail -n +"$(( before + 1 ))" | grep -F "Click not sent" | tail -1 | grep -oE 'shown="[^"]*"' || true)"
+  [[ "$presses" == "A=1 B=0" && "$activity" == *"B=0/0" && -n "$shown" ]] \
+    && record visible "double-click: second click refused" PASS "$presses; $activity; $shown" \
+    || record visible "double-click: second click refused" FAIL "$presses; $activity; ${shown:-no refusal shown}"
+  local s1=($(preview_point "${scroll[1]}" "$(( scroll[2] - 60 ))")) s2=($(preview_point "${scroll[1]}" "$(( scroll[2] + 60 ))"))
+  refused "drag" "Drag not sent" "$hid" drag "${s1[1]}" "${s1[2]}" "${s2[1]}" "${s2[2]}"
+  "$hid" move "${point[1]}" "${point[2]}"
+  refused "Option-scroll" "Scroll not sent" "$hid" scroll -120 opt
+  refused "Command-K shortcut" "Shortcut not sent" "$hid" key 40 cmd
+  refused "left arrow (editing key)" "not supported in the preview" "$hid" key 123
+  refused "delete (editing key)" "not supported in the preview" "$hid" key 51
 }
 
 print "Interactive preview checks"
@@ -327,6 +376,83 @@ electron_case() {
 electron_pid=""
 electron_case
 
+# Safari: two windows of a local copy of the text page. Evidence verifies Accessibility
+# presses on page buttons only; a click on a text field and typing must be refused, and
+# window B must never change.
+owned_safari=false
+safari_case() {
+  pgrep -xq Safari && { record Safari all "-" "NOT RUN: Safari was already running"; return; }
+  for n in A B; do cp "$repo_dir/Scripts/bench/text.html" "$work/dropy-text-$n.html"; done
+  owned_safari=true
+  open -a Safari "$work/dropy-text-A.html" --args -ApplePersistenceIgnoreState YES; sleep 3
+  osascript -e "tell application \"Safari\" to make new document with properties {URL:\"file://$work/dropy-text-B.html\"}" >/dev/null
+  sleep 3
+  osascript <<APPLESCRIPT >/dev/null
+tell application "Safari"
+  repeat with w in (every window)
+    set u to ""
+    try
+      set u to URL of current tab of w
+    end try
+    if u does not contain "dropy-text-" then close w
+  end repeat
+  repeat with w in (every window)
+    if URL of current tab of w contains "dropy-text-A" then set bounds of w to {60, 120, 700, 640}
+    if URL of current tab of w contains "dropy-text-B" then
+      set bounds of w to {760, 120, 1400, 640}
+      set index of w to 1
+    end if
+  end repeat
+end tell
+APPLESCRIPT
+  sleep 1
+  local pid="$(lsappinfo info -only pid -app com.apple.Safari | grep -oE '[0-9]+' | head -1)"
+  local ids=(${=$("$probe" windows "$pid")}) wa wb
+  (( ${#ids} == 2 )) || { record Safari all "-" "NOT RUN: expected two Safari windows, found ${#ids}"; return; }
+  local first=(${=$("$tool" server "${ids[1]}")})
+  if (( ${first[1]%.*} < 400 )); then wa=${ids[1]}; wb=${ids[2]}; else wa=${ids[2]}; wb=${ids[1]}; fi
+  local json='{"trigger":"shortcut","openBehavior":"direct","dismissBehavior":"manual","contentMode":"fit","sizePreset":"wide","selectedBundleIdentifier":"com.apple.Safari","lastUsedBundleIdentifier":"com.apple.Safari","interactivePreview":true}'
+  defaults write "$prefs_domain" "$prefs_key" -data "$(print -rn -- "$json" | xxd -p | tr -d '\n')"
+  local log="$logs/dropy-safari.log"
+  DROPY_DEBUG_WINDOW_ID="$wa" DROPY_DEBUG_QUIT_AFTER=40 "$dropy" --show > "$log" 2>&1 &
+  dropy_pid=$!
+  for i in {1..60}; do grep -q 'Dropy input: preview=' "$log" && break; sleep 0.25; done
+  if ! grep -q 'Dropy input: preview=' "$log"; then
+    record Safari all "-" "NOT RUN: interactive preview not ready"
+  else
+    sleep 1
+    preview="$(grep -oE 'preview=[0-9.,-]+' "$log" | tail -1 | cut -d= -f2)"
+    print -r -- "  Safari: label=\"$(grep -oE 'support=.*' "$log" | tail -1 | cut -d= -f2-)\""
+    local button="$("$probe" element "$pid" "$wa" t-button)" field="$("$probe" element "$pid" "$wa" t-input)"
+    window_size="$(print -r -- "$button" | grep -oE 'size=[0-9]+x[0-9]+' | cut -d= -f2 | tr x ,)"
+    local at=(${(s:,:)$(print -r -- "$button" | grep -oE 'at=[0-9,]+' | cut -d= -f2)})
+    local fat=(${(s:,:)$(print -r -- "$field" | grep -oE 'at=[0-9,]+' | cut -d= -f2)})
+    local sa="$("$probe" pagestatus "$pid" "$wa")" sb="$("$probe" pagestatus "$pid" "$wb")" point
+    point=($(preview_point "${at[1]}" "${at[2]}"))
+    "$hid" click "${point[1]}" "${point[2]}"; sleep 1
+    local pa="$("$probe" pagestatus "$pid" "$wa" | grep -oE '"presses":[0-9]+')" pb="$("$probe" pagestatus "$pid" "$wb" | grep -oE '"presses":[0-9]+')"
+    [[ "$pa" == '"presses":1' && "$pb" == '"presses":0' ]] \
+      && record Safari "button click" PASS "A $pa, B $pb; $(grep -oE 'kind=pointerClick [^ ]+ route=[a-zA-Z]+ target=[a-z]+' "$log" | tail -1)" \
+      || record Safari "button click" FAIL "A $pa, B $pb; $(grep -E 'kind=pointerClick' "$log" | tail -1 | cut -c 60-)"
+    point=($(preview_point "${fat[1]}" "${fat[2]}"))
+    "$hid" click "${point[1]}" "${point[2]}"; sleep 0.6
+    for key in 2 7 26; do "$hid" key "$key"; done
+    sleep 1
+    local ta="$("$probe" pagestatus "$pid" "$wa" | grep -oE '"input":"[^"]*"')" tb="$("$probe" pagestatus "$pid" "$wb" | grep -oE '"input":"[^"]*"')"
+    local refusal="$(grep -oE 'kind=pointerClick [^ ]+ refused=[a-zA-Z]+ target=text' "$log" | tail -1)"
+    [[ "$ta" == '"input":""' && "$tb" == '"input":""' && -n "$refusal" ]] \
+      && record Safari "text click and typing refused" PASS "A and B inputs unchanged; $refusal; $(grep -oE 'kind=text [^ ]+ refused=[a-zA-Z]+' "$log" | tail -1)" \
+      || record Safari "text click and typing refused" FAIL "A $ta B $tb; ${refusal:-click not refused}"
+    local front="$("$hid" frontmost)"
+    [[ "$front" == org.dropy.app ]] && record Safari "focus stays with Dropy" PASS "frontmost=$front" \
+      || record Safari "focus stays with Dropy" FAIL "frontmost=$front"
+  fi
+  kill "$dropy_pid" 2>/dev/null || true; wait "$dropy_pid" 2>/dev/null || true; dropy_pid=""
+  osascript -e 'tell application "Safari" to quit' >/dev/null 2>&1 || true
+  owned_safari=false
+}
+safari_case
+
 {
   print -r -- "# Dropy interactive preview checks"
   print
@@ -336,6 +462,11 @@ electron_case
   print -r -- "| Source | Input | Result | Observed |"
   print -r -- "|---|---|---|---|"
   for row in $rows; do print -r -- "$row"; done
+  print
+  # A prompt can appear mid-run (macOS asks again when a capture starts). HIDTool refuses
+  # to post onto one, which fails the affected row; this line says whether that happened.
+  swiftc -O -swift-version 6 -o "$build_dir/PromptCheck" "$repo_dir/Scripts/bench/PromptCheck.swift" 2>/dev/null || true
+  print -r -- "System prompts on screen at the end: $("$build_dir/PromptCheck" 2>/dev/null | paste -sd ';' - || true)$( "$build_dir/PromptCheck" >/dev/null 2>&1 && print none); inputs refused because a prompt was in the way: $(grep -c . "$logs/hid-blocked.txt" 2>/dev/null || print 0)"
   print
   print -r -- "## Router regressions"
   print
@@ -351,7 +482,7 @@ print -r -- "Report saved to $report"
 # A report containing failures or skipped checks is not a successful verification run.
 (( router_status == 0 )) && ! grep -q '^FAIL' "$logs/router-regressions.txt" \
   || { print -u2 "A router regression failed; see $report"; exit 1; }
-(( ${#rows} == 18 )) || { print -u2 "Expected 18 completed checks; see $report"; exit 1; }
+(( ${#rows} == 28 )) || { print -u2 "Expected 28 completed checks; see $report"; exit 1; }
 for row in $rows; do
   [[ "$row" == *"| PASS |"* ]] || { print -u2 "A check failed or was skipped; see $report"; exit 1; }
 done

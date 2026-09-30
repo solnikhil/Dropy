@@ -133,6 +133,25 @@ The static source's rate reconfiguration produced a changed frame, which previou
 
 `notPresented` now counts final frame outcomes once. Zero-time drawable attempts are counted separately as `drawableMisses`; retrying and later successfully showing the same frame cannot count it both shown and unshown. This corrects the earlier static presentation-budget failure. Idle frame-age p95 remains **100.4 ms**, based on only three changed frames, above the provisional 50 ms target; idle response latency and quiet-system replication remain M4 work.
 
+## Idle input-to-visible latency trace, 2026-09-30
+
+Measurement only; the pipeline and the provisional 50 ms frame-age target are unchanged. `DROPY_DEBUG_FRAME_TRACE=1` (off by default) logs, per forwarded frame, the time spent in each stage: `capture` (ScreenCaptureKit display time to Dropy's callback), `compare` (identical-frame check), `forward` (mailbox), `main` (hand-off to the main thread), `draw` (delivery to the commit of the draw that was finally shown, so drawable misses and their retries land here), `compose` (commit to on-glass), plus each draw's outcome and the time since the last input Dropy sent. `Scripts/latency-trace.sh 20 3` previews the disposable Electron fixture on the static text page, waits 10 s, then clicks the page's Press button through the preview 20 times, 3 s apart, so capture is back at its idle 10 fps before every click. `Scripts/bench/latency-summary.py` groups frames. Three runs on the same Mac, same load as above:
+
+| Run | Response frame age p50 / p95 | Input → presented p50 / p95 | Input → captured p50 | draw p50 / p95 | compose p50 / p95 | Drawable misses per response frame |
+|---|---|---|---|---|---|---|
+| [1](benchmarks/2026-09-30-latency-trace-run1.md) | 60.9 / 106.9 | 135.8 / 188.4 | 74.5 | 30.6 / 57.0 | 30.3 / 49.0 | 43 in 20 |
+| [2](benchmarks/2026-09-30-latency-trace-run2.md) | 63.1 / 107.1 | 133.7 / 183.8 | 65.5 | 31.6 / 57.0 | 30.6 / 49.0 | 42 in 20 |
+| [3](benchmarks/2026-09-30-latency-trace-run3.md) | 60.6 / 81.5 | 124.6 / 152.9 | 63.7 | 30.5 / 45.0 | 30.0 / 35.6 | 39 in 20 |
+
+Raw per-frame lines: `docs/benchmarks/raw/2026-09-30-latency-run{1,2,3}/`. Findings:
+
+1. **The idle frame age is drawable misses, not capture or hand-off.** Capture, comparison, forwarding and main-thread delivery together take about 1 ms. The first frame drawn after an idle period is committed at once, but its drawable is reported never shown; so is the retry about 15 ms later; the third drawable is shown (run 3 draw log: `+0.1:miss,+16.1:miss,+33.3:shown` in 18 of 20 clicks; one click had no miss, one had three). The layer keeps two drawables (`maximumDrawableCount = 2`), so exactly the pooled drawables fail. Follow-up frames while the source keeps changing show no misses (draw p50 0.4 ms). This reproduces PR #30's idle frame-age p95 of about 100 ms.
+2. **Compose is about two refreshes** (p50 30 ms) on every shown frame, idle or not, as in the first baseline.
+3. **Input to capture is 64–75 ms at p50**: the app's own handling plus the idle 10 fps capture interval (up to 100 ms). The capture-rate hysteresis is therefore also on the input path; it should not be changed without re-measuring idle CPU.
+4. **Idle CPU with tracing off**: 2.3% in one [check](benchmarks/2026-09-30-idle-cpu-check.md) at the same 10.8 frames/s idle rate, against 1.9% in the PR #30 review run. One run on a loaded Mac cannot separate a regression from noise; the tracing hooks are a static flag test per stage when off.
+
+Next (M4): test one hypothesis at a time against this trace, for example why pooled drawables are dropped after idle (a `CAMetalLayer` drawable count or presentation mode), and keep a change only if the response-frame misses disappear without raising idle CPU.
+
 ## Provisional budgets
 
 These come from the baseline above and are **not yet release gates**. They should be confirmed with at least five runs per workload on an idle system and on a second Mac model before they gate anything.

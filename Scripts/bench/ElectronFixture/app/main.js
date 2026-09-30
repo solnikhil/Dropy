@@ -8,7 +8,8 @@
 // Launch through LaunchServices so the process has a real launch date:
 //   open -n DropyElectronFixture.app --args --log <log.jsonl> --commands <commands.txt>
 //        [--mode input|animation] [--page <file.html>]
-// Modes: `input` (default) opens A and B; `animation` opens one window showing --page,
+// Modes: `input` (default) opens A and B; `text` opens A and B on the text-semantics
+// page (Scripts/bench/text.html); `animation` opens one window showing --page,
 // the name of a page bundled from Scripts/bench (placement, recovery and benchmark
 // checks). Pages are bundled, never read from the repository: the app is launched
 // through LaunchServices and reading ~/Documents would raise a privacy prompt.
@@ -80,7 +81,7 @@ function createWindow(name, x, y, file) {
       log({ kind: 'focus', w: name, change });
       // Typing into whichever window is key edits its field, so a key event delivered
       // to the wrong window shows up as a text change there.
-      if (change === 'becameKey' && mode === 'input') {
+      if (change === 'becameKey' && (mode === 'input' || mode === 'text')) {
         window.webContents.executeJavaScript('window.fixtureFocusText && window.fixtureFocusText()').catch(() => {});
       }
     });
@@ -197,8 +198,10 @@ app.whenReady().then(async () => {
     const window = createWindow('A', 80, 120, path.join(__dirname, 'pages', name));
     loads.push(new Promise((resolve) => window.webContents.once('did-finish-load', resolve)));
   } else {
+    // `text` mode loads the bundled text-semantics page (Scripts/bench/text.html) into A and B.
+    const file = mode === 'text' ? path.join(__dirname, 'pages', 'text.html') : path.join(__dirname, 'index.html');
     for (const [name, x] of [['A', 100], ['B', 660]]) {
-      const window = createWindow(name, x, 160, path.join(__dirname, 'index.html'));
+      const window = createWindow(name, x, 160, file);
       loads.push(new Promise((resolve) => window.webContents.once('did-finish-load', resolve)));
     }
   }

@@ -79,12 +79,14 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
             metrics.recordUnchanged()
             return
         }
+        stamp.mark { $0.compared = $1 }
         lock.lock()
         guard !invalidated else { lock.unlock(); return }
         lastForwarded = image
         lastForwardedGeometry = measuredGeometry
         if latest != nil { metrics.recordMailboxDrop() }
         latest = (image, stamp, measuredGeometry)
+        stamp.mark { $0.forwarded = $1 }
         let shouldSchedule = !scheduled
         if shouldSchedule { scheduled = true }
         lock.unlock()
@@ -113,7 +115,10 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         latest = nil
         scheduled = false
         lock.unlock()
-        if let frame { renderer?.present(frame.image, stamp: frame.stamp, geometry: frame.geometry) }
+        if let frame {
+            frame.stamp.mark { $0.delivered = $1 }
+            renderer?.present(frame.image, stamp: frame.stamp, geometry: frame.geometry)
+        }
     }
 }
 

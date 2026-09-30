@@ -202,7 +202,15 @@ func activeSpaces() -> String {
 
 // MARK: Trial model
 
-enum Route: String, CaseIterable { case pid, pidWindow, activate, ax }
+enum Route: String, CaseIterable {
+    case pid, pidWindow, activate, ax
+    /// Text candidates for windows whose field ignores `AXSelectedText` (Chromium):
+    /// splice into the exact element's `AXValue` at its selection, or focus the exact
+    /// element first. Only `type` applies; other actions report notApplicable.
+    case axValue, axFocus
+    /// Routes run by default; the text candidates are opt-in by name.
+    static let standard: [Route] = [.pid, .pidWindow, .activate, .ax]
+}
 enum Action: String, CaseIterable { case type, click, scroll, shortcut }
 enum Condition: String, CaseIterable { case visible, covered, parked, otherSpace, minimized }
 enum Focus: String, CaseIterable { case aKey, bKey, appInactive }
@@ -508,6 +516,10 @@ func perform(_ route: Route, _ action: Action, fixture: Fixture) -> String? {
         CGWarpMouseCursorPosition(pointer)
         previous?.activate()
         wait(0.3)
+    case .axValue, .axFocus:
+        guard action == .type else { return "notApplicable(textRouteOnly)" }
+        guard let field = descendant(a, identifier: "text") else { return "elementNotFound" }
+        return route == .axValue ? spliceValue(field, typedText) : focusThenInsert(field, typedText)
     case .ax:
         switch action {
         case .type:
@@ -536,6 +548,34 @@ func perform(_ route: Route, _ action: Action, fixture: Fixture) -> String? {
     }
     wait(0.5)
     return nil
+}
+
+/// Inserts text at the element's selection by rewriting its whole value, then puts the
+/// caret after the insertion. Nothing but this element is addressed.
+func spliceValue(_ field: AXUIElement, _ text: String) -> String? {
+    guard let value = attribute(field, kAXValueAttribute) as? String else { return "noValue" }
+    var range = CFRange(location: value.utf16.count, length: 0)
+    if let raw = attribute(field, kAXSelectedTextRangeAttribute), CFGetTypeID(raw) == AXValueGetTypeID() {
+        AXValueGetValue(raw as! AXValue, .cfRange, &range)
+    }
+    let units = Array(value.utf16)
+    guard range.location >= 0, range.length >= 0, range.location + range.length <= units.count else { return "badRange" }
+    let next = String(decoding: units[..<range.location], as: UTF16.self) + text
+        + String(decoding: units[(range.location + range.length)...], as: UTF16.self)
+    let result = AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, next as CFString)
+    guard result == .success else { return "axError(\(result.rawValue))" }
+    var caret = CFRange(location: range.location + text.utf16.count, length: 0)
+    AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, AXValueCreate(.cfRange, &caret)!)
+    return nil
+}
+
+/// Focuses the exact element, then inserts at its selection.
+func focusThenInsert(_ field: AXUIElement, _ text: String) -> String? {
+    let focus = setBool(field, kAXFocusedAttribute, true)
+    guard focus == .success else { return "axError(focus \(focus.rawValue))" }
+    wait(0.2)
+    let result = AXUIElementSetAttributeValue(field, kAXSelectedTextAttribute as CFString, text as CFString)
+    return result == .success ? nil : "axError(\(result.rawValue))"
 }
 
 func findMenuItem(_ root: AXUIElement, title: String, depth: Int = 0) -> AXUIElement? {
@@ -613,9 +653,22 @@ func run(fixture: Fixture, results path: String, routes: [Route]) {
                             let receivedBy = Dictionary(grouping: received, by: { $0["w"] as? String ?? "?" })
                                 .mapValues(\.count)
                             record["receivedBy"] = receivedBy
+                            if action == .type {
+                                // Exact result, not just "changed": the text must be the typed
+                                // characters at the caret. A page-level input event must also have
+                                // fired, or the app's own state would not know about the edit.
+                                let textA = (after.state["A"] as? [String: Any])?["text"] as? String ?? ""
+                                record["textA"] = textA
+                                let pageEdits = fixture.events(from: before.mark, to: after.mark).filter { $0["kind"] as? String == "effect" && $0["effect"] as? String == "text" && $0["w"] as? String == "A" }
+                                record["inputEventsA"] = pageEdits.count
+                            }
                             // Delivery to B is a failure even without a visible effect: in a real
                             // app the same event would act on the other document.
                             record["outcome"] = judge(inA: inA, inB: inB, receivedBy: receivedBy, actionError: skipped)
+                            if action == .type, record["outcome"] as? String == "pass" {
+                                if record["textA"] as? String != typedText { record["outcome"] = "partialEffect(text)" }
+                                else if record["inputEventsA"] as? Int == 0 { record["outcome"] = "partialEffect(noInputEvent)" }
+                            }
                             let focusEvents = fixture.events(from: before.mark, to: after.mark).filter {
                                 $0["kind"] as? String == "focus" &&
                                 ["becameKey", "appActive", "appInactive"].contains($0["change"] as? String ?? "")
@@ -695,8 +748,11 @@ func report(_ path: String) {
 /// A real app with two windows, A (target) and B (decoy). Effects are read from each
 /// window's own Accessibility state: the first text area's value and the first scroll
 /// bar's position. Only typing and scrolling are judged; nothing else is sent.
+/// Chromium apps nest content far deeper than AppKit ones.
+let appSearchDepth = enablesManualAccessibility ? 40 : 14
+
 func firstDescendant(_ root: AXUIElement, role: String, depth: Int = 0) -> AXUIElement? {
-    guard depth < 14 else { return nil }
+    guard depth < appSearchDepth else { return nil }
     for child in attribute(root, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
         if attribute(child, kAXRoleAttribute) as? String == role { return child }
         if let found = firstDescendant(child, role: role, depth: depth + 1) { return found }
@@ -729,7 +785,13 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
     let output = FileHandle(forWritingAtPath: path)!
     let frontmost = NSWorkspace.shared.frontmostApplication
     prepareFocusSink()
-    for condition in [Condition.visible, .parked] {
+    // PROBE_APP_CONDITIONS widens the matrix (e.g. "visible,covered,parked,minimized").
+    // A foreign app's window cannot be moved to another desktop from outside it.
+    let conditions = (ProcessInfo.processInfo.environment["PROBE_APP_CONDITIONS"] ?? "visible,parked")
+        .split(separator: ",").compactMap { Condition(rawValue: String($0)) }.filter { $0 != .otherSpace }
+    let homeB = frame(b)
+    if enablesManualAccessibility { _ = enableManualAccessibility(fixture.app); wait(2.0) }
+    for condition in conditions {
         for focus in [Focus.bKey, .appInactive] {
             for route in routes {
                 for action in actions {
@@ -741,6 +803,8 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                         let right = displays().map(\.maxX).max() ?? 0, bottom = displays().map(\.maxY).max() ?? 0
                         setPosition(a, CGPoint(x: right + 200, y: bottom + 200))
                     }
+                    if condition == .covered { setPosition(b, homeA.origin); AXUIElementPerformAction(b, kAXRaiseAction as CFString) }
+                    if condition == .minimized { setBool(a, kAXMinimizedAttribute, true); wait(0.8) }
                     if focus == .appInactive { makeOtherAppFrontmost() }
                     let beforeA = appState(a), beforeB = appState(b)
                     let caretBeforeA = caret(a), caretBeforeB = caret(b)
@@ -762,6 +826,10 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                         skipped = "setupFocusMismatch"
                     } else if condition == .parked && frame(a).map(isParked) != true {
                         skipped = "setupParkingFailed"
+                    } else if condition == .covered && frame(b)?.origin != homeA.origin {
+                        skipped = "setupCoverFailed"
+                    } else if condition == .minimized && attribute(a, kAXMinimizedAttribute) as? Bool != true {
+                        skipped = "setupMinimizeFailed"
                     } else {
                         skipped = performOnApp(route, action, window: a, fixture: fixture)
                     }
@@ -775,6 +843,14 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                         var inA = changed(beforeA, afterA), inB = changed(beforeB, afterB)
                         if action == .click { inA = caret(a) != caretBeforeA; inB = caret(b) != caretBeforeB }
                         record["outcome"] = judge(inA: inA, inB: inB, receivedBy: [:], actionError: skipped)
+                        // A change is not typing unless the typed characters appear; only
+                        // lengths are recorded, never the documents' text.
+                        if action == .type, record["outcome"] as? String == "pass" {
+                            record["lengthA"] = [beforeA.text.count, afterA.text.count]
+                            if !afterA.text.contains(typedText) || afterA.text.count != beforeA.text.count + typedText.count {
+                                record["outcome"] = "partialEffect(text)"
+                            }
+                        }
                         var focusedIDAfter: CGWindowID = 0
                         if let focused = element(attribute(fixture.app, kAXFocusedWindowAttribute)) {
                             _ = getWindow?(focused, &focusedIDAfter)
@@ -792,7 +868,9 @@ func runApp(pid: pid_t, a idA: CGWindowID, b idB: CGWindowID, results path: Stri
                         }
                     }
                     recordSessionState(&record, pointerBefore: pointerBefore)
+                    if attribute(a, kAXMinimizedAttribute) as? Bool == true { setBool(a, kAXMinimizedAttribute, false); wait(0.8) }
                     setPosition(a, homeA.origin)
+                    if let homeB { setPosition(b, homeB.origin) }
                     wait(0.3)
                     let data = try! JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
                     output.write(data + Data("\n".utf8))
@@ -811,6 +889,10 @@ func performOnApp(_ route: Route, _ action: Action, window a: AXUIElement, fixtu
     guard let targetElement, let target = frame(targetElement) else { return "notSent(elementNotFound)" }
     let point = CGPoint(x: target.midX, y: min(target.midY, target.minY + 200))
     switch route {
+    case .axValue, .axFocus:
+        guard action == .type else { return "notApplicable(textRouteOnly)" }
+        return (route == .axValue ? spliceValue(targetElement, typedText) : focusThenInsert(targetElement, typedText))
+            .map { "notSent(\($0))" }
     case .ax:
         if action == .type {
             let result = AXUIElementSetAttributeValue(targetElement, kAXSelectedTextAttribute as CFString, typedText as CFString)
@@ -871,6 +953,28 @@ if args.first == "self-test" {
     for (a, b, received, error, expected) in cases {
         guard judge(inA: a, inB: b, receivedBy: received, actionError: error) == expected else { fail("judging regression") }
     }
+    // Page-probe expectations: typing replaces the selection and leaves the caret after it.
+    guard pageCases.map(\.expected) == ["alphadx7 beta", "alpha dx7", "line one\nline dx7two", "hellodx7 world"],
+          pageCases.map(\.expectedCaret) == [8, 9, 17, 8] else { fail("page case regression") }
+    var record: [String: Any] = [:]
+    let middle = pageCases[0]
+    let base: [String: Any] = ["input": middle.text, "area": "", "edit": "", "events": [String: Int]()]
+    func after(_ value: String, sel: [Int], input: Int) -> [String: Any] {
+        base.merging(["input": value, "sel": sel, "events": ["input.input": input]]) { $1 }
+    }
+    let pageChecks: [([String: Any], [String: Any], String)] = [
+        (after("alphadx7 beta", sel: [8, 8], input: 1), base, "pass"),
+        (after("alphadx7 beta", sel: [13, 13], input: 1), base, "partialEffect(caret)"),
+        (after("alphadx7 beta", sel: [8, 8], input: 0), base, "partialEffect(noInputEvent)"),
+        (after("alpha betadx7", sel: [13, 13], input: 1), base, "partialEffect(value)"),
+        (base, base.merging(["input": "x"]) { $1 }, "wrongWindow"),
+        (base, base.merging(["events": ["keydown": 3]]) { $1 }, "wrongWindow(delivered)"),
+    ]
+    for (afterA, afterB, expected) in pageChecks {
+        let got = judgePage(.type, pageCase: middle, beforeA: base, afterA: afterA, beforeB: base, afterB: afterB,
+                            error: nil, record: &record)
+        guard got == expected else { fail("page judging regression: \(got) != \(expected)") }
+    }
     print("InputProbe judging checks passed")
     exit(0)
 }
@@ -883,6 +987,7 @@ if args.first == "check-modifiers" {
     exit(0)
 }
 if args.first == "report", args.count == 2 { report(args[1]); exit(0) }
+if args.first == "page-report", args.count == 2 { pageReport(args[1]); exit(0) }
 if args.first == "release" { print(releaseModifiers() ? "released held modifiers" : "no modifiers held"); exit(0) }
 if args.first == "send", args.count == 2 {
     sendCommand(args[1])
@@ -893,8 +998,15 @@ guard AXIsProcessTrusted() else { fail("Accessibility not granted to this proces
 switch args.first {
 case "matrix":
     guard args.count >= 3 else { fail("usage: InputProbe matrix <fixture-log> <results.jsonl> [routes]") }
-    let routes = args.count > 3 ? args[3].split(separator: ",").compactMap { Route(rawValue: String($0)) } : Route.allCases
+    let routes = args.count > 3 ? args[3].split(separator: ",").compactMap { Route(rawValue: String($0)) } : Route.standard
     run(fixture: Fixture.attach(log: args[1]), results: args[2], routes: routes)
+case "page":
+    // page <pid> <windowA> <windowB> <results.jsonl> <electron|safari> [routes]
+    guard args.count >= 6, let pid = pid_t(args[1]), let a = CGWindowID(args[2]), let b = CGWindowID(args[3]) else {
+        fail("usage: InputProbe page <pid> <windowA> <windowB> <results.jsonl> <electron|safari> [routes]")
+    }
+    let routes = args.count > 6 ? args[6].split(separator: ",").compactMap { Route(rawValue: String($0)) } : [.ax, .axValue, .pidWindow]
+    runPage(pid: pid, a: a, b: b, results: args[4], engine: args[5], routes: routes)
 case "app":
     // app <pid> <windowA> <windowB> <results.jsonl> <type,scroll> [routes]
     guard args.count >= 6, let pid = pid_t(args[1]), let a = CGWindowID(args[2]), let b = CGWindowID(args[3]) else {
@@ -916,6 +1028,39 @@ case "elements":
         }
         print(parts.joined(separator: " "))
     }
+case "workbench":
+    // workbench <pid> <windowA> <windowB> <results.jsonl>: VS Code pressable click and editor scroll.
+    guard args.count == 5, let pid = pid_t(args[1]), let a = CGWindowID(args[2]), let b = CGWindowID(args[3]) else {
+        fail("usage: InputProbe workbench <pid> <windowA> <windowB> <results.jsonl>")
+    }
+    runWorkbench(pid: pid, a: a, b: b, results: args[4])
+case "workbench-discover":
+    guard args.count == 3, let pid = pid_t(args[1]), let id = CGWindowID(args[2]) else { fail("usage: workbench-discover <pid> <window>") }
+    discoverWorkbench(pid: pid, window: id)
+case "pagestatus":
+    // pagestatus <pid> <window>: the text page's status JSON (Scripts/bench/text.html).
+    guard args.count == 3, let pid = pid_t(args[1]), let id = CGWindowID(args[2]) else { fail("usage: pagestatus <pid> <window>") }
+    let fixture = Fixture(log: "/dev/null", pid: pid, a: id, b: id, app: AXUIElementCreateApplication(pid))
+    guard let w = window(fixture, id), let status = pageStatus(w),
+          let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]) else { fail("no page status") }
+    print(String(decoding: data, as: UTF8.self))
+case "element":
+    // element <pid> <window> <identifier>: "size=WxH at=x,y", the element's centre in
+    // window-relative points (AXIdentifier or AXDOMIdentifier).
+    guard args.count == 4, let pid = pid_t(args[1]), let id = CGWindowID(args[2]) else { fail("usage: element <pid> <window> <id>") }
+    let app = AXUIElementCreateApplication(pid)
+    if ProcessInfo.processInfo.environment["PROBE_ELECTRON"] == "1" { _ = enableManualAccessibility(app); wait(2) }
+    let fixture = Fixture(log: "/dev/null", pid: pid, a: id, b: id, app: app)
+    // Chromium publishes its tree some time after it is switched on; retry briefly.
+    var found: (CGRect, CGRect)?
+    for _ in 0..<10 {
+        if let w = window(fixture, id), let wf = frame(w), let e = descendant(w, identifier: args[3]).flatMap(frame) {
+            found = (wf, e); break
+        }
+        wait(1)
+    }
+    guard let (wf, e) = found else { fail("element \(args[3]) not found") }
+    print("size=\(Int(wf.width))x\(Int(wf.height)) at=\(Int(e.midX - wf.minX)),\(Int(e.midY - wf.minY))")
 case "textstate":
     // textstate <pid> <window>: "length caret" of the window's first text area, and "size=WxH text=x,y"
     // with the text area's centre in window-relative points.

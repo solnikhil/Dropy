@@ -1,0 +1,133 @@
+<!doctype html>
+<!--
+  Text-semantics target for Dropy's exact-window input probe (M3). Loaded into both
+  windows (A target, B decoy) of the disposable Electron fixture and of Safari, from a
+  local copy only. Everything a trial needs is reachable through Accessibility, so the
+  same judge works for any browser engine:
+    - buttons #case-middle, #case-select, #case-multi, #case-edit prepare one case
+      (prefilled text and a caret or selection) without focusing anything;
+    - #t-undo focuses the case's field in this document and runs the page's undo;
+    - #t-reset restores the initial state and zeroes every counter;
+    - #t-button counts presses (click trials);
+    - #t-status (read-only) holds one JSON object: values, selection, event counts.
+  Only synthetic probe text is ever typed here.
+-->
+<meta charset="utf-8">
+<title>Dropy text probe</title>
+<style>
+  body { font: 13px -apple-system, sans-serif; margin: 12px; background: #f6f6f6; }
+  .row { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+  input, textarea, #t-edit { font: 14px monospace; }
+  #t-input { width: 300px; }
+  #t-area { width: 300px; height: 44px; }
+  #t-edit { width: 300px; min-height: 22px; background: #fff; border: 1px solid #aaa; padding: 2px; }
+  #t-status { width: 480px; font: 9px monospace; }
+</style>
+<div class="row">
+  <button id="case-middle">middle</button><button id="case-select">select</button>
+  <button id="case-multi">multi</button><button id="case-edit">edit</button>
+  <button id="t-undo">undo</button><button id="t-reset">reset</button><button id="t-button">Press</button>
+</div>
+<div class="row"><input id="t-input" aria-label="Probe input" autocomplete="off" spellcheck="false"></div>
+<div class="row"><textarea id="t-area" aria-label="Probe area" spellcheck="false"></textarea></div>
+<div class="row"><div id="t-edit" contenteditable="true" aria-label="Probe editable" spellcheck="false"></div></div>
+<div class="row"><input id="t-status" readonly aria-label="Probe status"></div>
+<script>
+'use strict';
+const input = document.getElementById('t-input');
+const area = document.getElementById('t-area');
+const edit = document.getElementById('t-edit');
+const status = document.getElementById('t-status');
+const fields = { input, area, edit };
+// Each case: which field, its initial text, and the selection [start, end] to set.
+const cases = {
+  middle: { field: 'input', text: 'alpha beta', selection: [5, 5] },
+  select: { field: 'input', text: 'alpha beta', selection: [6, 10] },
+  multi: { field: 'area', text: 'line one\nline two', selection: [14, 14] },
+  edit: { field: 'edit', text: 'hello world', selection: [5, 5] },
+};
+let current = null;
+let presses = 0;
+let undo = null;
+let events = {};
+
+function initialValues() { input.value = ''; area.value = ''; edit.textContent = ''; }
+function count(name) { events[name] = (events[name] || 0) + 1; }
+
+/** Selection inside the current field, as character offsets; null if it is elsewhere. */
+function selection(name) {
+  const field = fields[name];
+  if (name !== 'edit') return [field.selectionStart, field.selectionEnd];
+  const range = document.getSelection().rangeCount ? document.getSelection().getRangeAt(0) : null;
+  if (!range || !field.contains(range.startContainer) || !field.contains(range.endContainer)) return null;
+  const offset = (node, at) => {
+    const probe = document.createRange();
+    probe.selectNodeContents(field);
+    probe.setEnd(node, at);
+    return probe.toString().length;
+  };
+  return [offset(range.startContainer, range.startOffset), offset(range.endContainer, range.endOffset)];
+}
+
+function publish() {
+  const state = { case: current, input: input.value, area: area.value, edit: edit.textContent,
+    presses, undo, events };
+  if (current) state.sel = selection(cases[current].field);
+  status.value = JSON.stringify(state);
+}
+
+function setSelection(name, [start, end]) {
+  const field = fields[name];
+  if (name !== 'edit') { field.setSelectionRange(start, end); return; }
+  const text = field.firstChild;
+  const range = document.createRange();
+  range.setStart(text, start);
+  range.setEnd(text, end);
+  document.getSelection().removeAllRanges();
+  document.getSelection().addRange(range);
+}
+
+function prepare(name) {
+  initialValues();
+  events = {};
+  undo = null;
+  current = name;
+  const spec = cases[name];
+  if (spec.field === 'edit') edit.textContent = spec.text; else fields[spec.field].value = spec.text;
+  setSelection(spec.field, spec.selection);
+  publish();
+}
+
+for (const name of Object.keys(cases)) {
+  document.getElementById(`case-${name}`).addEventListener('click', () => prepare(name));
+}
+document.getElementById('t-reset').addEventListener('click', () => {
+  initialValues(); events = {}; presses = 0; undo = null; current = null; publish();
+});
+document.getElementById('t-button').addEventListener('click', () => { presses += 1; publish(); });
+document.getElementById('t-undo').addEventListener('click', () => {
+  if (!current) return;
+  const name = cases[current].field;
+  fields[name].focus();
+  const before = name === 'edit' ? edit.textContent : fields[name].value;
+  const ran = document.execCommand('undo');
+  const after = name === 'edit' ? edit.textContent : fields[name].value;
+  undo = { ran, changed: before !== after, restored: after === cases[current].text };
+  publish();
+});
+
+for (const [name, field] of Object.entries(fields)) {
+  field.addEventListener('beforeinput', (event) => { count(`${name}.beforeinput`); count(`${name}.beforeinput:${event.inputType}`); });
+  field.addEventListener('input', (event) => { count(`${name}.input`); count(`${name}.input:${event.inputType || 'none'}`); publish(); });
+  field.addEventListener('change', () => { count(`${name}.change`); publish(); });
+}
+window.addEventListener('keydown', () => { count('keydown'); publish(); }, true);
+window.addEventListener('mousedown', () => { count('mousedown'); publish(); }, true);
+document.addEventListener('selectionchange', () => { if (current) publish(); });
+initialValues();
+publish();
+// The Electron fixture calls these on its window-focus hooks; harmless elsewhere.
+window.fixtureFocusText = () => { if (current) { const spec = cases[current]; fields[spec.field].focus(); setSelection(spec.field, spec.selection); publish(); } };
+window.fixtureState = () => ({});
+window.fixtureReset = () => document.getElementById('t-reset').click();
+</script>
