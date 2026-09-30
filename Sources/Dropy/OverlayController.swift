@@ -19,6 +19,8 @@ final class OverlayController: NSObject {
     private var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
     private var selectedIdentity: WindowIdentity?
+    /// Key composition state (a pending dead key); reset whenever the target window is.
+    private var keyInput = PreviewKeyInput()
     private var selectedApplicationName = ""
     private var restartedAfterInterruption = false
     private var identityTask: Task<Void, Never>?
@@ -112,6 +114,7 @@ final class OverlayController: NSObject {
         overlaySession = UUID()
         setState(.closed)
         if let selectedIdentity { inputRouter.forget(selectedIdentity) }
+        keyInput = PreviewKeyInput()
         selectedIdentity = nil
         selectedWindowSize = nil
         identityTask?.cancel()
@@ -426,6 +429,7 @@ final class OverlayController: NSObject {
         identityTask?.cancel()
         identityTask = nil
         if let previous = selectedIdentity { inputRouter.forget(previous) }
+        keyInput = PreviewKeyInput()
         selectedIdentity = selected.identity
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
@@ -622,6 +626,7 @@ final class OverlayController: NSObject {
         generation = UUID()
         let failedGeneration = generation
         if let selectedIdentity { inputRouter.forget(selectedIdentity) }
+        keyInput = PreviewKeyInput()
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
@@ -720,21 +725,14 @@ final class OverlayController: NSObject {
     private func handleKey(_ event: NSEvent) -> Bool {
         guard preferences.value.interactivePreview, WindowPlacer.isTrusted, state.isCapturing,
               let identity = selectedIdentity else { return false }
-        if !event.modifierFlags.intersection([.command, .control]).isEmpty {
-            flash(InteractionLabel.text(for: .notVerified, kind: .keyShortcut))
-            return true
+        switch keyInput.classify(characters: event.characters,
+                                 charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                                 modifiers: PreviewModifiers(event.modifierFlags),
+                                 inputMethodActive: Self.inputMethodIsActive()) {
+        case .text(let characters): report(inputRouter.type(identity, text: characters), kind: .text)
+        case .refuse(let kind): flash(InteractionLabel.text(for: .notVerified, kind: kind))
+        case .unsupportedKey: flash("This key is not supported in the preview yet")
         }
-        if Self.inputMethodIsActive() {
-            flash(InteractionLabel.text(for: .notVerified, kind: .imeComposition))
-            return true
-        }
-        guard let characters = event.characters, !characters.isEmpty,
-              characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && $0.value < 0xF700 })
-        else {
-            flash("This key is not supported in the preview yet")
-            return true
-        }
-        report(inputRouter.type(identity, text: characters), kind: .text)
         return true
     }
 

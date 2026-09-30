@@ -47,6 +47,8 @@ Measured on macOS 27: keyboard events always follow the source app's key window,
 1. **In-preview typing** (shipped, AppKit only): committed text through `AXSelectedText` into the text element last clicked in the exact window, verified per app, field class and condition. Never for an app without that evidence.
 2. **Hand-off typing** (proposed): on an explicit request, Dropy undoes any placement, raises the source window, makes its app frontmost, and says so. The person then types in the real window with every key, IME and shortcut working natively. Returning to the preview re-parks the window. This gives up containment while typing, by design. Its gates: the placement journal must record the hand-off; "your move wins" applies to moves made during it; focus returns to where it was; and it must never trigger without a person's action.
 
+Status (2026-09-30, local only): the hand-off decisions are modelled and unit-tested in `DropyCore/HandOff.swift` (`HandOffTests`), not wired into the app and never run on a device. It refuses any trigger except a person's request, a window that is gone, and a crash-interrupted placement. It restores a parked or minimized window to where the journal says it was, or onto the main display if that display is gone, and a minimized or hidden window the person placed is shown where it is. At the end it re-parks only if the window is where Dropy left it, and returns focus only if the person is still in the source app.
+
 Rejected, with evidence: whole-value rewrite (wrong position, broken undo, no `inputType`); posting keys to the process or window (decoy window receives them); typing only while the source happens to be key (a demo, not exact-window routing).
 
 ## Source-window placement boundary

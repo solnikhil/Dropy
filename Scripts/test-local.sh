@@ -6,9 +6,15 @@ set -euo pipefail
 
 repo_dir="${0:A:h:h}"
 build_dir="$repo_dir/.build/local"
-if [[ ! -f "$build_dir/libDropyCore.dylib" ]]; then
-  "$repo_dir/Scripts/build-local.sh" >/dev/null
-fi
+# Rebuild whenever any source is newer than the built library: testing a stale
+# library passed three deliberate regressions on 2026-09-30.
+# (A loop, not a glob qualifier: a false test inside a qualifier trips set -e.)
+rebuild=0
+[[ -f "$build_dir/libDropyCore.dylib" ]] || rebuild=1
+for source in "$repo_dir"/Sources/**/*.swift "$repo_dir"/Resources/**/*(N.); do
+  if [[ "$source" -nt "$build_dir/libDropyCore.dylib" ]]; then rebuild=1; break; fi
+done
+if (( rebuild )); then "$repo_dir/Scripts/build-local.sh" >/dev/null; fi
 
 # XCTest suite through the shim. The runner calls every `func test…()` it finds.
 shim_dir="$build_dir/xctest-shim"

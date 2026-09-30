@@ -23,6 +23,8 @@ This is the written contract that M3's exit condition refers to. Results below a
 
 **Containment contract**, per app: the four placement modes restore the window exactly; a move made by the person during a placement is kept; a placement journal left by a killed Dropy is restored on the next launch, including with the source on another desktop; and while parked the capture keeps presenting the source's changes. Minimize and hide pause capture, and the preview says paused.
 
+Every preview key and pointer event is classified in `DropyCore/PreviewEventInput.swift` (`PreviewEventInputTests`) before routing. Since 2026-09-30 this includes the key that completes a dead key: before, the dead key was refused but its successor ("é" after Option-E) was typed. Unit-tested only; there is no device run.
+
 **Always refused until exact-target evidence exists**: editing keys (arrows, delete, return), shortcuts, input-method composition, dead keys, context menus, drag and drop, hover, momentum and modified scrolling, modified and multi-clicks, and any sheet, menu or dialog outside the captured window. Each refusal must be visible and must reach neither window.
 
 **Failures**: any wrong-window effect or delivery, focus theft from Dropy, pointer motion, a held key or button, a source window not restored or lost, a desktop change, and a report that calls a skipped check passed.
