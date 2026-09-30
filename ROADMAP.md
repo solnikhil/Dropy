@@ -28,6 +28,8 @@ Status after the 2026-09-30 session, judged against the written [M3 workflow con
 | Routing regressions | Resize, switching, relaunch, stale field, permission loss, app version refuse | **Passed** in unit tests and on device, including input to an updated and to an unversioned app (refused) |
 | Latency (M4, measured only) | Idle input-to-visible traced before any change | Idle input-to-present p50 125–136 ms; the first two drawables after idle are never shown. No change made |
 
+Remaining gates need a person's decision (details in [FEASIBILITY](docs/FEASIBILITY.md#remaining-m3-gates-isolation-assessment-2026-09-30-0800)): no installed Electron app can be isolated from the person's own copy (shared updater, dotfiles, accounts), and the only account-free media player exposes no controls. Both need a downloaded, pinned, disposable app, which needs approval and disk space (2.7 GB free). Device runs from a terminal also re-raise a screen-capture prompt each time; a signed, LaunchServices-launched test build is the fix.
+
 Barriers to M3, in order: (1) apps throttle a fully hidden window, so "out of sight" and "live" conflict for animating content; (2) no Chromium third-party app exposes clicks and scroll reliably enough through the tested routes (next: pressable workbench controls in VS Code judged by their own state, and window-targeted wheel events judged from the editor's visible range); (3) media apps expose no controls to Accessibility; (4) typing outside AppKit needs the hand-off design in FEASIBILITY, which gives up containment while typing.
 
 ## Now: M1 work order

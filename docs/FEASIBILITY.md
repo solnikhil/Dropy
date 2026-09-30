@@ -155,6 +155,25 @@ Anything else, such as rewriting a field's value, typing while the source happen
 
 **Why the screen-capture prompt keeps coming back (2026-09-30 07:41).** The start-of-run check found no prompt. During the run, "zsh is requesting to bypass the system private window picker…" appeared again. The system log shows `replayd` checking each of Dropy's captures ("no saved picker content filter") with the request attributed to Terminal, which launched the ad-hoc build. So on macOS 27 every scripted device run that starts a capture from a terminal can raise this prompt, whether or not it was answered before. It did not affect the run: capture was already allowed, and no input was posted onto the prompt (`HIDTool` refuses pointer input over a prompt and now also keys while a prompt owner is frontmost, and the report counts blocked inputs). But the next run cannot start until someone answers it. Running device checks from a signed Dropy launched through LaunchServices, rather than from a terminal, is the expected fix; it needs the signed build that Screen Recording revocation testing also needs. Evidence: `device-checks/raw/2026-09-30-interactive-routing-28/screen-capture-prompt-cause.log`.
 
+## Remaining M3 gates: isolation assessment (2026-09-30 08:00)
+
+**Third-party Electron app.** Every Electron app installed on the test Mac belongs to the person, and scratch profiles do not isolate them:
+
+| App | Updater | Why it is not a safe test target |
+|---|---|---|
+| Visual Studio Code 1.139.1 | Squirrel | Its updater installed an update into `/Applications` on quit from a scratch instance, and it shares `~/.vscode/argv.json` whatever `--user-data-dir` says. Excluded |
+| Discord, Discord Canary, Notion, GitHub Desktop, Termius, Paper, tldraw offline, Wispr Flow, Grok Bot, Kiro, KiroCrew | Squirrel | The same shared-updater risk per bundle identifier, plus signed-in accounts or personal workspaces |
+| OpenSFTP | none found | Stores saved servers and credentials; not verified that `--user-data-dir` keeps it away from them |
+
+An isolated target needs a copy that shares nothing with an installed app: a separate bundle identifier (so updater caches, preferences and the `ShipIt` job differ), its own home for dotfiles, updates off, and a before/after fingerprint of the installed app, its caches and preferences that aborts the run on any change. Two ways to get one, neither possible or authorised in this session:
+
+- **A copy of VS Code with a new bundle identifier, re-signed ad hoc.** It needs about 1.4 GB, and the data volume has 2.7 GB free (99% full). It would also still be "the installed VS Code, copied", which the person excluded.
+- **A pinned open-source Electron app downloaded to a temporary directory** (for example Electron Fiddle, checked against its published SHA-256). This needs the person's approval to fetch and run a third-party binary.
+
+**Media app.** QuickTime Player is the only media player installed without an account (Music, TV and Spotify hold personal libraries). Its window exposes no playback controls to Accessibility; they appear only on hover, which Dropy refuses. It has no scroll area. Its playback state can be read only through Apple Events, which needs an Automation permission. So click and scroll cannot be verified, and QuickTime stays view-only. A player that keeps its controls in the Accessibility tree (for example an open-source player downloaded at a pinned version) would need the same approval as above.
+
+**Device runs are blocked again.** The "zsh … bypass the private window picker" prompt reappeared during the 07:41 run (cause above), and device sessions refuse to start while it is on screen.
+
 ## Platform facts and open questions
 
 Apple documents desktop-independent window capture and its behavior when a window is occluded, off-screen or minimized. The stream can deliver GPU-backed frames, but it does not give Dropy ownership of another app's views or native event loop. Apple documents `CGEvent.postToPid` as process-targeted, and Accessibility actions as requests on exposed UI elements. Research has not found a documented public API for sending a complete native event stream to the exact foreign window represented by an `SCWindow` while that window is mirrored inside Dropy. This is an unresolved engineering question, not a claim of impossibility. [ScreenCaptureKit sample](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos), [advanced capture session](https://developer.apple.com/videos/play/wwdc2022/10155/), [CGEvent posting](https://developer.apple.com/documentation/coregraphics/cgevent/posttopid(_:)), [Accessibility actions](https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction).
