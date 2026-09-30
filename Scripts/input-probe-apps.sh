@@ -135,7 +135,7 @@ for app in $apps; do
         print -r -- "| VSCode | - | NOT RUN: set DROPY_VSCODE_COPY to a disposable copy; the installed app is never driven |" >> "$work/rows"
         continue
       fi
-      source "${0:A:h}/lib/app-isolation.zsh"
+      source "$repo_dir/Scripts/lib/app-isolation.zsh"
       isolation_check_disposable "$code_app" || exit 1
       code_id="$(isolation_bundle_id "$code_app")"
       if pgrep -qf "Visual Studio Code.app/Contents/MacOS/Code" || pgrep -qf "${code_app:A}/Contents/MacOS/"; then
@@ -146,6 +146,8 @@ for app in $apps; do
       installed_code="/Applications/Visual Studio Code.app"
       isolation_fingerprint "$work/isolation.manifest" com.microsoft.VSCode Code \
         "$HOME/.vscode" "$installed_code/Contents/Info.plist" "$installed_code/Contents/_CodeSignature/CodeResources"
+      # The copy's own identity: state appearing here is expected (it is not the
+      # person's), but the report lists it so nothing is left behind unnoticed.
       isolation_fingerprint "$work/isolation-copy.manifest" "$code_id" "$code_id"
       mkdir -p "$work/vscode-home" "$work/vscode-data/User" "$work/vscode-extensions" "$work/vscode-files"
       print -r -- '{"update.mode":"none","workbench.startupEditor":"none","security.workspace.trust.enabled":false,"window.restoreWindows":"none","editor.accessibilitySupport":"on","window.confirmBeforeClose":"never","extensions.autoCheckUpdates":false,"extensions.autoUpdate":false,"workbench.enableExperiments":false,"git.enabled":false}' \
@@ -180,7 +182,9 @@ for app in $apps; do
         print -r -- "| VSCode | - | **ISOLATION FAILED**: shared state changed (see stderr); results invalid |" >> "$work/rows"
         print -u2 "The disposable VS Code changed shared state; treat this run as a failure."
         exit 1
-      fi ;;
+      fi
+      left="$(isolation_verify "$work/isolation-copy.manifest" 2>&1 | sed -n 's/^isolation: CHANGED \(.*\) (.*/\1/p' | tr '\n' ' ')"
+      [[ -z "$left" ]] || print -r -- "| VSCode | - | the copy ($code_id) left its own state: $left|" >> "$work/rows" ;;
   esac
 done
 
