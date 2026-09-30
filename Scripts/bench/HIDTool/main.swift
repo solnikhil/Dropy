@@ -30,14 +30,33 @@ let modifierKeys: [(String, CGKeyCode, CGEventFlags)] = [("cmd", 55, .maskComman
 let promptOwners: Set<String> = ["UserNotificationCenter", "SecurityAgent", "universalAccessAuthWarn",
                                  "CoreServicesUIAgent", "tccd", "coreautha"]
 
+/// Reports a refused input on stderr and, when DROPY_HID_BLOCK_LOG names a file, appends
+/// it there too, so a device report can count inputs a prompt kept from being posted.
+func blocked(_ message: String) -> Never {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+    if let path = ProcessInfo.processInfo.environment["DROPY_HID_BLOCK_LOG"] {
+        if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+        if let handle = FileHandle(forWritingAtPath: path) { handle.seekToEndOfFile(); handle.write(Data((message + "\n").utf8)) }
+    }
+    exit(3)
+}
+
 /// Exits (status 3) before posting when a system prompt covers the point.
 func refuseIfPromptAt(_ point: CGPoint) {
     let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
     for window in windows where promptOwners.contains(window[kCGWindowOwnerName as String] as? String ?? "") {
         guard let raw = window[kCGWindowBounds as String] as? NSDictionary,
               let frame = CGRect(dictionaryRepresentation: raw), frame.contains(point) else { continue }
-        FileHandle.standardError.write(Data("blockedByPrompt owner=\(window[kCGWindowOwnerName as String] ?? "?") at=\(Int(point.x)),\(Int(point.y))\n".utf8))
-        exit(3)
+        blocked("blockedByPrompt owner=\(window[kCGWindowOwnerName as String] ?? "?") at=\(Int(point.x)),\(Int(point.y))")
+    }
+}
+
+/// Exits (status 3) before posting keys when a system prompt could receive them: its
+/// owner is frontmost, or it has a window on screen above normal windows. Keys follow the
+/// key window, and Return or Space would answer a prompt that took it.
+func refuseKeysIfPromptCouldReceive() {
+    if let front = NSWorkspace.shared.frontmostApplication?.localizedName, promptOwners.contains(front) {
+        blocked("blockedByPrompt keys frontmost=\(front)")
     }
 }
 
@@ -76,6 +95,7 @@ let args = Array(CommandLine.arguments.dropFirst())
 switch args.first {
 case "key":
     guard args.count >= 2, let code = CGKeyCode(args[1]) else { fail("usage: key <keycode> [mods]") }
+    refuseKeysIfPromptCouldReceive()
     let names = args.count > 2 ? args[2].split(separator: ",").map(String.init) : []
     let held = modifierKeys.filter { names.contains($0.0) }
     var flags: CGEventFlags = []

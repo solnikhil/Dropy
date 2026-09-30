@@ -44,6 +44,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Sources/Dropy/WindowCatalog.swift"
 "$probe" check-modifiers
 mkdir -p "$logs"
+export DROPY_HID_BLOCK_LOG="$logs/hid-blocked.txt"
 work="$(mktemp -d)"
 defaults export "$prefs_domain" "$work/prefs.plist" 2>/dev/null || true
 pointer_start=(${=$("$hid" pointer)})
@@ -461,6 +462,11 @@ safari_case
   print -r -- "| Source | Input | Result | Observed |"
   print -r -- "|---|---|---|---|"
   for row in $rows; do print -r -- "$row"; done
+  print
+  # A prompt can appear mid-run (macOS asks again when a capture starts). HIDTool refuses
+  # to post onto one, which fails the affected row; this line says whether that happened.
+  swiftc -O -swift-version 6 -o "$build_dir/PromptCheck" "$repo_dir/Scripts/bench/PromptCheck.swift" 2>/dev/null || true
+  print -r -- "System prompts on screen at the end: $("$build_dir/PromptCheck" 2>/dev/null | paste -sd ';' - || true)$( "$build_dir/PromptCheck" >/dev/null 2>&1 && print none); inputs refused because a prompt was in the way: $(grep -c . "$logs/hid-blocked.txt" 2>/dev/null || print 0)"
   print
   print -r -- "## Router regressions"
   print
