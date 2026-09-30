@@ -6,15 +6,20 @@ set -euo pipefail
 
 repo_dir="${0:A:h:h}"
 build_dir="$repo_dir/.build/local"
-# Rebuild whenever any source is newer than the built library: testing a stale
-# library passed three deliberate regressions on 2026-09-30.
-# (A loop, not a glob qualifier: a false test inside a qualifier trips set -e.)
-rebuild=0
-[[ -f "$build_dir/libDropyCore.dylib" ]] || rebuild=1
-for source in "$repo_dir"/Sources/**/*.swift "$repo_dir"/Resources/**/*(N.); do
-  if [[ "$source" -nt "$build_dir/libDropyCore.dylib" ]]; then rebuild=1; break; fi
-done
-if (( rebuild )); then "$repo_dir/Scripts/build-local.sh" >/dev/null; fi
+# A removed source, an older timestamp, or a failed app build must never leave
+# tests running against stale artifacts. The manifest is published only after
+# the entire local build succeeds.
+source "$repo_dir/Scripts/lib/local-build-inputs.zsh"
+zsh "$repo_dir/Tests/LocalBuildInputsCheck.zsh"
+fingerprint="$(local_build_fingerprint "$repo_dir")"
+if [[ ! -f "$build_dir/libDropyCore.dylib" || ! -f "$build_dir/DropyCore.swiftmodule" ||
+      ! -x "$build_dir/Dropy.app/Contents/MacOS/Dropy" ||
+      ! -f "$build_dir/Dropy.app/Contents/Frameworks/libDropyCore.dylib" ||
+      ! -f "$build_dir/Dropy.app/Contents/Info.plist" ||
+      ! -f "$build_dir/Dropy.app/Contents/Resources/InputEvidence.json" ||
+      "$fingerprint" != "$(cat "$build_dir/build-inputs.sha256" 2>/dev/null || true)" ]]; then
+  "$repo_dir/Scripts/build-local.sh" >/dev/null
+fi
 
 # XCTest suite through the shim. The runner calls every `func test…()` it finds.
 shim_dir="$build_dir/xctest-shim"

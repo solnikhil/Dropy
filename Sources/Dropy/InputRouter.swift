@@ -129,13 +129,21 @@ final class InputRouter {
     /// Only a successfully sent click selects a typing target. Rejected geometry or
     /// a failed caret action must never silently redirect later typing to another field.
     func click(_ identity: WindowIdentity, at point: CGPoint, expectedWindowSize: CGSize? = nil) -> Outcome {
+        var authorizedHit: AXUIElement?
+        var authorizedPressable: AXUIElement?
         // Evidence is per element class: a verified button press says nothing about
         // placing a caret, so the class under the pointer decides which routes may act.
-        send(.pointerClick, identity, expectedWindowSize: expectedWindowSize, classify: { window, origin in
-            Self.targetClass(Self.hitTest(window, CGPoint(x: origin.x + point.x, y: origin.y + point.y)))
-        }) { route, window, origin in
+        return send(.pointerClick, identity, expectedWindowSize: expectedWindowSize, classify: { window, origin in
+            let hit = Self.hitTest(window, CGPoint(x: origin.x + point.x, y: origin.y + point.y))
+            authorizedHit = hit
+            authorizedPressable = hit.flatMap(Self.pressable)
+            return Self.targetClass(hit)
+        }) { route, window, origin, target in
             let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
-            let hit = Self.hitTest(window, global)
+            let currentHit = Self.hitTest(window, global)
+            guard let target, Self.targetClass(currentHit) == target,
+                  Self.sameElement(authorizedHit, currentHit) else { return "clickTargetChanged" }
+            let hit = authorizedHit
             let result: String?
             switch route {
             case .windowTargetedEvent:
@@ -143,9 +151,12 @@ final class InputRouter {
             case .accessibility:
                 guard let hit else { return "nothingPressable" }
                 if Self.isTextElement(hit) {
+                    guard Self.windowID(of: hit) == identity.windowID else { return "clickTargetChanged" }
                     result = Self.placeCaret(hit, at: global)
                 } else {
-                    guard let pressable = Self.pressable(from: hit) else { return "nothingPressable" }
+                    guard let pressable = authorizedPressable else { return "nothingPressable" }
+                    guard Self.sameElement(pressable, Self.pressable(from: hit)),
+                          Self.windowID(of: pressable) == identity.windowID else { return "clickTargetChanged" }
                     let error = AXUIElementPerformAction(pressable, kAXPressAction as CFString)
                     result = error == .success ? nil : "axError(\(error.rawValue))"
                 }
@@ -176,7 +187,7 @@ final class InputRouter {
     }
 
     func scroll(_ identity: WindowIdentity, at point: CGPoint, delta: CGSize, expectedWindowSize: CGSize? = nil) -> Outcome {
-        send(.scroll, identity, expectedWindowSize: expectedWindowSize) { route, window, origin in
+        send(.scroll, identity, expectedWindowSize: expectedWindowSize) { route, window, origin, _ in
             let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
             switch route {
             case .windowTargetedEvent:
@@ -195,7 +206,7 @@ final class InputRouter {
     }
 
     func type(_ identity: WindowIdentity, text: String) -> Outcome {
-        send(.text, identity) { route, _, _ in
+        send(.text, identity) { route, _, _, _ in
             guard route == .accessibility else { return "routeNotImplemented" }
             guard let target = self.textTargets[identity] else { return "noTextElementChosen" }
             // The element must still belong to the exact window.
@@ -215,11 +226,19 @@ final class InputRouter {
         return pressable(from: hit) == nil ? .other : .pressable
     }
 
+    private static func sameElement(_ first: AXUIElement?, _ second: AXUIElement?) -> Bool {
+        switch (first, second) {
+        case (nil, nil): return true
+        case (let first?, let second?): return CFEqual(first, second)
+        default: return false
+        }
+    }
+
     /// Resolves the exact window, plans, and tries each verified route until one applies.
     /// `classify` names the element class under the pointer for pointer kinds.
     private func send(_ kind: InputKind, _ identity: WindowIdentity, expectedWindowSize: CGSize? = nil,
                       classify: ((AXUIElement, CGPoint) -> InputTargetClass)? = nil,
-                      _ perform: (InputRoute, AXUIElement, CGPoint) -> String?) -> Outcome {
+                      _ perform: (InputRoute, AXUIElement, CGPoint, InputTargetClass?) -> String?) -> Outcome {
         // Checked on every send, not only when the preview was configured: the permission
         // can be revoked while the overlay is open.
         guard trustCheck() else {
@@ -262,7 +281,7 @@ final class InputRouter {
         let origin = frame.origin
         var reasons: [String] = []
         for route in routes {
-            if let reason = perform(route, window, origin) {
+            if let reason = perform(route, window, origin, target) {
                 reasons.append("\(route.rawValue):\(reason)")
                 continue
             }

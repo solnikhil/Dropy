@@ -108,6 +108,24 @@ struct DeviceInputRouterChecks {
         check(router.type(identity, text: "must-not-send") == .notApplicable("accessibility:noTextElementChosen"),
               "a stale target is dropped, not retried")
 
+        // Planning must not authorize a replacement target. Version lookup happens
+        // after the pointer class is captured and before the route is executed;
+        // replace the fixture field there to exercise that exact boundary.
+        let changingTarget = InputRouter(journal: PlacementJournal(url: root.appendingPathComponent("changing.json")),
+                                         evidence: testEvidence(), versionLookup: { _ in
+            DistributedNotificationCenter.default().postNotificationName(
+                .init("org.dropy.inputfixture.command"), object: "rebuild:A", userInfo: nil, deliverImmediately: true)
+            settle(0.6)
+            return "1.0"
+        })
+        let changedOutcome = changingTarget.click(identity, at: point, expectedWindowSize: windowFrame.size)
+        check({ if case .notApplicable(let reason) = changedOutcome { return reason.contains("clickTargetChanged") }
+                else { return false } }(), "a target replaced between planning and execution is refused", "\(changedOutcome)")
+        check(changingTarget.type(identity, text: "must-not-send") == .notApplicable("accessibility:noTextElementChosen"),
+              "a replacement target cannot become a typing target")
+        check(textField(a).map(value) == beforeA + "q" && value(fieldB) == beforeB,
+              "replacement during planning sent nothing")
+
         // Sending never moved the pointer, switched the frontmost app or changed desktops.
         check(CGEvent(source: nil)?.location == pointerBefore, "pointer never moved")
         check(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontBefore, "frontmost app unchanged")
