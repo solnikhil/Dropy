@@ -9,6 +9,10 @@ struct CapturableWindow {
     let processLaunchDate: Date
     let bundleIdentifier: String?
     let displayName: String
+    /// The owning app is pinned, so this window is offered before the unpinned ones.
+    let isPinned: Bool
+    /// 1–9 when a number key in the picker selects this window.
+    let quickSelectKey: Int?
 
     var identity: WindowIdentity {
         WindowIdentity(processID: processID,
@@ -55,7 +59,8 @@ enum WindowCatalog {
             application.bundleIdentifier == identity.bundleIdentifier
     }
 
-    static func availableWindows() async throws -> [CapturableWindow] {
+    /// - Parameter pinned: bundle identifiers whose windows are offered first and numbered.
+    static func availableWindows(pinned: [String] = []) async throws -> [CapturableWindow] {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: false)
         var eligible: [UInt32: (window: SCWindow, launchDate: Date)] = [:]
@@ -74,9 +79,10 @@ enum WindowCatalog {
                 title: (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                 layer: window.windowLayer,
                 size: window.frame.size,
-                isOnScreen: window.isOnScreen))
+                isOnScreen: window.isOnScreen,
+                bundleIdentifier: owner.bundleIdentifier))
         }
-        return WindowPicker.entries(from: summaries).compactMap { entry in
+        return WindowPicker.entries(from: summaries, pinned: pinned).compactMap { entry in
             guard let (window, launchDate) = eligible[entry.windowID],
                   let owner = window.owningApplication else { return nil }
             return CapturableWindow(window: window,
@@ -84,7 +90,9 @@ enum WindowCatalog {
                                     processID: owner.processID,
                                     processLaunchDate: launchDate,
                                     bundleIdentifier: owner.bundleIdentifier,
-                                    displayName: entry.label)
+                                    displayName: entry.displayTitle,
+                                    isPinned: entry.isPinned,
+                                    quickSelectKey: entry.quickSelectKey)
         }
     }
 }

@@ -177,11 +177,11 @@ final class HandOffTests: XCTestCase {
         XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: identity, frame: frame,
                                              sourceWindowSize: size), .success(size))
         XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: identity, frame: frame,
-                                             sourceWindowSize: size, handOffActive: true),
+                                             sourceWindowSize: size, contentMode: .fit, handOffActive: true),
                        .failure(.handOffActive))
         // The hand-off outranks every other reason, so no other refusal can hide it.
         XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: nil, frame: nil,
-                                             sourceWindowSize: nil, handOffActive: true),
+                                             sourceWindowSize: nil, contentMode: .fit, handOffActive: true),
                        .failure(.handOffActive))
     }
 

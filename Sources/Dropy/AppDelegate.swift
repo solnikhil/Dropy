@@ -36,9 +36,15 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    containment: SourceContainmentReader(journal: placementJournal, tabs: parkingTabs))
         // A handed-over window is the person's again: no tab may cover it, and a tab comes
         // back only when the end of a hand-off parked it again.
-        handOff.onRestored = { [weak self] identity in self?.parkingTabs.remove(identity) }
+        handOff.onRestored = { [weak self] identity in
+            self?.parkingTabs.remove(identity)
+            self?.overlay?.sourceContainmentChanged()
+        }
         handOff.onRecoveryRequired = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
-        handOff.onReparked = { [weak self] entry in self?.parkingTabs.show(for: entry) }
+        handOff.onReparked = { [weak self] entry in
+            self?.parkingTabs.show(for: entry)
+            self?.overlay?.sourceContainmentChanged()
+        }
         sourceTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
         ) { [weak self] notification in

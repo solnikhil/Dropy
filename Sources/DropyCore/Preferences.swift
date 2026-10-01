@@ -51,6 +51,15 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     /// Send clicks, scrolling and typing in the preview to the source window, where
     /// verified. Off by default: interaction is a beta that needs Accessibility.
     public var interactivePreview: Bool
+    /// The crop region mode shows, per source app. Keyed by bundle identifier because the
+    /// choice is about an app's layout (its sidebar, its video area), not about one window
+    /// that closes when the app is quit.
+    public var selectedRegions: [String: NormalizedRegion]
+    /// Apps offered first in the picker, in the order they were pinned. Assigning this
+    /// property drops blanks and repeats, so the list can always be numbered.
+    public var pinnedBundleIdentifiers: [String] {
+        didSet { pinnedBundleIdentifiers = AppPinning.normalized(pinnedBundleIdentifiers) }
+    }
 
     public init(
         trigger: Trigger = .notchHover,
@@ -60,7 +69,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         sizePreset: SizePreset = .medium,
         selectedBundleIdentifier: String? = nil,
         lastUsedBundleIdentifier: String? = nil,
-        interactivePreview: Bool = false
+        interactivePreview: Bool = false,
+        selectedRegions: [String: NormalizedRegion] = [:],
+        pinnedBundleIdentifiers: [String] = []
     ) {
         self.trigger = trigger
         self.openBehavior = openBehavior
@@ -70,11 +81,15 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.selectedBundleIdentifier = selectedBundleIdentifier
         self.lastUsedBundleIdentifier = lastUsedBundleIdentifier
         self.interactivePreview = interactivePreview
+        self.selectedRegions = selectedRegions
+        // A property observer does not run for an initializer's own assignment.
+        self.pinnedBundleIdentifiers = AppPinning.normalized(pinnedBundleIdentifiers)
     }
 
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
         case selectedBundleIdentifier, lastUsedBundleIdentifier, interactivePreview
+        case selectedRegions, pinnedBundleIdentifiers
     }
 
     /// Settings saved before a field existed keep every other choice; a new field takes
@@ -90,5 +105,43 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         selectedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .selectedBundleIdentifier)
         lastUsedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .lastUsedBundleIdentifier)
         interactivePreview = try container.decodeIfPresent(Bool.self, forKey: .interactivePreview) ?? defaults.interactivePreview
+        // A region that no longer satisfies its invariants is dropped, like any other
+        // unreadable field: losing one crop must not lose every other setting. Losing it
+        // is safe because a missing region only means the whole window is shown.
+        if let stored = try? container.decodeIfPresent([String: NormalizedRegion].self, forKey: .selectedRegions) {
+            selectedRegions = stored
+        } else {
+            selectedRegions = defaults.selectedRegions
+        }
+        pinnedBundleIdentifiers = AppPinning.normalized(
+            try container.decodeIfPresent([String].self, forKey: .pinnedBundleIdentifiers) ?? defaults.pinnedBundleIdentifiers)
+    }
+
+    // MARK: Per-app choices
+    //
+    // An app with no bundle identifier (a bare executable) can be previewed but cannot be
+    // remembered: there is nothing stable to key the choice by, and keying it by process
+    // would silently apply someone else's crop after a PID is reused.
+
+    public func selectedRegion(for bundleIdentifier: String?) -> NormalizedRegion? {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
+        return selectedRegions[bundleIdentifier]
+    }
+
+    /// Stores a region for an app, or clears it when `region` is nil.
+    public mutating func setSelectedRegion(_ region: NormalizedRegion?, for bundleIdentifier: String?) {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return }
+        selectedRegions[bundleIdentifier] = region
+    }
+
+    public func isPinned(_ bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return false }
+        return pinnedBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    /// Pins an app at the end of the list, or unpins it, keeping the other pins' order.
+    public mutating func togglePin(_ bundleIdentifier: String?) {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return }
+        pinnedBundleIdentifiers = AppPinning.toggled(pinnedBundleIdentifiers, bundleIdentifier: bundleIdentifier)
     }
 }

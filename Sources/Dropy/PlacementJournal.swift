@@ -71,6 +71,9 @@ final class PlacementJournal {
             [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite)
                 && frame.width > 0 && frame.height > 0
         }
+        if let handOff = entry.handOff {
+            guard frameIsValid(handOff.restoredTo.frame), handOff.startedAt.timeIntervalSince1970.isFinite else { return false }
+        }
         return entry.identity.processID > 0 && entry.identity.windowID > 0
             && (entry.identity.bundleIdentifier.map { !$0.isEmpty } ?? true)
             && entry.identity.processLaunchDate.timeIntervalSince1970.isFinite

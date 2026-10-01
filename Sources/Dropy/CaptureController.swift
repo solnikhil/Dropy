@@ -70,8 +70,8 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
         let scale = info?[.contentScale] as? CGFloat
         let density = info?[.scaleFactor] as? CGFloat
         let measuredGeometry = configuredGeometry.flatMap { config in
-            CaptureGeometry.measured(windowID: config.windowID, pixelSize: config.pixelSize,
-                                     contentRect: rect, contentScale: scale, scaleFactor: density)
+            CaptureGeometry.measured(configured: config, contentRect: rect, contentScale: scale,
+                                     scaleFactor: density)
         }
         if logsGeometry, diagnosticFrames < 6 {
             diagnosticFrames += 1
@@ -172,21 +172,38 @@ enum CaptureStartError: Error { case previousStreamStopping }
 
 @MainActor
 final class CaptureController {
+    /// Everything about a configuration that decides which pixels arrive: the surface to
+    /// fill, the crop to fill it from, and the region that crop came from.
+    ///
+    /// Kept as one value so a rate change cannot quietly resize the stream, and so a
+    /// reconfiguration can be skipped only when nothing about the pixels changed. Comparing
+    /// output size alone was not enough once a crop existed: a proportional resize, or
+    /// switching regions, can leave the surface the same size while the crop moves.
+    private struct CaptureShape: Equatable {
+        var windowID: UInt32
+        var windowSize: CGSize
+        var pixelSize: CGSize
+        var region: NormalizedRegion?
+
+        var geometry: CaptureGeometry {
+            CaptureGeometry(windowID: windowID, windowSize: windowSize, pixelSize: pixelSize, crop: region)
+        }
+    }
+
     private var stream: SCStream?
     private var mailbox: FrameMailbox?
     /// The active stream's changed-frame rate monitor; nil when nothing is capturing.
     private var hiddenRate: HiddenSourceRate?
     private var stopObserver: StreamStopObserver?
     private var requestID = UUID()
-    private var outputSize: CGSize?
+    /// The shape the live stream is configured with, or nil when no stream is active.
+    private var appliedShape: CaptureShape?
     /// Keep stopped streams in the count until ScreenCaptureKit confirms a stop.
     /// Retaining a failed stop also keeps it available for diagnosis.
     private var runningStreams: [ObjectIdentifier: (stream: SCStream, windowID: UInt32, observer: StreamStopObserver)] = [:]
     private var stopRetries: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var stopping: Set<ObjectIdentifier> = []
     private var recorders: [ObjectIdentifier: CaptureMetricsRecorder] = [:]
-    private var activeWindow: SCWindow?
-    private weak var activeRenderer: MetalFrameView?
     private var captureIdle = false
     private var desiredIdle = false
     private var latestActivitySequence = 0
@@ -196,9 +213,10 @@ final class CaptureController {
 
     /// Starts one stream. `onUnexpectedStop` runs on the main actor only while this
     /// stream is still the active one; a stop Dropy requested is never reported.
+    /// `crop` is the region mode's selection, or nil to capture the whole window.
     /// Returns false when a newer start or a stop superseded this request.
     @discardableResult
-    func start(window: SCWindow, renderer: MetalFrameView,
+    func start(window: SCWindow, renderer: MetalFrameView, crop: NormalizedRegion?,
                onUnexpectedStop: @escaping @MainActor (Error) -> Void) async throws -> Bool {
         let request = UUID()
         let requestedAt = HostClock.nowMilliseconds()
@@ -206,7 +224,8 @@ final class CaptureController {
         await stopActiveStream(reason: "replaced")
         guard request == requestID else { return false }
         guard runningStreams.isEmpty else { throw CaptureStartError.previousStreamStopping }
-        let configuration = makeConfiguration(window: window, renderer: renderer)
+        let shape = shape(window: window, renderer: renderer, crop: crop)
+        let configuration = makeConfiguration(shape)
         let observer = StreamStopObserver { [weak self] stoppedStream, error in
             let stoppedID = ObjectIdentifier(stoppedStream)
             Task { @MainActor [weak self] in
@@ -239,8 +258,7 @@ final class CaptureController {
             recorder.finish(reason: "startFailed(\((error as NSError).code))")
             throw error
         }
-        mailbox.setGeometry(CaptureGeometry(windowID: window.windowID, windowSize: window.frame.size,
-                                            pixelSize: CGSize(width: configuration.width, height: configuration.height)))
+        mailbox.setGeometry(shape.geometry)
         recorders[ObjectIdentifier(stream)] = recorder
         // The delegate can stop a stream before startCapture returns. Publish
         // this session first so that an early stop is not silently discarded.
@@ -248,9 +266,7 @@ final class CaptureController {
         self.mailbox = mailbox
         self.hiddenRate = hiddenRate
         self.stopObserver = observer
-        self.outputSize = CGSize(width: configuration.width, height: configuration.height)
-        self.activeWindow = window
-        self.activeRenderer = renderer
+        self.appliedShape = shape
         do {
             try await stream.startCapture()
             recorder.startReturned()
@@ -272,32 +288,28 @@ final class CaptureController {
         return true
     }
 
-    /// Keep capture resolution aligned with a resized source without tearing
-    /// down the renderer or selecting a new window by title.
-    func updateWindow(_ window: SCWindow, renderer: MetalFrameView) async throws {
+    /// Keep capture resolution and any region crop aligned with a resized source without
+    /// tearing down the renderer or selecting a new window by title.
+    func updateWindow(_ window: SCWindow, renderer: MetalFrameView, crop: NormalizedRegion?) async throws {
         guard let stream else { return }
         let request = requestID
         await acquireConfiguration()
         defer { releaseConfiguration() }
         guard request == requestID, self.stream === stream else { return }
-        let configuration = makeConfiguration(window: window, renderer: renderer)
-        let nextSize = CGSize(width: configuration.width, height: configuration.height)
-        let nextGeometry = CaptureGeometry(windowID: window.windowID, windowSize: window.frame.size, pixelSize: nextSize)
-        guard nextSize != outputSize else {
-            // Same output size (e.g. a proportional resize): content is scaled into it.
-            mailbox?.setGeometry(nextGeometry)
-            activeWindow = window
-            activeRenderer = renderer
+        let next = shape(window: window, renderer: renderer, crop: crop)
+        guard next != appliedShape else {
+            // Nothing about the pixels changed, so the stream keeps running. The window may
+            // still have moved or been re-measured at the same size, which the geometry says.
+            mailbox?.setGeometry(next.geometry)
+            appliedShape = next
             return
         }
-        try await stream.updateConfiguration(configuration)
+        try await stream.updateConfiguration(makeConfiguration(next))
         guard request == requestID else { return }
         // Frames drawn before this point keep the old output size, which the preview
         // input gate rejects against the new geometry.
-        mailbox?.setGeometry(nextGeometry)
-        outputSize = nextSize
-        activeWindow = window
-        activeRenderer = renderer
+        mailbox?.setGeometry(next.geometry)
+        appliedShape = next
     }
 
     /// While the source is unchanged, capture at a low rate; sustained changes
@@ -314,12 +326,13 @@ final class CaptureController {
     private func reconcileRate(request: UUID) async {
         await acquireConfiguration()
         defer { releaseConfiguration() }
-        guard request == requestID, let stream, let window = activeWindow,
-              let renderer = activeRenderer, desiredIdle != captureIdle else { return }
+        guard request == requestID, let stream, let shape = appliedShape,
+              desiredIdle != captureIdle else { return }
         let targetIdle = desiredIdle
-        let configuration = makeConfiguration(window: window, renderer: renderer, idle: targetIdle)
+        // The same shape, only a different frame interval: a rate change must never
+        // resize the stream or move its crop.
         do {
-            try await stream.updateConfiguration(configuration)
+            try await stream.updateConfiguration(makeConfiguration(shape, idle: targetIdle))
         } catch {
             guard request == requestID else { return }
             NSLog("Dropy capture rate update failed: code=%ld", (error as NSError).code)
@@ -328,7 +341,6 @@ final class CaptureController {
         }
         guard request == requestID, self.stream === stream else { return }
         captureIdle = targetIdle
-        outputSize = CGSize(width: configuration.width, height: configuration.height)
         mailbox?.metrics.recordRateChange(idle: targetIdle)
         if desiredIdle != targetIdle {
             Task { await reconcileRate(request: request) }
@@ -366,23 +378,40 @@ final class CaptureController {
         CMTime(value: 1, timescale: idle ? 10 : 60)
     }
 
-    private func makeConfiguration(window: SCWindow, renderer: MetalFrameView,
-                                   idle: Bool? = nil) -> SCStreamConfiguration {
-        let configuration = SCStreamConfiguration()
+    /// Single-window capture always delivers the whole window: ScreenCaptureKit ignores
+    /// sourceRect for this filter. Request enough full-window pixels for the region,
+    /// then crop in Metal without a CPU image copy.
+    private func shape(window: SCWindow, renderer: MetalFrameView,
+                       crop: NormalizedRegion?) -> CaptureShape {
         let backingScale = renderer.window?.backingScaleFactor ?? 2
-        let sourceWidth = max(window.frame.width, 1)
-        let sourceHeight = max(window.frame.height, 1)
-        let horizontalScale = renderer.bounds.width * backingScale / sourceWidth
-        let verticalScale = renderer.bounds.height * backingScale / sourceHeight
+        let windowSize = CGSize(width: max(window.frame.width, 1), height: max(window.frame.height, 1))
+        if let crop, let plan = RegionSelection.crop(region: crop, windowSize: windowSize,
+                                                    previewSize: renderer.bounds.size,
+                                                    backingScale: backingScale) {
+            return CaptureShape(windowID: window.windowID, windowSize: window.frame.size,
+                                pixelSize: RegionSelection.fullSurface(region: crop, plan: plan,
+                                    windowSize: windowSize, backingScale: backingScale), region: crop)
+        }
+        let horizontalScale = renderer.bounds.width * backingScale / windowSize.width
+        let verticalScale = renderer.bounds.height * backingScale / windowSize.height
         let requestedScale: CGFloat
         switch renderer.contentMode {
+        // With no crop to show, region mode asks for the same pixels as fit.
         case .fit, .selectedRegion: requestedScale = min(horizontalScale, verticalScale)
         case .fill: requestedScale = max(horizontalScale, verticalScale)
         case .nativeScale: requestedScale = backingScale
         }
-        let captureScale = min(max(requestedScale, 0.1), backingScale)
-        configuration.width = max(64, Int(sourceWidth * captureScale))
-        configuration.height = max(64, Int(sourceHeight * captureScale))
+        let captureScale = min(max(requestedScale, RegionSelection.minimumCaptureScale), backingScale)
+        let pixels = CGSize(width: max(RegionSelection.minimumCropPixelSide, (windowSize.width * captureScale).rounded(.down)),
+                            height: max(RegionSelection.minimumCropPixelSide, (windowSize.height * captureScale).rounded(.down)))
+        return CaptureShape(windowID: window.windowID, windowSize: window.frame.size,
+                            pixelSize: pixels, region: nil)
+    }
+
+    private func makeConfiguration(_ shape: CaptureShape, idle: Bool? = nil) -> SCStreamConfiguration {
+        let configuration = SCStreamConfiguration()
+        configuration.width = Int(shape.pixelSize.width)
+        configuration.height = Int(shape.pixelSize.height)
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.minimumFrameInterval = Self.frameInterval(idle: idle ?? captureIdle)
         // One surface stays retained for unchanged-frame comparison, so allow one
@@ -459,9 +488,7 @@ final class CaptureController {
 
     /// Forget the active stream synchronously, so no later callback treats it as current.
     private func detachActiveStream() -> SCStream? {
-        outputSize = nil
-        activeWindow = nil
-        activeRenderer = nil
+        appliedShape = nil
         captureIdle = false
         desiredIdle = false
         latestActivitySequence = 0

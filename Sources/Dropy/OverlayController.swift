@@ -22,6 +22,14 @@ final class OverlayController: NSObject {
     private var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
     private var selectedIdentity: WindowIdentity?
+    /// The selected window's owning app, for the preferences that are per app: its crop
+    /// and whether it is pinned.
+    private var selectedBundleIdentifier: String?
+    /// A region is being dragged: the preview shows the whole window uncropped, all input
+    /// stays refused, and Esc cancels instead of closing the overlay.
+    private var regionSelecting = false
+    private var regionButton: NSButton?
+    private var clearRegionButton: NSButton?
     /// Key composition state (a pending dead key); reset whenever the target window is.
     private var keyInput = PreviewKeyInput()
     private var selectedApplicationName = ""
@@ -108,7 +116,13 @@ final class OverlayController: NSObject {
                   (presentedTime - openedAt) * 1_000, openNumber, openNumber > 1 ? "yes" : "no")
         }
         self.panel = panel
-        panel.onEscape = { [weak self] in self?.dismiss(.escape) }
+        // Esc cancels a region drag before it dismisses: the overlay is the only place the
+        // drag can be abandoned.
+        panel.onEscape = { [weak self] in
+            guard let self else { return }
+            if self.regionSelecting { self.cancelRegionSelection(); return }
+            self.dismiss(.escape)
+        }
         panel.onKey = { [weak self] event in self?.handleKey(event) ?? false }
         let frontmost = NSWorkspace.shared.frontmostApplication
         previousApplication = frontmost?.processIdentifier == getpid() ? nil : frontmost
@@ -133,6 +147,8 @@ final class OverlayController: NSObject {
         if let selectedIdentity { inputRouter.forget(selectedIdentity) }
         keyInput = PreviewKeyInput()
         selectedIdentity = nil
+        selectedBundleIdentifier = nil
+        regionSelecting = false
         selectedWindowSize = nil
         identityTask?.cancel()
         identityTask = nil
@@ -234,7 +250,7 @@ final class OverlayController: NSObject {
         if !state.isCapturing { status?.stringValue = "Finding open windows…" }
         Task {
             do {
-                let windows = try await WindowCatalog.availableWindows()
+                let windows = try await WindowCatalog.availableWindows(pinned: preferences.value.pinnedBundleIdentifiers)
                 guard request == generation, state != .closed else { return }
                 available = windows
                 rebuildWindowList()
@@ -278,7 +294,7 @@ final class OverlayController: NSObject {
     private func reloadListKeepingState() {
         let request = generation
         Task {
-            guard let windows = try? await WindowCatalog.availableWindows(),
+            guard let windows = try? await WindowCatalog.availableWindows(pinned: preferences.value.pinnedBundleIdentifiers),
                   request == generation, state.failure != nil else { return }
             available = windows
             rebuildWindowList()
@@ -348,6 +364,16 @@ final class OverlayController: NSObject {
         privacy.isHidden = true
         root.addSubview(privacy)
         privacyButton = privacy
+        let region = NSButton(title: "Select region", target: self, action: #selector(regionClicked))
+        region.frame = CGRect(x: 288, y: size.height - 124, width: 110, height: 27)
+        region.isEnabled = false
+        root.addSubview(region)
+        regionButton = region
+        let clear = NSButton(title: "Clear region", target: self, action: #selector(clearRegionClicked))
+        clear.frame = CGRect(x: 404, y: size.height - 124, width: 110, height: 27)
+        clear.isEnabled = false
+        root.addSubview(clear)
+        clearRegionButton = clear
 
         let scroll = NSScrollView(frame: CGRect(x: 18, y: 50,
                                                 width: 252, height: size.height - 185))
@@ -379,6 +405,7 @@ final class OverlayController: NSObject {
             view.layer?.masksToBounds = true
             previewShell.addSubview(view)
             renderer = view
+            view.onRegionSelected = { [weak self] rect in self?.completeRegion(rect) }
         } catch {
             let failure = NSTextField(labelWithString: "Metal unavailable: \(error.localizedDescription)")
             failure.frame = CGRect(x: 15, y: 15, width: previewFrame.width - 30, height: 80)
@@ -411,11 +438,22 @@ final class OverlayController: NSObject {
         for (index, window) in available.enumerated() {
             let button = NSButton(title: window.displayName, target: self,
                                   action: #selector(windowClicked(_:)))
-            button.frame = CGRect(x: 0, y: 0, width: 226, height: 42)
+            button.frame = CGRect(x: 0, y: 0, width: 194, height: 42)
             button.tag = index
             button.alignment = .left
             button.lineBreakMode = .byTruncatingTail
-            list.addArrangedSubview(button)
+            let row = NSStackView(views: [button])
+            row.orientation = .horizontal
+            row.spacing = 2
+            button.widthAnchor.constraint(equalToConstant: 194).isActive = true
+            if window.bundleIdentifier != nil {
+                let pin = NSButton(title: window.isPinned ? "★" : "☆", target: self, action: #selector(pinClicked(_:)))
+                pin.tag = index
+                pin.toolTip = window.isPinned ? "Unpin app" : "Pin app"
+                pin.widthAnchor.constraint(equalToConstant: 30).isActive = true
+                row.addArrangedSubview(pin)
+            }
+            list.addArrangedSubview(row)
         }
         list.frame.size.height = max(CGFloat(available.count) * 49, 1)
     }
@@ -469,6 +507,10 @@ final class OverlayController: NSObject {
         keyInput = PreviewKeyInput()
         endConcealmentWatch()
         selectedIdentity = selected.identity
+        selectedBundleIdentifier = selected.bundleIdentifier
+        regionSelecting = false
+        renderer.isSelectingRegion = false
+        renderer.contentMode = preferences.value.contentMode
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
         restartedAfterInterruption = false
@@ -523,7 +565,7 @@ final class OverlayController: NSObject {
             return
         }
         do {
-            let started = try await capture.start(window: window, renderer: renderer,
+            let started = try await capture.start(window: window, renderer: renderer, crop: activeCrop,
                                                   onUnexpectedStop: onStop)
             guard started, isCurrent(request, identity) else { return }
             // A new stream carries a new rate monitor, which knows nothing about an
@@ -562,7 +604,7 @@ final class OverlayController: NSObject {
                         await self.fail(self.unavailable(resolution), request: request)
                         return
                     }
-                    try await self.capture.updateWindow(window, renderer: renderer)
+                    try await self.capture.updateWindow(window, renderer: renderer, crop: self.activeCrop)
                     guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
                     self.showVisibility(of: window)
                 } catch {
@@ -759,6 +801,15 @@ final class OverlayController: NSObject {
     /// the source's condition (parked, minimized, other desktop) can change.
     func configureInteraction() {
         guard let renderer else { return }
+        regionButton?.isEnabled = state.isCapturing && selectedBundleIdentifier != nil
+        clearRegionButton?.isEnabled = selectedBundleIdentifier != nil && (regionSelecting || activeCrop != nil)
+        if regionSelecting || preferences.value.contentMode == .selectedRegion {
+            renderer.onClick = nil
+            renderer.onScroll = nil
+            renderer.onUnsupported = { [weak self] _ in self?.flash("View only in region mode") }
+            interactionStatus?.stringValue = "View only in region mode"
+            return
+        }
         let enabled = preferences.value.interactivePreview
         let trusted = WindowPlacer.isTrusted
         // A hand-off has the real window. The installed handlers stay, so anything aimed
@@ -774,7 +825,7 @@ final class OverlayController: NSObject {
             renderer.onUnsupported = nil
             if interactionMessage == nil {
                 interactionStatus?.stringValue = state.isCapturing
-                    ? InteractionLabel.text(for: .viewOnly, enabled: enabled, trusted: trusted) : ""
+                    ? InteractionLabel.text(for: .viewOnly, enabled: enabled, trusted: trusted, contentMode: preferences.value.contentMode) : ""
             }
             configureHandOff(typingVerified: false)
             return
@@ -787,12 +838,12 @@ final class OverlayController: NSObject {
             let frame = window.convertToScreen(renderer.convert(renderer.bounds, to: nil))
             let top = (NSScreen.screens.first?.frame.maxY ?? frame.maxY) - frame.maxY
             NSLog("Dropy input: preview=%.0f,%.0f,%.0f,%.0f support=%@", frame.minX, top, frame.width, frame.height,
-                  InteractionLabel.text(for: support, enabled: true, trusted: true))
+                  InteractionLabel.text(for: support, enabled: true, trusted: true, contentMode: preferences.value.contentMode))
         }
         if interactionMessage == nil {
             // An app that updated past its evidence says so instead of a generic "untested".
             let reason = support == .viewOnly ? InteractionLabel.viewOnlyReason(inputRouter.evidenceMatch(for: identity)) : nil
-            interactionStatus?.stringValue = reason ?? InteractionLabel.text(for: support, enabled: true, trusted: true)
+            interactionStatus?.stringValue = reason ?? InteractionLabel.text(for: support, enabled: true, trusted: true, contentMode: preferences.value.contentMode)
         }
         // Each event re-checks that the drawn frame is this selection's window at its
         // current size; the router then confirms that size against the live window.
@@ -838,6 +889,7 @@ final class OverlayController: NSObject {
         let frame = renderer.presentedFrame
         switch PreviewInputGate.check(handler: identity, selected: selectedIdentity, frame: frame,
                                       sourceWindowSize: selectedWindowSize,
+                                      contentMode: regionSelecting ? .selectedRegion : preferences.value.contentMode,
                                       handOffActive: handOff.isActive(for: identity)) {
         case .failure(let refusal):
             NSLog("Dropy input: kind=%@ gate=%@", kind.rawValue, String(describing: refusal))
@@ -855,6 +907,7 @@ final class OverlayController: NSObject {
     private static func message(for refusal: PreviewInputGate.Refusal) -> String {
         switch refusal {
         case .handOffActive: HandOff.inputRefusedLabel
+        case .regionMode: "View only in region mode"
         case .sourceChanged, .frameFromOtherWindow: "Switching windows · input not sent"
         case .noFrame, .geometryChanging: "Preview updating · input not sent"
         }
@@ -868,6 +921,17 @@ final class OverlayController: NSObject {
         // a control: a hand-off starts and ends only from the button.
         if handOff.isActive(for: selectedIdentity) {
             flash(HandOff.inputRefusedLabel)
+            return true
+        }
+        if regionSelecting || preferences.value.contentMode == .selectedRegion, state.isCapturing {
+            flash("View only in region mode")
+            return true
+        }
+        if let key = AppPinning.quickSelect(characters: event.characters,
+                                           modifiers: PreviewModifiers(event.modifierFlags),
+                                           pickerShowing: !state.isCapturing),
+           let index = available.firstIndex(where: { $0.quickSelectKey == key }) {
+            selectWindow(at: index)
             return true
         }
         guard preferences.value.interactivePreview, WindowPlacer.isTrusted, state.isCapturing,
@@ -918,6 +982,76 @@ final class OverlayController: NSObject {
         }
         interactionMessage = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    private var activeCrop: NormalizedRegion? {
+        guard !regionSelecting, preferences.value.contentMode == .selectedRegion else { return nil }
+        return preferences.value.selectedRegion(for: selectedBundleIdentifier)
+    }
+
+    private func restartRegionCapture() {
+        guard let identity = selectedIdentity, let renderer else { return }
+        let request = UUID()
+        generation = request
+        identityTask?.cancel()
+        renderer.clear()
+        renderer.contentMode = regionSelecting ? .fit : preferences.value.contentMode
+        renderer.isSelectingRegion = regionSelecting
+        startCapture(identity, request: request, renderer: renderer)
+        configureInteraction()
+    }
+
+    @objc private func regionClicked() {
+        guard state.isCapturing, selectedBundleIdentifier != nil else { return }
+        regionSelecting = true
+        restartRegionCapture()
+        flash("Drag over the preview · Esc cancels")
+    }
+
+    private func cancelRegionSelection() {
+        guard regionSelecting else { return }
+        regionSelecting = false
+        restartRegionCapture()
+    }
+
+    private func completeRegion(_ rect: CGRect) {
+        guard regionSelecting, let renderer, let identity = selectedIdentity,
+              let frame = renderer.presentedFrame, let geometry = frame.geometry,
+              geometry.windowID == identity.windowID, geometry.crop == nil,
+              let region = RegionSelection.regionInWindow(fromDrag: rect.origin,
+                  to: CGPoint(x: rect.maxX, y: rect.maxY), in: renderer.bounds.size,
+                  capturePixelSize: frame.pixelSize, backingScale: renderer.window?.backingScaleFactor ?? 2) else {
+            flash("Choose a larger region inside the preview")
+            return
+        }
+        preferences.update {
+            $0.setSelectedRegion(region, for: selectedBundleIdentifier)
+            $0.contentMode = .selectedRegion
+        }
+        regionSelecting = false
+        restartRegionCapture()
+    }
+
+    @objc private func clearRegionClicked() {
+        regionSelecting = false
+        preferences.update {
+            $0.setSelectedRegion(nil, for: selectedBundleIdentifier)
+            $0.contentMode = .fit
+        }
+        restartRegionCapture()
+    }
+
+    @objc private func pinClicked(_ button: NSButton) {
+        guard available.indices.contains(button.tag) else { return }
+        preferences.update { $0.togglePin(available[button.tag].bundleIdentifier) }
+        // Refresh only the picker. Do not restart the selected capture to change pin order.
+        let session = overlaySession
+        Task { [weak self] in
+            guard let self, let windows = try? await WindowCatalog.availableWindows(pinned: self.preferences.value.pinnedBundleIdentifiers),
+                  session == self.overlaySession, self.state != .closed else { return }
+            self.available = windows
+            self.rebuildWindowList()
+        }
     }
 
     @objc private func privacyClicked() {
