@@ -15,8 +15,9 @@ stage="$(mktemp -d "$output/.package.XXXXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/build"
 source "$repo_dir/Scripts/lib/local-build-inputs.zsh"
+build_target="$(local_macos_target "$repo_dir")"
 inputs="$(local_build_fingerprint "$repo_dir")"
-swiftc -swift-version 6 -O -parse-as-library -emit-library -emit-module -module-name DropyCore \
+swiftc -target "$build_target" -swift-version 6 -O -parse-as-library -emit-library -emit-module -module-name DropyCore \
   -Xlinker -install_name -Xlinker '@rpath/libDropyCore.dylib' \
   -o "$stage/build/libDropyCore.dylib" "$repo_dir"/Sources/DropyCore/*.swift
 swiftc -swift-version 6 -I "$stage/build" -L "$stage/build" -lDropyCore \
@@ -38,7 +39,7 @@ for name in "${plan[app]}" "${plan[zip]}" "${plan[dmg]}" "${plan[checksums]}"; d
 done
 app="$stage/${plan[app]}"
 mkdir -p "$app/Contents/"{MacOS,Frameworks,Resources}
-swiftc -swift-version 6 -O -I "$stage/build" -L "$stage/build" -lDropyCore \
+swiftc -target "$build_target" -swift-version 6 -O -I "$stage/build" -L "$stage/build" -lDropyCore \
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' \
   -o "$app/Contents/MacOS/Dropy" "$repo_dir"/Sources/Dropy/*.swift
 cp "$stage/build/libDropyCore.dylib" "$app/Contents/Frameworks/"

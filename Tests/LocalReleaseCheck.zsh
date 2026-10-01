@@ -29,4 +29,18 @@ fi
 if "$work/ReleaseTool" check-entitlements "$work/missing.plist" > "$work/missing.log" 2>&1; then
   print -u2 'Missing entitlement evidence was accepted'; exit 1
 fi
+# A valid signature must not hide a lower advertised OS than the Mach-O supports.
+ditto "$work/unpacked/Dropy.app" "$work/mismatched/Dropy.app"
+xcrun vtool -set-build-version macos 16.0 27.0 -replace \
+  -output "$work/new-executable" "$work/mismatched/Dropy.app/Contents/MacOS/Dropy"
+mv "$work/new-executable" "$work/mismatched/Dropy.app/Contents/MacOS/Dropy"
+chmod +x "$work/mismatched/Dropy.app/Contents/MacOS/Dropy"
+codesign --force --sign - --options runtime --entitlements "$repo_dir/Scripts/release/entitlements.plist" \
+  "$work/mismatched/Dropy.app" >/dev/null 2>&1
+short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$work/unpacked/Dropy.app/Contents/Info.plist")"
+if "$repo_dir/Scripts/release/verify.sh" "$work/mismatched/Dropy.app" --short "$short_version" --build 1 \
+    --mode dry-run --tool "$work/ReleaseTool" > "$work/deployment.log" 2>&1; then
+  print -u2 'Mismatched minimum macOS was accepted'; exit 1
+fi
+grep -q 'differs from Info.plist' "$work/deployment.log"
 print 'Release rehearsal checks passed (no app launched or notarization submitted)'

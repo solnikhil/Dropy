@@ -1,5 +1,14 @@
 # Content identity for the local app and core library. Paths are included so a
 # source removal or rename invalidates the build even when no file is newer.
+local_macos_target() {
+  local repo="$1" minimum architecture
+  minimum="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$repo/Resources/Info.plist")" || return 1
+  [[ "$minimum" =~ '^[0-9]+\.[0-9]+(\.[0-9]+)?$' ]] || { print -u2 'Invalid minimum macOS version'; return 1; }
+  architecture="$(uname -m)"
+  [[ "$architecture" == arm64 || "$architecture" == x86_64 ]] || { print -u2 'Unsupported Mac architecture'; return 1; }
+  print -r -- "$architecture-apple-macosx$minimum"
+}
+
 local_build_fingerprint() {
   python3 - "$1" <<'PY'
 import hashlib

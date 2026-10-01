@@ -6,18 +6,19 @@ build_dir="$repo_dir/.build/local"
 app_dir="$build_dir/Dropy.app"
 mkdir -p "$build_dir" "$app_dir/Contents/MacOS" "$app_dir/Contents/Frameworks"
 source "$repo_dir/Scripts/lib/local-build-inputs.zsh"
+build_target="$(local_macos_target "$repo_dir")"
 build_fingerprint="$(local_build_fingerprint "$repo_dir")"
 # A failed build may already have replaced the library, so invalidate its old
 # success marker before replacing any artifact.
 rm -f "$build_dir/build-inputs.sha256"
 
-swiftc -swift-version 6 -parse-as-library -emit-library -emit-module \
+swiftc -target "$build_target" -swift-version 6 -parse-as-library -emit-library -emit-module \
   -module-name DropyCore \
   -Xlinker -install_name -Xlinker '@rpath/libDropyCore.dylib' \
   -o "$build_dir/libDropyCore.dylib" \
   "$repo_dir"/Sources/DropyCore/*.swift
 
-swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+swiftc -target "$build_target" -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' \
   -o "$app_dir/Contents/MacOS/Dropy" \
   "$repo_dir"/Sources/Dropy/*.swift

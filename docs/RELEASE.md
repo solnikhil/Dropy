@@ -17,3 +17,9 @@ Withdraw a faulty release and republish previously validated source with a highe
 Before distribution verify: Screen Recording and Accessibility purpose text; explicit permission flow and revocation; capture limited to the selected source; no audio/camera/network entitlements; no captured pixels, typed content or window titles in exported reports; crash/recovery behavior; private per-window API compatibility and disclosure; dependency and update policy; signing/notarization on the actual release artifact; third-party app/display compatibility. These are remaining release gates, not claims of completed validation.
 
 References: [Apple bundle short-version format](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring), [Apple build-version format](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion).
+
+## Private alpha packages
+
+A tester kit may wrap an ad-hoc rehearsal app with the [private alpha guide](PRIVATE_ALPHA_TESTING.md), license, feedback template, exact source/build metadata and checksums. Such a kit is explicitly not a notarized release. The current package is native Apple Silicon only. Normal Developer ID distribution remains unavailable without the appropriate certificate and notarization credentials.
+
+Both local and packaged builds now pass an explicit target derived from `LSMinimumSystemVersion`; the package verifier checks the app and embedded library's actual Mach-O deployment versions and architecture agreement. This prevents a host macOS 27 compiler default from silently overriding the advertised macOS 15 minimum. Deployment compatibility is not a claim of runtime verification on every supported OS.
