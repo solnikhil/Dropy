@@ -118,13 +118,20 @@ public struct PreviewPointMapping: Equatable, Sendable {
 
     /// The source-window point (top-left origin, points) under a preview point (top-left
     /// origin, points), or nil over letterbox, cropped-out or degenerate areas.
+    ///
+    /// Region mode maps nothing. The crop's offset inside the window is not represented
+    /// here, and reconstructing it would put an unverified assumption about
+    /// `SCStreamConfiguration.sourceRect` between a person's pointer and another app's
+    /// window. `PreviewInputGate` refuses region mode before this is ever reached; this is
+    /// the second, independent stop.
     public func windowPoint(for viewPoint: CGPoint) -> CGPoint? {
+        guard mode != .selectedRegion else { return nil }
         guard backingScale > 0, capturePixelSize.width > 0, capturePixelSize.height > 0,
               windowSize.width > 0, windowSize.height > 0 else { return nil }
         let transform = ContentTransform(
             sourceRect: CGRect(origin: .zero, size: capturePixelSize),
             destinationRect: CGRect(x: 0, y: 0, width: viewSize.width * backingScale, height: viewSize.height * backingScale),
-            mode: mode == .selectedRegion ? .nativeScale : mode)
+            mode: mode)
         guard let pixel = transform.sourcePoint(for: CGPoint(x: viewPoint.x * backingScale, y: viewPoint.y * backingScale))
         else { return nil }
         return CGPoint(x: pixel.x * windowSize.width / capturePixelSize.width,
@@ -139,9 +146,9 @@ public struct PreviewPointMapping: Equatable, Sendable {
         let destination = CGSize(width: viewSize.width * backingScale, height: viewSize.height * backingScale)
         let scale: CGFloat
         switch mode {
-        case .fit: scale = min(destination.width / capturePixelSize.width, destination.height / capturePixelSize.height)
+        case .fit, .selectedRegion: scale = min(destination.width / capturePixelSize.width, destination.height / capturePixelSize.height)
         case .fill: scale = max(destination.width / capturePixelSize.width, destination.height / capturePixelSize.height)
-        case .nativeScale, .selectedRegion: scale = 1
+        case .nativeScale: scale = 1
         }
         // view points -> drawable pixels -> capture pixels -> window points
         let factor = backingScale / scale * windowSize.width / capturePixelSize.width
@@ -151,7 +158,18 @@ public struct PreviewPointMapping: Equatable, Sendable {
 
 /// What the preview says about interaction for the current source, in plain words.
 public enum InteractionLabel {
-    public static func text(for support: InteractionSupport, enabled: Bool, trusted: Bool) -> String {
+    /// Shown whenever the preview is cropped to a region. Region mode is view-only, and the
+    /// label says so rather than letting a click quietly do nothing.
+    public static let regionModeViewOnly = "View only in region mode"
+
+    /// `contentMode` is required rather than defaulted: the region-mode label is part of the
+    /// refusal, so a caller must not be able to omit it and show a promise of interaction
+    /// that the routing gate will not keep.
+    public static func text(for support: InteractionSupport, enabled: Bool, trusted: Bool,
+                            contentMode: ContentMode) -> String {
+        // Region mode comes first: it refuses input whatever the app, the permission or the
+        // preference say.
+        guard contentMode != .selectedRegion else { return regionModeViewOnly }
         guard enabled else { return "View only" }
         guard trusted else { return "View only · allow Accessibility for interaction" }
         switch support {
@@ -160,6 +178,15 @@ public enum InteractionLabel {
             let names = [(InputKind.pointerClick, "click"), (.scroll, "scroll"), (.text, "type")]
                 .filter { kinds.contains($0.0) }.map(\.1)
             return "Interactive (beta): " + names.joined(separator: ", ")
+        }
+    }
+
+    /// Why the routing gate would not send this event, in the preview's own words.
+    public static func text(for refusal: PreviewInputGate.Refusal) -> String {
+        switch refusal {
+        case .regionMode: return regionModeViewOnly
+        case .sourceChanged, .frameFromOtherWindow: return "Switching windows · input not sent"
+        case .noFrame, .geometryChanging: return "Preview updating · input not sent"
         }
     }
 

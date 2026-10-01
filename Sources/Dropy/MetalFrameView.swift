@@ -47,18 +47,30 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private var pressPoint: CGPoint?
     private var dragged = false
 
-    /// Pixel size of the frame on screen, or nil before the first frame.
-    var presentedPixelSize: CGSize? {
-        currentPixelBuffer.map { CGSize(width: CVPixelBufferGetWidth($0), height: CVPixelBufferGetHeight($0)) }
-    }
-    /// Stream geometry of the frame on screen; cleared with the frame.
-    private(set) var presentedGeometry: CaptureGeometry?
-    private var drawnPixelSize: CGSize?
-    private var lastPresentedSequence = -1
+    // MARK: Region selection (M4)
+    //
+    // While selecting, the view is a drawing surface for one rectangle and nothing else:
+    // no click, scroll or key reaches the source window, and the band is drawn in view
+    // points so what is released is exactly what was seen.
 
-    /// The frame on screen and the geometry it was captured with, for preview input.
-    var presentedFrame: PresentedFrame? {
-        drawnPixelSize.map { PresentedFrame(pixelSize: $0, geometry: presentedGeometry) }
+    /// The rectangle a drag selected, in view points with a top-left origin.
+    var onRegionSelected: ((CGRect) -> Void)?
+    /// Drags select a rectangle instead of being refused as unsupported input.
+    var isSelectingRegion = false {
+        didSet {
+            guard isSelectingRegion != oldValue else { return }
+            regionAnchor = nil
+            band.isHidden = true
+        }
+    }
+    private let band = NSView()
+    private var regionAnchor: CGPoint?
+
+    /// An AppKit frame (bottom-left origin) for two points given with a top-left origin.
+    private func bandFrame(from start: CGPoint, to end: CGPoint) -> CGRect {
+        let rect = CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                          width: abs(end.x - start.x), height: abs(end.y - start.y))
+        return CGRect(x: rect.minX, y: bounds.height - rect.maxY, width: rect.width, height: rect.height)
     }
 
     private func topLeftPoint(_ event: NSEvent) -> CGPoint {
@@ -66,9 +78,16 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         return CGPoint(x: point.x, y: bounds.height - point.y)
     }
 
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { onClick != nil }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { onClick != nil || isSelectingRegion }
 
     override func mouseDown(with event: NSEvent) {
+        if isSelectingRegion {
+            let point = topLeftPoint(event)
+            regionAnchor = point
+            band.frame = bandFrame(from: point, to: point)
+            band.isHidden = false
+            return
+        }
         guard onClick != nil else { return super.mouseDown(with: event) }
         if case .refuse(let kind) = PreviewPointerInput.press(clickCount: event.clickCount,
                                                               modifiers: PreviewModifiers(event.modifierFlags)) {
@@ -81,6 +100,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if isSelectingRegion {
+            guard let regionAnchor else { return }
+            band.frame = bandFrame(from: regionAnchor, to: topLeftPoint(event))
+            return
+        }
         guard let pressPoint, onClick != nil else { return super.mouseDragged(with: event) }
         let point = topLeftPoint(event)
         if !dragged, PreviewPointerInput.isDrag(from: pressPoint, to: point) {
@@ -90,17 +114,28 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if isSelectingRegion {
+            guard let anchor = regionAnchor else { return }
+            regionAnchor = nil
+            band.isHidden = true
+            let end = topLeftPoint(event)
+            onRegionSelected?(CGRect(x: min(anchor.x, end.x), y: min(anchor.y, end.y),
+                                     width: abs(end.x - anchor.x), height: abs(end.y - anchor.y)))
+            return
+        }
         guard let press = pressPoint, let onClick else { return super.mouseUp(with: event) }
         pressPoint = nil
         if !dragged { onClick(press) }
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        guard !isSelectingRegion else { return }
         guard onClick != nil else { return super.rightMouseDown(with: event) }
         onUnsupported?(.contextMenu)
     }
 
     override func scrollWheel(with event: NSEvent) {
+        guard !isSelectingRegion else { return }
         guard let onScroll else { return super.scrollWheel(with: event) }
         switch PreviewPointerInput.scroll(delta: CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY),
                                           precise: event.hasPreciseScrollingDeltas,
@@ -110,6 +145,20 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         case .refuse(let kind): onUnsupported?(kind)
         case .ignore: break
         }
+    }
+
+    /// Pixel size of the frame on screen, or nil before the first frame.
+    var presentedPixelSize: CGSize? {
+        currentPixelBuffer.map { CGSize(width: CVPixelBufferGetWidth($0), height: CVPixelBufferGetHeight($0)) }
+    }
+    /// Stream geometry of the frame on screen; cleared with the frame.
+    private(set) var presentedGeometry: CaptureGeometry?
+    private var drawnPixelSize: CGSize?
+    private var lastPresentedSequence = -1
+
+    /// The frame on screen and the geometry it was captured with, for preview input.
+    var presentedFrame: PresentedFrame? {
+        drawnPixelSize.map { PresentedFrame(pixelSize: $0, geometry: presentedGeometry) }
     }
 
     static func make(frame: CGRect) throws -> MetalFrameView {
@@ -149,6 +198,15 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         concealmentView.wantsLayer = true
         concealmentView.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
         addSubview(concealmentView)
+        // The region band is a plain layer-backed view over the Metal layer, like the
+        // concealment cover: no offscreen pass, and it survives frames being redrawn
+        // underneath it.
+        band.wantsLayer = true
+        band.isHidden = true
+        band.layer?.borderWidth = 1
+        band.layer?.borderColor = NSColor(calibratedWhite: 1, alpha: 0.9).cgColor
+        band.layer?.backgroundColor = NSColor(calibratedWhite: 1, alpha: 0.18).cgColor
+        addSubview(band)
     }
 
     required init(coder: NSCoder) { fatalError("Use init(frame:)") }
@@ -298,13 +356,16 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
 
         let dw = Double(drawableSize.width)
         let dh = Double(drawableSize.height)
-        let sw = Double(sourceWidth)
-        let sh = Double(sourceHeight)
+        let crop = pendingGeometry?.crop
+        let sw = Double(sourceWidth) * (crop?.width ?? 1)
+        let sh = Double(sourceHeight) * (crop?.height ?? 1)
         let scale: Double
         switch contentMode {
-        case .fit: scale = min(dw / sw, dh / sh)
+        // Metal samples only the selected region from the full-window capture. Fit the
+        // region's own aspect ratio; never stretch the full texture into that viewport.
+        case .fit, .selectedRegion: scale = min(dw / sw, dh / sh)
         case .fill: scale = max(dw / sw, dh / sh)
-        case .nativeScale, .selectedRegion: scale = 1
+        case .nativeScale: scale = 1
         }
         let viewport = MTLViewport(originX: (dw - sw * scale) / 2,
                                    originY: (dh - sh * scale) / 2,
@@ -313,6 +374,9 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         encoder.setViewport(viewport)
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentTexture(texture, index: 0)
+        var textureRegion = SIMD4<Float>(Float(crop?.x ?? 0), Float(crop?.y ?? 0),
+                                        Float(crop?.width ?? 1), Float(crop?.height ?? 1))
+        encoder.setFragmentBytes(&textureRegion, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         let geometry = pendingGeometry
@@ -365,10 +429,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         return {float4(positions[i], 0, 1), uvs[i]};
     }
     fragment float4 dropyFragment(DropyVertex in [[stage_in]],
-                                  texture2d<float> image [[texture(0)]]) {
+                                  texture2d<float> image [[texture(0)]],
+                                  constant float4& region [[buffer(0)]]) {
         constexpr sampler sampleFilter(coord::normalized, address::clamp_to_edge,
                                        filter::linear);
-        return image.sample(sampleFilter, in.uv);
+        return image.sample(sampleFilter, region.xy + in.uv * region.zw);
     }
     """
 }

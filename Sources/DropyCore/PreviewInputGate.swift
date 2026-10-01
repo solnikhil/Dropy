@@ -8,11 +8,16 @@ public struct CaptureGeometry: Equatable, Sendable {
     public var windowID: UInt32
     public var windowSize: CGSize
     public var pixelSize: CGSize
+    /// The region sampled by the renderer from the full-window texture, or nil
+    /// when the whole window is shown. Any crop makes the preview view-only: the
+    /// mapping below and everything downstream assume the surface is the whole window.
+    public var crop: NormalizedRegion?
 
-    public init(windowID: UInt32, windowSize: CGSize, pixelSize: CGSize) {
+    public init(windowID: UInt32, windowSize: CGSize, pixelSize: CGSize, crop: NormalizedRegion? = nil) {
         self.windowID = windowID
         self.windowSize = windowSize
         self.pixelSize = pixelSize
+        self.crop = crop
     }
     /// ScreenCaptureKit expresses contentRect in scaled surface points. Dividing by
     /// contentScale recovers source points; scaleFactor converts the rect to pixels.
@@ -30,6 +35,20 @@ public struct CaptureGeometry: Equatable, Sendable {
                                pixelSize: pixelSize)
     }
 
+    /// The geometry to attach to one delivered frame, given the configuration it was
+    /// produced with.
+    ///
+    /// A cropped stream keeps the configured geometry and stays marked as cropped: the
+    /// measurement above checks that the content fills the surface starting at the window's
+    /// own origin, which a crop deliberately breaks. Marked rather than dropped, so the
+    /// preview can say it is view-only in region mode instead of reporting a frame it
+    /// cannot explain.
+    public static func measured(configured: CaptureGeometry, contentRect: CGRect?,
+                                contentScale: CGFloat?, scaleFactor: CGFloat?) -> CaptureGeometry? {
+        guard configured.crop == nil else { return configured }
+        return measured(windowID: configured.windowID, pixelSize: configured.pixelSize,
+                        contentRect: contentRect, contentScale: contentScale, scaleFactor: scaleFactor)
+    }
 }
 
 /// The frame on screen in the preview, as the renderer saw it.
@@ -50,8 +69,9 @@ public struct PresentedFrame: Equatable, Sendable {
 ///
 /// A preview point only means something for the exact frame that was drawn. Input is
 /// refused whenever the handler belongs to an older selection, no frame is drawn, the
-/// frame came from another window, or the frame's geometry does not match the source's
-/// current size, as during a resize before the stream has caught up.
+/// frame came from another window, the frame's geometry does not match the source's
+/// current size, as during a resize before the stream has caught up, or the preview is
+/// showing a cropped region.
 public enum PreviewInputGate {
     public enum Refusal: Error, Equatable, Sendable {
         /// The handler was installed for a different selection than the current one.
@@ -62,6 +82,9 @@ public enum PreviewInputGate {
         case frameFromOtherWindow
         /// The drawn frame's geometry is stale or unknown; the source is being resized.
         case geometryChanging
+        /// Region mode: the preview shows part of the window, so a preview point cannot be
+        /// tied to a window point by anything verified here. Region mode is view-only.
+        case regionMode
     }
 
     /// Sizes within this many points are the same window size (rounding between the
@@ -74,11 +97,20 @@ public enum PreviewInputGate {
 
     /// The window size (points) to map through, when the drawn frame is certainly the
     /// selected window at its current size.
+    ///
+    /// `contentMode` is required rather than defaulted: a caller that forgot to pass it
+    /// would silently widen what the preview accepts, which is the one mistake this gate
+    /// exists to prevent.
     public static func check(handler: WindowIdentity, selected: WindowIdentity?, frame: PresentedFrame?,
-                             sourceWindowSize: CGSize?) -> Result<CGSize, Refusal> {
+                             sourceWindowSize: CGSize?, contentMode: ContentMode) -> Result<CGSize, Refusal> {
+        // Checked first, so region mode always gives the same reason no matter what else
+        // is in flight. Two independent facts can each refuse here: the chosen mode, and a
+        // crop recorded on the frame that was actually drawn.
+        guard contentMode != .selectedRegion else { return .failure(.regionMode) }
         guard let selected, selected == handler else { return .failure(.sourceChanged) }
         guard let frame, frame.pixelSize.width > 0, frame.pixelSize.height > 0 else { return .failure(.noFrame) }
         guard let geometry = frame.geometry else { return .failure(.geometryChanging) }
+        guard geometry.crop == nil else { return .failure(.regionMode) }
         guard geometry.windowID == handler.windowID else { return .failure(.frameFromOtherWindow) }
         // A frame from before a reconfiguration has the old output size.
         guard frame.pixelSize == geometry.pixelSize else { return .failure(.geometryChanging) }

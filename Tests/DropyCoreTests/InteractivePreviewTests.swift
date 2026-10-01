@@ -123,10 +123,10 @@ final class InteractivePreviewTests: XCTestCase {
     }
 
     func testLabelsSayWhatIsVerifiedAndWhyInputWasRefused() {
-        XCTAssertEqual(InteractionLabel.text(for: .interactive([.scroll, .pointerClick]), enabled: true, trusted: true),
+        XCTAssertEqual(InteractionLabel.text(for: .interactive([.scroll, .pointerClick]), enabled: true, trusted: true, contentMode: .fit),
                        "Interactive (beta): click, scroll")
-        XCTAssertEqual(InteractionLabel.text(for: .interactive([.text]), enabled: false, trusted: true), "View only")
-        XCTAssertTrue(InteractionLabel.text(for: .viewOnly, enabled: true, trusted: false).contains("Accessibility"))
+        XCTAssertEqual(InteractionLabel.text(for: .interactive([.text]), enabled: false, trusted: true, contentMode: .fit), "View only")
+        XCTAssertTrue(InteractionLabel.text(for: .viewOnly, enabled: true, trusted: false, contentMode: .fit).contains("Accessibility"))
         XCTAssertEqual(InteractionLabel.text(for: .notVerified, kind: .text), "Typing not sent: not verified for this app here")
     }
 }
