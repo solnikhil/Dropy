@@ -86,7 +86,8 @@ final class InputRouter {
     }
 
     func support(for identity: WindowIdentity) -> InteractionSupport {
-        InputPlanner.support(in: condition(of: identity), capabilities: capabilities(for: identity), policy: .preview)
+        guard let condition = condition(of: identity) else { return .viewOnly }
+        return InputPlanner.support(in: condition, capabilities: capabilities(for: identity), policy: .preview)
     }
 
     func forget(_ identity: WindowIdentity) { textTargets[identity] = nil }
@@ -99,6 +100,13 @@ final class InputRouter {
     /// the first click, because Chromium builds its tree asynchronously. Nothing is
     /// changed for any other app.
     func prepare(_ identity: WindowIdentity) {
+        appVersions = appVersions.filter { pid, value in
+            NSRunningApplication(processIdentifier: pid)?.launchDate == value.launch
+        }
+        manualAccessibility = manualAccessibility.filter { pid, launch in
+            NSRunningApplication(processIdentifier: pid)?.launchDate == launch
+        }
+        textTargets = textTargets.filter { WindowCatalog.isRunning($0.key) }
         guard evidence.requiresManualAccessibility(for: identity.bundleIdentifier, appVersion: appVersion(of: identity),
                                                    macOSMajor: macOSMajor),
               manualAccessibility[identity.processID] != identity.processLaunchDate,
@@ -110,18 +118,45 @@ final class InputRouter {
         if result == .success { manualAccessibility[identity.processID] = identity.processLaunchDate }
     }
 
-    /// Where the source is now: parked by Dropy, minimized, on another desktop, or visible.
-    func condition(of identity: WindowIdentity) -> SourceCondition {
-        if NSRunningApplication(processIdentifier: identity.processID)?.isHidden == true { return .hidden }
-        if case .found(let window) = try? WindowPlacer.find(identity),
-           (attribute(window, kAXMinimizedAttribute) as? Bool) == true { return .minimized }
+    /// Read the condition again for every send. Coverage is conservative over the
+    /// whole source: any intersecting foreign window requires covered evidence.
+    func condition(of identity: WindowIdentity) -> SourceCondition? {
+        guard let application = NSRunningApplication(processIdentifier: identity.processID),
+              application.launchDate == identity.processLaunchDate,
+              application.bundleIdentifier == identity.bundleIdentifier else { return nil }
+        if application.isHidden { return .hidden }
         if let spaces = Spaces.of(identity.windowID), let active = Spaces.current(),
-           !spaces.isEmpty, Set(spaces).isDisjoint(with: active) { return .otherSpace }
-        if let entry = journal.entries.first(where: { $0.identity == identity }), entry.mode.movesWindow { return .parked }
-        // Moved beyond every display by someone else: the same situation as parked.
-        if let server = WindowPlacer.windowServerInfo(identity.windowID),
-           PlacementGeometry.visibleFraction(of: server.bounds, on: WindowPlacer.displayBounds()) < 0.5 { return .parked }
-        return .visible
+           !spaces.isEmpty, !active.isEmpty, Set(spaces).isDisjoint(with: active) { return .otherSpace }
+        let server = WindowPlacer.windowServerInfo(identity.windowID)
+        let coverage: SourceCoverage
+        if let server,
+           let rows = CGWindowListCopyWindowInfo(.optionOnScreenAboveWindow, identity.windowID) as? [[String: Any]] {
+            var above: [WindowAboveSource] = []
+            for row in rows {
+                guard let pid = row[kCGWindowOwnerPID as String] as? Int32,
+                      let bounds = row[kCGWindowBounds as String] as? NSDictionary,
+                      let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                      let alpha = row[kCGWindowAlpha as String] as? Double,
+                      alpha.isFinite,
+                      [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite) else { return nil }
+                if frame.intersects(server.bounds) {
+                    above.append(WindowAboveSource(ownerProcessID: pid,
+                                                   bounds: server.bounds, alpha: alpha))
+                }
+            }
+            coverage = SourceCoverageRule.coverage(at: CGPoint(x: server.bounds.midX, y: server.bounds.midY),
+                                                    windowsAbove: above, ownProcessID: getpid())
+        } else { coverage = .unknown }
+        let minimized: Bool
+        if case .found(let window) = try? WindowPlacer.find(identity),
+           let value = attribute(window, kAXMinimizedAttribute) as? Bool { minimized = value }
+        else { return nil }
+        return SourceConditionRule.condition(SourceObservation(
+            applicationIsHidden: NSRunningApplication(processIdentifier: identity.processID)?.isHidden == true,
+            isMinimized: minimized, windowSpaces: Spaces.of(identity.windowID), activeSpaces: Spaces.current(),
+            parkedByDropy: journal.entries.contains { $0.identity == identity && $0.mode.movesWindow },
+            visibleFraction: server.map { PlacementGeometry.visibleFraction(of: $0.bounds, on: WindowPlacer.displayBounds()) },
+            coverage: coverage))
     }
 
     // MARK: Sending
@@ -260,7 +295,7 @@ final class InputRouter {
         } catch {
             resolution = .ambiguous
         }
-        let condition = condition(of: identity)
+        guard let condition = condition(of: identity) else { return .refused(.sourceConditionUnknown) }
         var target: InputTargetClass?
         if let classify, let window, let origin = Self.frame(of: window)?.origin { target = classify(window, origin) }
         let planned = InputPlanner.candidates(kind, selectedWindowID: identity.windowID, resolution: resolution,

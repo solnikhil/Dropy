@@ -70,7 +70,7 @@ final class PlacementRecovery {
         if resetBackoff { attempt = 0 }
         scheduled?.cancel()
         scheduled = nil
-        guard journal.loadError == nil, !journal.entries.isEmpty else {
+        guard journal.canRecover, !journal.entries.isEmpty else {
             deferred = []
             return []
         }

@@ -29,12 +29,12 @@ device_guard_fd=""
 
 device_hid_idle() {
   # awk reads everything: exiting early would end ioreg with SIGPIPE, a failure under pipefail.
-  ioreg -c IOHIDSystem | awk '/HIDIdleTime/ && !done { printf "%.1f", $NF / 1000000000; done = 1 }'
+  ioreg -c IOHIDSystem | awk '/HIDIdleTime/ && !done { if ($NF ~ /^[0-9]+$/) { printf "%.1f", $NF / 1000000000; done = 1 } }'
 }
 
 # "ac" on external power, else the battery percentage; "unknown" without a battery.
 device_power_state() {
-  local report="${DROPY_POWER_REPORT:-$(pmset -g batt 2>/dev/null || true)}"
+  local report="$(pmset -g batt 2>/dev/null || true)"
   if [[ "$report" == *"'AC Power'"* ]]; then print ac; return; fi
   local percent="$(print -r -- "$report" | grep -oE '[0-9]+%' | awk 'NR == 1' | tr -d % || true)"
   print -r -- "${percent:-unknown}"
@@ -57,7 +57,11 @@ device_prompts_clear() {
 # Fails when running on battery below the minimum.
 device_power_ok() {
   local minimum="${DROPY_MIN_BATTERY:-30}" state="$(device_power_state)"
-  [[ "$state" == ac || "$state" == unknown ]] && return 0
+  [[ "$state" == ac ]] && return 0
+  if [[ "$state" != <-> || "$minimum" != <-> ]] || (( state > 100 || minimum > 100 )); then
+    print -u2 "Battery state or minimum is unreadable; device checks refused."
+    return 1
+  fi
   if (( state < minimum )); then
     print -u2 "On battery at ${state}% (minimum ${minimum}%); connect power before running device checks."
     return 1
@@ -119,7 +123,12 @@ device_session_begin() {
     : > "$device_lock/prefs.absent"
   fi
   idle="$(device_hid_idle)"
-  if [[ -n "$idle" ]] && (( idle < required )); then
+  if [[ ! "$idle" =~ '^[0-9]+([.][0-9]+)?$' || ! "$required" =~ '^[0-9]+([.][0-9]+)?$' ]]; then
+    print -u2 "Input idle state is unreadable; device checks refused."
+    device_session_end
+    return 1
+  fi
+  if (( idle < required )); then
     print -u2 "Keyboard or pointer activity occurred ${idle}s ago; device checks need an idle desktop."
     device_session_end
     return 1
@@ -142,9 +151,16 @@ device_restore_preferences() {
 
 device_session_end() {
   [[ "$device_session_owned" == yes ]] || return 0
-  device_restore_preferences "$device_lock" || return 1
-  rm -rf "$device_lock" || return 1
+  local result=0
+  if device_restore_preferences "$device_lock"; then
+    rm -rf "$device_lock" || result=1
+  else
+    # Preserve the backup for the next owner, but always release the kernel lock.
+    result=1
+  fi
   device_session_owned=no
-  zsystem flock -u "$device_guard_fd"
+  unset DROPY_DEVICE_SESSION
+  zsystem flock -u "$device_guard_fd" || result=1
   device_guard_fd=""
+  return $result
 }

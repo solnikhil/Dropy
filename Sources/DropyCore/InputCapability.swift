@@ -301,6 +301,9 @@ public enum InputRefusal: Error, Equatable, Sendable {
     case wrongWindowRisk
     /// No allowed route has been verified for this kind in this condition.
     case notVerified
+    /// Where the source is on screen could not be determined (for example the window
+    /// list could not be read), so which evidence applies is unknown.
+    case sourceConditionUnknown
     /// Dropy is not (or no longer) trusted for Accessibility, e.g. the permission was
     /// switched off while the preview was open. Nothing is sent, not even events.
     case accessibilityNotGranted

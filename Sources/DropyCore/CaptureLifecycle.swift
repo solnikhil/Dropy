@@ -4,6 +4,7 @@ import Foundation
 /// are never collapsed into one generic error.
 public enum CaptureFailure: Equatable, Sendable {
     /// Screen Recording is denied or was revoked for Dropy.
+    case previousStreamStopping
     case permissionDenied
     /// The selected window no longer exists; its app is still running.
     case sourceWindowClosed(applicationName: String)
@@ -18,6 +19,8 @@ public enum CaptureFailure: Equatable, Sendable {
 
     public var message: String {
         switch self {
+        case .previousStreamStopping:
+            "The previous capture is still stopping. Wait, then choose the window again."
         case .permissionDenied:
             "Screen Recording is off for Dropy. Allow it in System Settings, then Refresh."
         case .sourceWindowClosed(let app):
@@ -36,6 +39,7 @@ public enum CaptureFailure: Equatable, Sendable {
     /// A log-safe name: no app names, window titles or captured content.
     public var diagnosticName: String {
         switch self {
+        case .previousStreamStopping: "previousStreamStopping"
         case .permissionDenied: "permissionDenied"
         case .sourceWindowClosed: "sourceWindowClosed"
         case .targetQuit: "targetQuit"

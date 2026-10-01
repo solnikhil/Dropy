@@ -7,7 +7,7 @@ set -euo pipefail
 repo_dir="${0:A:h:h}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-export ISOLATION_HOME="$work/home" ISOLATION_APPLICATIONS="$work/Applications"
+export ISOLATION_HOME="$work/home" ISOLATION_APPLICATIONS="$work/Applications with spaces" ISOLATION_SYSTEM_LIBRARY="$work/Library"
 source "$repo_dir/Scripts/lib/app-isolation.zsh"
 fail() { print -u2 "app-isolation check failed: $1"; exit 1; }
 
@@ -56,6 +56,32 @@ catches "preferences written" \
   "print 'person' > '$ISOLATION_HOME/Library/Preferences/com.example.editor.plist'"
 catches "file mode changed" \
   "chmod 600 '$ISOLATION_HOME/.editor/argv.json'" "chmod 644 '$ISOLATION_HOME/.editor/argv.json'"
+# Empty directory creation and unreadable evidence must never hash as unchanged.
+catches "empty directory created" \
+  "mkdir '$ISOLATION_HOME/.editor/empty'" "rmdir '$ISOLATION_HOME/.editor/empty'"
+chmod 000 "$ISOLATION_HOME/.editor"
+isolation_digest "$ISOLATION_HOME/.editor" >/dev/null 2>&1 && fail "unreadable tree accepted"
+chmod 755 "$ISOLATION_HOME/.editor"
+mkdir -p "$ISOLATION_HOME/Library/Group Containers" "$ISOLATION_HOME/Library/Preferences/ByHost"
+isolation_fingerprint "$manifest" com.example.editor Editor "$installed" "$ISOLATION_HOME/.editor"
+catches "new app group appeared" \
+  "mkdir '$ISOLATION_HOME/Library/Group Containers/new.helper'" \
+  "rmdir '$ISOLATION_HOME/Library/Group Containers/new.helper'"
+catches "ByHost preference appeared" \
+  "print x > '$ISOLATION_HOME/Library/Preferences/ByHost/com.example.editor.machine.plist'" \
+  "rm '$ISOLATION_HOME/Library/Preferences/ByHost/com.example.editor.machine.plist'"
+# Scan deeply nested installs and identifiers in helpers, not just top-level apps.
+make_app "$ISOLATION_APPLICATIONS/Tools/Nested/Deep.app" com.example.deep 1.0
+make_app "$work/DeepCopy.app" com.example.deep 1.0
+make_app "$work/External.app" com.example.external 1.0
+ln -s "$work/External.app" "$ISOLATION_APPLICATIONS/External.app"
+make_app "$work/ExternalCopy.app" com.example.external 1.0
+isolation_check_disposable "$work/ExternalCopy.app" 2>/dev/null && fail "symlinked installed app was missed"
+isolation_check_disposable "$work/DeepCopy.app" 2>/dev/null && fail "nested installed identifier was missed"
+make_app "$work/copy2/Editor.app/Contents/Frameworks/Helper.app" com.example.deep 1.0
+isolation_check_disposable "$work/copy2/Editor.app" 2>/dev/null && fail "shared nested helper was missed"
+rm -rf "$work/copy2/Editor.app/Contents/Frameworks"
+
 # make-disposable-app.sh: a renamed, re-signed copy of the installed app (and of its
 # nested helper) passes the disposable check; the source is unchanged; a destination
 # in Applications or without enough free space is refused.

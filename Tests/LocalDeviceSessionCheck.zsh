@@ -5,13 +5,14 @@ set -euo pipefail
 repo_dir="${0:A:h:h}"
 work="$(mktemp -d)"
 export DROPY_DEVICE_LOCK="$work/lock" DROPY_PREFS_DOMAIN="org.dropy.devicesessioncheck.$$" DROPY_REQUIRED_IDLE=0 DROPY_MIN_BATTERY=0
+export TEST_POWER_REPORT="Now drawing from 'AC Power'"
 unset DROPY_DEVICE_SESSION
 key=org.dropy.preferences.v1
 trap 'defaults delete "$DROPY_PREFS_DOMAIN" 2>/dev/null || true; rm -f "$HOME/Library/Preferences/$DROPY_PREFS_DOMAIN.plist"; rm -rf "$work"' EXIT
 # The library, with the on-screen prompt detector replaced by "no prompt" in this test's
 # shells only, so the checks below do not depend on what is on screen. The production
 # library has no switch that skips detection; the checks at the end prove it is called.
-lib="source '$repo_dir/Scripts/lib/device-session.zsh'; device_prompts_clear() { return 0; }"
+lib="source '$repo_dir/Scripts/lib/device-session.zsh'; device_prompts_clear() { return 0; }; device_hid_idle() { print 100; }; pmset() { print -r -- \"\$TEST_POWER_REPORT\"; }"
 eval "$lib"
 fail() { print -u2 "device-session check failed: $1"; exit 1; }
 crash() {
@@ -19,13 +20,35 @@ crash() {
 }
 
 # Low battery is refused before anything is touched; external power is accepted.
-DROPY_POWER_REPORT="Now drawing from 'Battery Power'
+TEST_POWER_REPORT="Now drawing from 'Battery Power'
  -InternalBattery-0 (id=1)	19%; discharging; 0:43 remaining present: true" DROPY_MIN_BATTERY=30 \
   zsh -c "$lib; device_session_begin lowpower" 2>/dev/null \
   && fail "a session started on low battery"
 [[ ! -e "$DROPY_DEVICE_LOCK" ]] || fail "a refused low-battery session created the lock"
-[[ "$(DROPY_POWER_REPORT="Now drawing from 'AC Power'
+[[ "$(TEST_POWER_REPORT="Now drawing from 'AC Power'
  -InternalBattery-0 (id=1)	19%; charging" device_power_state)" == ac ]] || fail "AC power not recognised"
+
+# Unparseable system facts are refusal, not permission to drive the desktop.
+TEST_POWER_REPORT=unreadable zsh -c "$lib; device_session_begin unknownpower" 2>/dev/null \
+  && fail "unknown power was accepted"
+zsh -c "$lib; device_hid_idle() { print unreadable; }; device_session_begin unknownidle" 2>/dev/null \
+  && fail "unknown idle was accepted"
+[[ ! -e "$DROPY_DEVICE_LOCK" ]] || fail "unreadable system facts left a lock"
+
+# A failed preference restore retains its backup while releasing the kernel guard.
+zsh -c "$lib; device_session_begin failedrestore
+  device_restore_preferences() { return 1; }
+  device_session_end && exit 2
+  [[ -z \"\$device_guard_fd\" && \"\$device_session_owned\" == no ]]" \
+  || fail "failed restoration retained the kernel guard"
+[[ -d "$DROPY_DEVICE_LOCK" ]] || fail "failed restoration discarded the backup"
+# The next shell must acquire that guard and recover the retained backup.
+zsh -c "$lib; device_session_begin afterfailedrestore; device_session_end" \
+  || fail "retained backup prevented the next owner recovering"
+
+TEST_POWER_REPORT="Now drawing from 'Battery Power'; 19%" DROPY_MIN_BATTERY=30 DROPY_POWER_REPORT="Now drawing from 'AC Power'" \
+  zsh -c "$lib; device_session_begin forgedpower" 2>/dev/null \
+  && fail "the legacy power report override bypassed the battery guard"
 
 # A second session is refused while the first is alive.
 device_session_begin first

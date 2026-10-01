@@ -15,7 +15,7 @@ source "$repo_dir/Scripts/lib/app-isolation.zsh"
 [[ $# -ge 2 ]] || { print -u2 "usage: make-disposable-app.sh <source.app> <destination-dir> [identifier-prefix]"; exit 2; }
 source_app="${1:A}" destination="${2:A}" prefix="${3:-org.dropy.disposable}"
 [[ -f "$source_app/Contents/Info.plist" ]] || { print -u2 "$1 is not an app bundle"; exit 1; }
-for dir in ${=$(isolation_app_dirs)}; do
+for dir in ${(f)"$(isolation_app_dirs)"}; do
   [[ "$destination" == "${dir:A}" || "$destination" == "${dir:A}"/* ]] && { print -u2 "Destination is inside $dir"; exit 1; }
 done
 mkdir -p "$destination"

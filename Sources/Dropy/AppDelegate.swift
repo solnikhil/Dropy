@@ -276,9 +276,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if placementJournal.loadError != nil {
             let alert = NSAlert()
             alert.messageText = "Window recovery journal could not be read"
-            alert.informativeText = "The original file has been preserved at \(PlacementJournal.defaultURL.path). New placements are blocked until it can be read."
+            alert.informativeText = "The original records are preserved at \(placementJournal.quarantineURL?.path ?? PlacementJournal.defaultURL.path). Valid records can still be recovered. New placements remain blocked while damaged records need attention."
             alert.runModal()
-            return
+            guard placementJournal.canRecover else { return }
         }
         recovery.recoverAll()
         for entry in placementJournal.entries where entry.applicationConfirmed == false {

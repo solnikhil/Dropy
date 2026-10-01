@@ -587,6 +587,7 @@ final class OverlayController: NSObject {
     }
 
     private func failure(for error: Error) -> CaptureFailure {
+        if error is CaptureStartError { return .previousStreamStopping }
         let nsError = error as NSError
         switch CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) {
         case .permissionDenied: return .permissionDenied
@@ -703,6 +704,10 @@ final class OverlayController: NSObject {
     /// after a switch, before the first frame, or while the source is being resized.
     private func mapping(for identity: WindowIdentity, kind: InputKind) -> PreviewPointMapping? {
         guard let renderer else { return nil }
+        guard capture.inputFrameIsCurrent(renderer) else {
+            flash("Preview updating · input not sent")
+            return nil
+        }
         let frame = renderer.presentedFrame
         switch PreviewInputGate.check(handler: identity, selected: selectedIdentity, frame: frame,
                                       sourceWindowSize: selectedWindowSize) {
@@ -729,7 +734,9 @@ final class OverlayController: NSObject {
                                  charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                                  modifiers: PreviewModifiers(event.modifierFlags),
                                  inputMethodActive: Self.inputMethodIsActive()) {
-        case .text(let characters): report(inputRouter.type(identity, text: characters), kind: .text)
+        case .text(let characters):
+            guard mapping(for: identity, kind: .text) != nil else { return true }
+            report(inputRouter.type(identity, text: characters), kind: .text)
         case .refuse(let kind): flash(InteractionLabel.text(for: .notVerified, kind: kind))
         case .unsupportedKey: flash("This key is not supported in the preview yet")
         }

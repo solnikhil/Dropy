@@ -26,6 +26,30 @@ struct JournalChecks {
         precondition(preserved == corrupt)
         precondition(damaged.entries.isEmpty)
 
+        // One bad record must not strand a separately valid hidden window. Preserve
+        // the original bytes durably before permitting removals of valid records.
+        let partialURL = root.appendingPathComponent("partial.json")
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(entry))
+        let partialBytes = try JSONSerialization.data(withJSONObject: [object, ["broken": true]])
+        try partialBytes.write(to: partialURL)
+        let partial = PlacementJournal(url: partialURL)
+        precondition(partial.loadError != nil && partial.canRecover && partial.entries == [entry])
+        let backup = partial.quarantineURL!
+        let savedBytes = try Data(contentsOf: backup)
+        precondition(savedBytes == partialBytes)
+        do { try partial.upsert(entry); fatalError("quarantine must block new moves") } catch { }
+        try partial.remove(entry.identity)
+        let retainedBytes = try Data(contentsOf: backup)
+        precondition(retainedBytes == partialBytes)
+        let reopened = PlacementJournal(url: partialURL)
+        precondition(reopened.entries.isEmpty && reopened.loadError != nil)
+        do { try reopened.upsert(entry); fatalError("relaunch must retain the block") } catch { }
+
+        let duplicateURL = root.appendingPathComponent("duplicate.json")
+        try JSONEncoder().encode([entry, entry]).write(to: duplicateURL)
+        let duplicate = PlacementJournal(url: duplicateURL)
+        precondition(duplicate.loadError != nil && !duplicate.canRecover && duplicate.entries.isEmpty)
+
         let blocker = root.appendingPathComponent("not-a-directory")
         try Data().write(to: blocker)
         let blocked = PlacementJournal(url: blocker.appendingPathComponent("journal.json"))

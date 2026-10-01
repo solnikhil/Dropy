@@ -191,6 +191,7 @@ public enum InteractionLabel {
         case .targetChanged: "the window changed"
         case .wrongWindowRisk: "it could reach another window of the app"
         case .notVerified: "not verified for this app here"
+        case .sourceConditionUnknown: "where the window is on screen could not be determined"
         case .accessibilityNotGranted: "Accessibility permission is off for Dropy"
         }
         return "\(what) not sent: \(why)"

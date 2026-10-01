@@ -16,61 +16,85 @@
 #   isolation_verify <manifest>
 #       recomputes the fingerprint; fails and prints the differences if anything changed.
 #
-# ISOLATION_HOME (default $HOME) and ISOLATION_APPLICATIONS (default the two Applications
+# ISOLATION_HOME (default $HOME) and ISOLATION_APPLICATIONS (default the user and system Applications
 # folders) exist so the local test can use a throwaway tree; real probes leave them unset.
 
 isolation_home() { print -r -- "${ISOLATION_HOME:-$HOME}"; }
-isolation_app_dirs() { print -r -- "${ISOLATION_APPLICATIONS:-/Applications $(isolation_home)/Applications}"; }
+isolation_app_dirs() {
+  if [[ -n "${ISOLATION_APPLICATIONS:-}" ]]; then print -r -l -- ${(f)ISOLATION_APPLICATIONS}
+  else print -r -l -- /Applications "$(isolation_home)/Applications" /System/Applications; fi
+}
+isolation_files="${${(%):-%x}:A:h}/isolation-files.py"
 isolation_bundle_id() { /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist" 2>/dev/null; }
 
 isolation_check_disposable() {
   local bundle="${1:A}" id dir app
   [[ -f "$bundle/Contents/Info.plist" ]] || { print -u2 "isolation: $1 is not an app bundle"; return 1; }
-  id="$(isolation_bundle_id "$bundle")"
+  id="$(isolation_bundle_id "$bundle")" || return 1
   [[ -n "$id" ]] || { print -u2 "isolation: $1 has no bundle identifier"; return 1; }
-  for dir in ${=$(isolation_app_dirs)}; do
-    [[ "$bundle" == "${dir:A}"/* ]] && { print -u2 "isolation: $1 is installed in $dir; use a disposable copy"; return 1; }
-    for app in "$dir"/*.app(N) "$dir"/*/*.app(N); do
-      if [[ "$(isolation_bundle_id "$app")" == "$id" ]]; then
-        print -u2 "isolation: $id is also the identifier of $app; its updater, preferences and caches would be shared"
-        return 1
-      fi
-    done
+  local candidates installed candidate_id candidate_source installed_id installed_source
+  candidates="$(python3 "$isolation_files" identifiers "$bundle")" || return 1
+  for dir in ${(f)"$(isolation_app_dirs)"}; do
+    [[ "$bundle" == "${dir:A}" || "$bundle" == "${dir:A}"/* ]] && {
+      print -u2 "isolation: $1 is installed in $dir; use a disposable copy"; return 1
+    }
+    installed="$(python3 "$isolation_files" identifiers "$dir")" || return 1
+    while IFS=$'\t' read -r candidate_id candidate_source; do
+      [[ -n "$candidate_id" ]] || continue
+      while IFS=$'\t' read -r installed_id installed_source; do
+        if [[ "$candidate_id" == "$installed_id" ]]; then
+          print -u2 "isolation: $candidate_id is shared with $installed_source"
+          return 1
+        fi
+      done <<< "$installed"
+    done <<< "$candidates"
   done
 }
 
 # Paths an app with this identity shares with any other copy of it.
 isolation_shared_paths() {
-  local id="$1" name="$2" home="$(isolation_home)"
+  local id="$1" name="$2" task_home="$(isolation_home)"
   print -r -l -- \
-    "$home/Library/Caches/$id" "$home/Library/Caches/$id.ShipIt" "$home/Library/Caches/$name" \
-    "$home/Library/Preferences/$id.plist" "$home/Library/Saved Application State/$id.savedState" \
-    "$home/Library/Application Support/$name" "$home/Library/Application Support/$id" \
-    "$home/Library/Containers/$id" "$home/Library/HTTPStorages/$id" "$home/Library/WebKit/$id" \
-    "$home/Library/LaunchAgents/$id.ShipIt.plist"
+    "$task_home/Library/Caches/$id" "$task_home/Library/Caches/$id.ShipIt" "$task_home/Library/Caches/$name" \
+    "$task_home/Library/Preferences/$id.plist" "$task_home/Library/Saved Application State/$id.savedState" \
+    "$task_home/Library/Application Support/$name" "$task_home/Library/Application Support/$id" \
+    "$task_home/Library/Containers/$id" "$task_home/Library/HTTPStorages/$id" "$task_home/Library/WebKit/$id" \
+    "$task_home/Library/LaunchAgents/$id.ShipIt.plist" \
+    "$task_home/Library/Application Scripts/$id" "$task_home/Library/Group Containers/$id" \
+    "$task_home/Library/Group Containers/group.$id" \
+    "${ISOLATION_SYSTEM_LIBRARY:-/Library}/LaunchDaemons/$id.plist" \
+    "${ISOLATION_SYSTEM_LIBRARY:-/Library}/PrivilegedHelperTools/$id"
+  local matching
+  for matching in "$task_home/Library/Preferences/ByHost/$id".*(N) \
+                  "$task_home/Library/Group Containers/"*"$id"*(N); do
+    print -r -- "$matching"
+  done
+  # Observe metadata under shared namespaces, including unknown helper/group names.
+  # Unrelated container contents are never read; unreadable metadata refuses a run.
+  print -r -l -- "metadata:$task_home/Library/Group Containers" \
+    "metadata:$task_home/Library/Application Scripts" "metadata:$task_home/Library/Preferences/ByHost" \
+    "metadata:${ISOLATION_SYSTEM_LIBRARY:-/Library}/LaunchDaemons" \
+    "metadata:${ISOLATION_SYSTEM_LIBRARY:-/Library}/PrivilegedHelperTools"
 }
 
 # One line per path: "<path>\t<digest>", where the digest covers every file's relative
 # path, size, mode and content (symlinks by target). "absent" for a missing path.
 isolation_digest() {
-  local target="$1"
-  if [[ ! -e "$target" && ! -L "$target" ]]; then print -r -- "absent"; return; fi
-  if [[ -f "$target" || -L "$target" ]]; then
-    { stat -f '%z %p' "$target"; [[ -L "$target" ]] && readlink "$target" || shasum -a 256 < "$target"; } | shasum -a 256 | cut -d' ' -f1
-    return
+  if [[ "$1" == metadata:* ]]; then
+    python3 "$isolation_files" metadata "${1#metadata:}"
+  else
+    python3 "$isolation_files" digest "$1"
   fi
-  ( cd "$target" && find . \( -type f -o -type l \) -print0 2>/dev/null | LC_ALL=C sort -z | while IFS= read -r -d '' file; do
-      print -r -- "$file $(stat -f '%z %p' "$file") $([[ -L "$file" ]] && readlink "$file" || shasum -a 256 < "$file" | cut -d' ' -f1)"
-    done ) | shasum -a 256 | cut -d' ' -f1
 }
 
 isolation_fingerprint() {
   local manifest="$1" id="$2" name="$3"; shift 3
   # Not "path": in zsh that name is tied to PATH.
-  local entry
+  local entry digest
   : > "$manifest" || return 1
   for entry in ${(f)"$(isolation_shared_paths "$id" "$name")"} "$@"; do
-    print -r -- "$entry"$'\t'"$(isolation_digest "$entry")" >> "$manifest"
+    digest="$(isolation_digest "$entry")" || { rm -f "$manifest"; return 1; }
+    print -r -- "$entry"$'\t'"$digest" >> "$manifest"
   done
 }
 
@@ -78,7 +102,7 @@ isolation_verify() {
   local manifest="$1" entry digest now changed=0
   [[ -s "$manifest" ]] || { print -u2 "isolation: no fingerprint at $manifest"; return 1; }
   while IFS=$'\t' read -r entry digest; do
-    now="$(isolation_digest "$entry")"
+    now="$(isolation_digest "$entry")" || return 1
     if [[ "$now" != "$digest" ]]; then
       print -u2 "isolation: CHANGED $entry ($digest → $now)"
       changed=1

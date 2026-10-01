@@ -11,6 +11,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private var currentPixelBuffer: CVPixelBuffer?
+    private var currentCaptureRevision: UInt64?
+    private(set) var drawnCaptureRevision: UInt64?
     private let concealmentView = NSView()
     private var visibilityGeneration = UUID()
     /// Timestamps for the frame not yet drawn; attached to exactly one drawable.
@@ -189,6 +191,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         drawableRetryTask = nil
         drawableRetryDelayMilliseconds = 16
         currentPixelBuffer = pixelBuffer
+        currentCaptureRevision = stamp?.captureRevision
         // A pending frame does not replace the frame actually on screen. Keep its
         // mapping until a newer presentation succeeds; clear/viewport changes revoke it.
         pendingGeometry = geometry
@@ -208,8 +211,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     func clear() {
         precondition(Thread.isMainThread)
         currentPixelBuffer = nil
+        currentCaptureRevision = nil
+        drawnCaptureRevision = nil
         presentedGeometry = nil
         drawnPixelSize = nil
+        drawnCaptureRevision = nil
         lastPresentedSequence = -1
         pendingGeometry = nil
         if let pendingStamp { pendingStamp.recorder.recordNotPresented(pendingStamp) }
@@ -256,6 +262,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         visibilityGeneration = UUID()
         presentedGeometry = nil
         drawnPixelSize = nil
+        drawnCaptureRevision = nil
         lastPresentedSequence = -1
     }
 
@@ -315,6 +322,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         encoder.setFragmentTexture(texture, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
+        let revision = currentCaptureRevision
         let geometry = pendingGeometry
         let pixels = CGSize(width: sourceWidth, height: sourceHeight)
         let stamp = pendingStamp
@@ -339,6 +347,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
                 self.lastPresentedSequence = sequence
                 self.presentedGeometry = geometry
                 self.drawnPixelSize = pixels
+                self.drawnCaptureRevision = revision
                 self.concealmentView.isHidden = true
                 if armed, let reveal = self.onNextPresented {
                     self.onNextPresented = nil

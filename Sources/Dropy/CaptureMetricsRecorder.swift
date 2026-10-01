@@ -62,6 +62,7 @@ final class FrameStamp: @unchecked Sendable {
     let displayMilliseconds: Double?
     let callbackMilliseconds: Double
     let recorder: CaptureMetricsRecorder
+    var captureRevision: UInt64?
     private let outcomeLock = NSLock()
     private var finalOutcome = false
     /// Stage times, only with `DROPY_DEBUG_FRAME_TRACE=1`; logged at the final outcome.
