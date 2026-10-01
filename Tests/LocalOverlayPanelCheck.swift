@@ -1,4 +1,5 @@
 import AppKit
+import DropyCore
 
 // Regression checks for two dismissal bugs found by Scripts/dismissal-checks.sh:
 // the panel hid itself when Dropy deactivated, and the pointer-tracking callbacks were
@@ -22,6 +23,13 @@ struct OverlayPanelChecks {
         root.perform(#selector(NSResponder.mouseEntered(with:)), with: event)
         root.perform(#selector(NSResponder.mouseExited(with:)), with: event)
         precondition(entered == 1 && exited == 1, "tracking callbacks must reach the overlay")
+        for preset in SizePreset.allCases {
+            for text in HandOff.persistentStatusText {
+                let width = (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
+                precondition(width <= OverlayStatusLayout.interactionWidth(overlayWidth: preset.dimensions.width),
+                             "Hand-off status must fit without truncation")
+            }
+        }
         print("Overlay panel checks passed")
     }
 }

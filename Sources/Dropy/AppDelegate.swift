@@ -9,6 +9,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var trigger: NotchTrigger?
     private var hotKey: GlobalHotKey?
+    private var sourceTerminationObserver: NSObjectProtocol?
     private let placementJournal = PlacementJournal()
     private let parkingTabs = ParkingTabs()
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
@@ -35,7 +36,19 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A handed-over window is the person's again: no tab may cover it, and a tab comes
         // back only when the end of a hand-off parked it again.
         handOff.onRestored = { [weak self] identity in self?.parkingTabs.remove(identity) }
+        handOff.onRecoveryRequired = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
         handOff.onReparked = { [weak self] entry in self?.parkingTabs.show(for: entry) }
+        sourceTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let processID = application.processIdentifier
+            MainActor.assumeIsolated {
+                guard let self, let active = self.handOff.active,
+                      processID == active.identity.processID else { return }
+                self.handOff.end(reason: "sourceTerminated")
+            }
+        }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
         recovery.onSettled = { [weak self] identity in self?.parkingTabs.remove(identity) }
@@ -200,6 +213,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let sourceTerminationObserver { NSWorkspace.shared.notificationCenter.removeObserver(sourceTerminationObserver) }
         trigger?.stop()
         hotKey?.unregister()
         recovery.stop()

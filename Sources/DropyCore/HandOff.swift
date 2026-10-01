@@ -45,26 +45,45 @@ public enum HandOff {
         /// A crash-interrupted placement cannot be told from a person's move; the
         /// journal must be resolved by the existing recovery before anything else moves.
         case placementUnresolved
+        /// Everything a hand-off does to the window needs Accessibility: putting it back,
+        /// raising it, and reading whether it is minimized at all.
+        case accessibilityNotTrusted
+        /// The window is there but its condition cannot be told: it is on another Space,
+        /// its app did not answer, or an Accessibility read failed. Its minimized state is
+        /// unknown in particular, and handing over a window that stays in the Dock would
+        /// leave the person typing into nothing while Dropy said the window was theirs.
+        case sourceUnreadable
     }
 
     // MARK: What the person sees
 
-    /// Shown while a hand-off lasts.
-    public static let label = "Typing in the real window · the preview is paused"
+    /// Shown for as long as a hand-off lasts.
+    public static let label = "Typing in real window"
     /// The button that starts one.
     public static let startTitle = "Type in the real window"
     /// The same button while one is running.
     public static let endTitle = "Back to the preview"
     /// Shown when anything is aimed at the preview while the real window has the typing.
-    public static let inputRefusedLabel = "Preview input is off during hand-off"
+    public static let inputRefusedLabel = "Preview input is off"
     /// Shown when the window could not be put back or reached, so nothing was handed over.
     public static let failedLabel = "Could not hand the real window over"
+
+    /// The hand-off text the overlay keeps on screen rather than flashing: the state
+    /// itself, and the refusal shown whenever input is aimed at the paused preview.
+    /// Truncated, either one stops telling the person where their keyboard goes, so both
+    /// must fit the status field at every size preset. `Tests/LocalOverlayPanelCheck.swift`
+    /// measures them against `OverlayStatusLayout.interactionWidth(overlayWidth:)` with the
+    /// font AppKit draws them in; transient messages share that field's ordinary
+    /// truncation.
+    public static let persistentStatusText = [label, inputRefusedLabel]
 
     public static func message(for refusal: Refusal) -> String {
         switch refusal {
         case .notRequestedByPerson: "Hand-off starts only when you ask for it"
         case .sourceGone: "The source window is gone"
         case .placementUnresolved: "Recover the pending window move first"
+        case .accessibilityNotTrusted: "Allow Accessibility first"
+        case .sourceUnreadable: "The window cannot be read"
         }
     }
 
@@ -80,18 +99,21 @@ public enum HandOff {
 
     /// Whether the overlay shows the hand-off button, and what it says.
     ///
-    /// A running hand-off always offers its end, whatever the preferences say now: the
-    /// person must never be left with a handed-over window and no way back.
+    /// A running hand-off always offers its end, whatever the preferences or the
+    /// permissions say now: the person must never be left with a handed-over window and
+    /// no way back, not even if Accessibility is switched off while they type.
     /// - Parameters:
     ///   - interactivePreview: the person switched interactive preview on.
+    ///   - trusted: Dropy has Accessibility permission. Without it the window cannot be
+    ///     put back, raised or even read, so the button would promise what it cannot do.
     ///   - capturing: a source window is selected and being shown.
     ///   - typingVerified: in-preview typing is verified for this exact source, so the
     ///     hand-off would give up containment for nothing.
     ///   - active: a hand-off is running.
-    public static func offer(interactivePreview: Bool, capturing: Bool, typingVerified: Bool,
-                             active: Bool) -> Offer {
+    public static func offer(interactivePreview: Bool, trusted: Bool, capturing: Bool,
+                             typingVerified: Bool, active: Bool) -> Offer {
         if active { return .end(title: endTitle, label: label) }
-        guard interactivePreview, capturing, !typingVerified else { return .hidden }
+        guard interactivePreview, trusted, capturing, !typingVerified else { return .hidden }
         return .start(title: startTitle)
     }
 
@@ -112,14 +134,28 @@ public enum HandOff {
     }
 
     /// - Parameters:
+    ///   - trusted: Dropy has Accessibility permission.
     ///   - entry: the journal's placement of this window, if Dropy has placed it.
-    ///   - current: the window's state now; nil when the exact window is gone.
+    ///   - read: what the source window is now; every case but `.state` means Dropy
+    ///     cannot tell, and a hand-off is never started on a guess.
     ///   - frontmost: the frontmost app's process ID before the hand-off.
     ///   - source: the source window's process ID.
-    public static func start(trigger: Trigger, entry: PlacementEntry?, current: WindowPlacementState?,
+    public static func start(trigger: Trigger, trusted: Bool, entry: PlacementEntry?, read: SourceWindowRead,
                              displays: [CGRect], frontmost: Int32?, source: Int32) -> Result<Start, Refusal> {
         guard trigger == .personRequest else { return .failure(.notRequestedByPerson) }
-        guard let current else { return .failure(.sourceGone) }
+        // Without Accessibility the window cannot be put back, cannot be raised, and its
+        // minimized state cannot even be read; the only possible outcome is a hand-off
+        // Dropy claims to have made and has not.
+        guard trusted else { return .failure(.accessibilityNotTrusted) }
+        let current: WindowPlacementState
+        switch read {
+        case .state(let state): current = state
+        case .unreachable(let diagnosis):
+            // A window that may come back is not a window that is gone, and it is not a
+            // window Dropy knows anything about either.
+            return .failure(diagnosis.mayBecomeReachable ? .sourceUnreadable : .sourceGone)
+        case .failed: return .failure(.sourceUnreadable)
+        }
         // A record left by an interrupted hand-off says the window's position is not yet
         // settled. Recovery must finish it before Dropy moves the window again.
         guard entry?.handOff == nil else { return .failure(.placementUnresolved) }
@@ -165,19 +201,147 @@ public enum HandOff {
     }
 
     /// - Parameters:
-    ///   - current: the window's state now; nil when it is gone.
+    ///   - read: what the source window is now. Anything but `.state` means Dropy cannot
+    ///     see where the window is, and nothing is re-parked on a state it cannot see.
     ///   - frontmost: the frontmost app now.
     ///   - source: the source window's process ID.
     ///   - returnAppRunning: whether the app to return focus to still runs.
-    public static func end(_ start: Start, current: WindowPlacementState?, frontmost: Int32?, source: Int32,
+    public static func end(_ start: Start, read: SourceWindowRead, frontmost: Int32?, source: Int32,
                            returnAppRunning: Bool) -> End {
-        guard let current else { return End(repark: nil, activate: nil) }
+        // Focus goes back only if the person is still in the source app; if they
+        // switched elsewhere, that choice wins too. It does not depend on reading the
+        // window: a window on another Space is still the window they were typing in.
+        let focus = frontmost == source && returnAppRunning ? start.returnFocusTo : nil
+        // A window Dropy cannot read may be one the person is using; it is left alone.
+        guard case .state(let current) = read else { return End(repark: nil, activate: focus) }
         // Any move, resize, minimize or hide during the hand-off is the person's; it wins.
         let untouched = current.approximatelyEquals(start.expected)
-        // Focus goes back only if the person is still in the source app; if they
-        // switched elsewhere, that choice wins too.
-        let focus = frontmost == source && returnAppRunning ? start.returnFocusTo : nil
         return End(repark: untouched ? start.reparkMode : nil, activate: focus)
+    }
+
+    // MARK: Settling the write-ahead record
+
+    /// What to do with the placement entry that carried the hand-off record, once the
+    /// hand-off is over: it ended, it never started, or its window is gone.
+    public enum Settlement: Equatable, Sendable {
+        /// Dropy had placed nothing, so there is no entry and nothing to settle.
+        case nothingJournaled
+        /// The window is no longer where Dropy put it, so that placement is finished:
+        /// drop the whole entry. A re-park, being a new placement, needs this.
+        case dropEntry
+        /// The window may still be where Dropy put it, or could not be read at all: the
+        /// placement is still in force. Keep the entry, clear only the hand-off record,
+        /// and leave the placement to the ordinary recovery.
+        case keepPlacementAndRecover
+    }
+
+    /// Settles the write-ahead record from what the window is observed to be, never from
+    /// what Dropy asked for.
+    ///
+    /// Starting a hand-off can fail at every step, and each failure leaves the window
+    /// where Dropy parked it: Accessibility can be off or revoked mid-way, the window can
+    /// drop out of the Accessibility tree, and a position write can be refused or
+    /// silently ignored. The entry is the only record of where such a window belongs, so
+    /// it is dropped only once the window has been read somewhere else; anything else
+    /// keeps the placement and asks recovery to finish it.
+    public static func settle(_ entry: PlacementEntry?, read: SourceWindowRead) -> Settlement {
+        guard let entry else { return .nothingJournaled }
+        guard case .state(let current) = read else { return .keepPlacementAndRecover }
+        return current.approximatelyEquals(entry.applied) ? .keepPlacementAndRecover : .dropEntry
+    }
+
+    // MARK: Who may touch the hand-off
+
+    /// Serializes starting and ending, so the two can never both change the record, the
+    /// input refusal, or the window.
+    ///
+    /// A start suspends while the window is put back, which takes as long as another app
+    /// needs to answer Accessibility. An end asked for in that gap — a second click on
+    /// the button, the overlay reopening, another window chosen, the source app quitting —
+    /// must not clear the hand-off under the running start: the real window would end up
+    /// with the person's keyboard while the preview no longer refused input, and the
+    /// record the start is still writing would be settled behind it. Such an end waits
+    /// and runs the moment the start finishes.
+    ///
+    /// Every start and every end also bumps `generation`, so work that suspends can tell
+    /// its own hand-off is over: the re-park an ended hand-off planned must never move a
+    /// window a newer hand-off has just given back to the person.
+    public struct Lifecycle: Equatable, Sendable {
+        public enum Phase: Equatable, Sendable {
+            case idle
+            /// A start is running: the record may already exist and input is already
+            /// refused, but the window is not yet in the person's hands.
+            case starting
+            case active
+        }
+
+        public private(set) var phase: Phase
+        public private(set) var generation: Int
+        /// The reason an end was asked for while a start was running, if any.
+        public private(set) var deferredEnd: String?
+
+        public init() {
+            phase = .idle
+            generation = 0
+            deferredEnd = nil
+        }
+
+        public enum StartRequest: Equatable, Sendable {
+            case begin(generation: Int)
+            /// One is already running or starting; a second may not touch anything.
+            case ignore
+        }
+
+        public mutating func requestStart() -> StartRequest {
+            guard phase == .idle else { return .ignore }
+            phase = .starting
+            generation += 1
+            return .begin(generation: generation)
+        }
+
+        public enum EndRequest: Equatable, Sendable {
+            case end(generation: Int)
+            /// A start is running; it carries this end out when it finishes.
+            case deferred
+            /// Nothing is running, so there is nothing to end.
+            case ignore
+        }
+
+        public mutating func requestEnd(reason: String) -> EndRequest {
+            switch phase {
+            case .idle: return .ignore
+            case .starting:
+                // The first reason to ask is kept: the outcome is the same either way,
+                // and it is the one that asked for the hand-off to stop.
+                if deferredEnd == nil { deferredEnd = reason }
+                return .deferred
+            case .active:
+                phase = .idle
+                generation += 1
+                return .end(generation: generation)
+            }
+        }
+
+        /// The window is the person's: the hand-off is running. Returns the reason to end
+        /// it at once when an end was asked for while the start ran, and nil otherwise.
+        public mutating func started() -> String? {
+            guard phase == .starting else { return nil }
+            phase = .active
+            defer { deferredEnd = nil }
+            return deferredEnd
+        }
+
+        /// The start never handed the window over, so an end asked for meanwhile has
+        /// nothing to end, and anything still in flight from this start is stale.
+        public mutating func startFailed() {
+            guard phase == .starting else { return }
+            phase = .idle
+            deferredEnd = nil
+            generation += 1
+        }
+
+        /// Whether work that suspended still belongs to the current hand-off.
+        public func isCurrent(_ generation: Int) -> Bool { self.generation == generation }
     }
 
     // MARK: Surviving a crash

@@ -263,6 +263,18 @@ enum WindowPlacer {
         }
     }
 
+    /// Hand-off needs actual Accessibility state; WindowServer cannot establish
+    /// minimized state and must never authorize handing over an unreadable window.
+    static func readForHandOff(_ identity: WindowIdentity) -> SourceWindowRead {
+        guard isTrusted else { return .unreachable(.accessibilityNotTrusted) }
+        do {
+            switch try find(identity) {
+            case .found(let window): return .state(try readState(window, identity: identity))
+            case .missing(let diagnosis): return .unreachable(diagnosis)
+            }
+        } catch { return .failed(String(describing: error)) }
+    }
+
     /// Current placement facts for the exact window, or nil when it is unreachable.
     static func state(of identity: WindowIdentity) throws -> WindowPlacementState? {
         guard isTrusted else {

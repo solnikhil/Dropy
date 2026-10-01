@@ -375,7 +375,7 @@ final class OverlayController: NSObject {
             previewShell.addSubview(failure)
         }
 
-        let rowWidth = max(100, size.width - 310)
+        let rowWidth = OverlayStatusLayout.rowWidth(overlayWidth: size.width)
         let status = NSTextField(labelWithString: "Finding open windows…")
         status.frame = CGRect(x: 288, y: 20, width: rowWidth * 0.55, height: 20)
         status.font = .systemFont(ofSize: 11)
@@ -385,7 +385,7 @@ final class OverlayController: NSObject {
         self.status = status
 
         let interaction = NSTextField(labelWithString: "")
-        interaction.frame = CGRect(x: 288 + rowWidth * 0.55, y: 20, width: rowWidth * 0.45, height: 20)
+        interaction.frame = CGRect(x: 288 + rowWidth * 0.55, y: 20, width: OverlayStatusLayout.interactionWidth(overlayWidth: size.width), height: 20)
         interaction.font = .systemFont(ofSize: 11)
         interaction.textColor = .secondaryLabelColor
         interaction.alignment = .right
@@ -738,7 +738,7 @@ final class OverlayController: NSObject {
     /// disappears with the source's condition, not on a timer.
     private func configureHandOff(typingVerified: Bool) {
         guard let button = handOffButton else { return }
-        switch HandOff.offer(interactivePreview: preferences.value.interactivePreview,
+        switch HandOff.offer(interactivePreview: preferences.value.interactivePreview, trusted: WindowPlacer.isTrusted,
                              capturing: state.isCapturing && selectedIdentity != nil,
                              typingVerified: typingVerified, active: handOff.active != nil) {
         case .hidden:

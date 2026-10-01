@@ -19,7 +19,7 @@ final class HandOffTests: XCTestCase {
     }
     private func start(_ trigger: HandOff.Trigger = .personRequest, entry: PlacementEntry?,
                        current: WindowPlacementState?, frontmost: Int32? = 9) -> Result<HandOff.Start, HandOff.Refusal> {
-        HandOff.start(trigger: trigger, entry: entry, current: current, displays: [display], frontmost: frontmost, source: 42)
+        HandOff.start(trigger: trigger, trusted: true, entry: entry, read: current.map { .state($0) } ?? .unreachable(.windowClosed), displays: [display], frontmost: frontmost, source: 42)
     }
 
     func testOnlyAPersonCanStartAHandOff() {
@@ -31,9 +31,9 @@ final class HandOffTests: XCTestCase {
         XCTAssertEqual(plan.restoreTo, original)
         XCTAssertEqual(plan.reparkMode, .parked)
         XCTAssertEqual(plan.returnFocusTo, 9)
-        XCTAssertEqual(plan.label, "Typing in the real window · the preview is paused")
+        XCTAssertEqual(plan.label, HandOff.label)
         // The person typed, stayed in the source app, and touched nothing else.
-        let end = HandOff.end(plan, current: original, frontmost: 42, source: 42, returnAppRunning: true)
+        let end = HandOff.end(plan, read: .state(original), frontmost: 42, source: 42, returnAppRunning: true)
         XCTAssertEqual(end, HandOff.End(repark: .parked, activate: 9))
     }
 
@@ -41,26 +41,26 @@ final class HandOffTests: XCTestCase {
         let plan = try start(entry: entry(), current: parked).get()
         var moved = original
         moved.frame.origin.x += 40
-        XCTAssertEqual(HandOff.end(plan, current: moved, frontmost: 42, source: 42, returnAppRunning: true),
+        XCTAssertEqual(HandOff.end(plan, read: .state(moved), frontmost: 42, source: 42, returnAppRunning: true),
                        HandOff.End(repark: nil, activate: 9))
         // A rounding difference within the tolerance is not a move.
         var rounded = original
         rounded.frame.origin.x += 1
-        XCTAssertEqual(HandOff.end(plan, current: rounded, frontmost: 42, source: 42, returnAppRunning: true).repark, .parked)
+        XCTAssertEqual(HandOff.end(plan, read: .state(rounded), frontmost: 42, source: 42, returnAppRunning: true).repark, .parked)
         // Minimizing it is a choice too.
         var minimized = original
         minimized.isMinimized = true
-        XCTAssertNil(HandOff.end(plan, current: minimized, frontmost: 42, source: 42, returnAppRunning: true).repark)
+        XCTAssertNil(HandOff.end(plan, read: .state(minimized), frontmost: 42, source: 42, returnAppRunning: true).repark)
     }
 
     func testFocusReturnsOnlyIfThePersonIsStillInTheSourceApp() throws {
         let plan = try start(entry: entry(), current: parked).get()
-        XCTAssertNil(HandOff.end(plan, current: original, frontmost: 77, source: 42, returnAppRunning: true).activate)
-        XCTAssertNil(HandOff.end(plan, current: original, frontmost: 42, source: 42, returnAppRunning: false).activate)
+        XCTAssertNil(HandOff.end(plan, read: .state(original), frontmost: 77, source: 42, returnAppRunning: true).activate)
+        XCTAssertNil(HandOff.end(plan, read: .state(original), frontmost: 42, source: 42, returnAppRunning: false).activate)
         // Started from the source app itself: there is nothing to return to.
         let fromSource = try start(entry: entry(), current: parked, frontmost: 42).get()
         XCTAssertNil(fromSource.returnFocusTo)
-        XCTAssertNil(HandOff.end(fromSource, current: original, frontmost: 42, source: 42, returnAppRunning: true).activate)
+        XCTAssertNil(HandOff.end(fromSource, read: .state(original), frontmost: 42, source: 42, returnAppRunning: true).activate)
     }
 
     func testAWindowThePersonMovedBeforeTheHandOffIsNotMovedOrReparked() throws {
@@ -69,7 +69,7 @@ final class HandOffTests: XCTestCase {
         let plan = try start(entry: entry(), current: elsewhere).get()
         XCTAssertNil(plan.restoreTo)
         XCTAssertNil(plan.reparkMode)
-        XCTAssertEqual(HandOff.end(plan, current: elsewhere, frontmost: 42, source: 42, returnAppRunning: true).repark, nil)
+        XCTAssertEqual(HandOff.end(plan, read: .state(elsewhere), frontmost: 42, source: 42, returnAppRunning: true).repark, nil)
     }
 
     func testAMinimizedOrHiddenWindowIsShownInPlace() throws {
@@ -120,20 +120,20 @@ final class HandOffTests: XCTestCase {
 
     func testTheButtonAppearsOnlyWhereTheHandOffIsWorthItsCost() {
         // Interactive preview on, a source on screen, and typing not verified there.
-        XCTAssertEqual(HandOff.offer(interactivePreview: true, capturing: true, typingVerified: false, active: false),
+        XCTAssertEqual(HandOff.offer(interactivePreview: true, trusted: true, capturing: true, typingVerified: false, active: false),
                        .start(title: HandOff.startTitle))
         // Typing already works in the preview: containment is not given up for nothing.
-        XCTAssertEqual(HandOff.offer(interactivePreview: true, capturing: true, typingVerified: true, active: false),
+        XCTAssertEqual(HandOff.offer(interactivePreview: true, trusted: true, capturing: true, typingVerified: true, active: false),
                        .hidden)
-        XCTAssertEqual(HandOff.offer(interactivePreview: false, capturing: true, typingVerified: false, active: false),
+        XCTAssertEqual(HandOff.offer(interactivePreview: false, trusted: true, capturing: true, typingVerified: false, active: false),
                        .hidden)
-        XCTAssertEqual(HandOff.offer(interactivePreview: true, capturing: false, typingVerified: false, active: false),
+        XCTAssertEqual(HandOff.offer(interactivePreview: true, trusted: true, capturing: false, typingVerified: false, active: false),
                        .hidden)
         // A running hand-off always offers its end, and says so, whatever else changed.
         for interactive in [true, false] {
             for capturing in [true, false] {
                 for verified in [true, false] {
-                    XCTAssertEqual(HandOff.offer(interactivePreview: interactive, capturing: capturing,
+                    XCTAssertEqual(HandOff.offer(interactivePreview: interactive, trusted: true, capturing: capturing,
                                                  typingVerified: verified, active: true),
                                    .end(title: HandOff.endTitle, label: HandOff.label))
                 }
@@ -190,4 +190,49 @@ final class HandOffTests: XCTestCase {
         XCTAssertFalse(InteractionSupport.interactive([.pointerClick, .scroll]).verifies(.text))
         XCTAssertFalse(InteractionSupport.viewOnly.verifies(.text))
     }
+    func testTrustAndUnreadableStateCannotAuthorizeHandOff() {
+        for read: SourceWindowRead in [.state(parked), .unreachable(.onOtherSpace), .failed("AX read failed")] {
+            XCTAssertEqual(HandOff.start(trigger: .personRequest, trusted: false, entry: entry(), read: read,
+                                        displays: [display], frontmost: 9, source: 42), .failure(.accessibilityNotTrusted))
+        }
+        XCTAssertEqual(HandOff.start(trigger: .personRequest, trusted: true, entry: entry(),
+                                    read: .unreachable(.onOtherSpace), displays: [display], frontmost: 9, source: 42),
+                       .failure(.sourceUnreadable))
+        XCTAssertEqual(HandOff.offer(interactivePreview: true, trusted: false, capturing: true,
+                                    typingVerified: false, active: false), .hidden)
+        XCTAssertEqual(HandOff.offer(interactivePreview: false, trusted: false, capturing: false,
+                                    typingVerified: false, active: true), .end(title: HandOff.endTitle, label: HandOff.label))
+    }
+
+    func testSettlementRetainsTheOnlyRecoveryRecordUntilRestoreIsObserved() {
+        XCTAssertEqual(HandOff.settle(entry(), read: .state(parked)), .keepPlacementAndRecover)
+        XCTAssertEqual(HandOff.settle(entry(), read: .failed("position write ignored")), .keepPlacementAndRecover)
+        XCTAssertEqual(HandOff.settle(entry(), read: .unreachable(.accessibilityNotTrusted)), .keepPlacementAndRecover)
+        XCTAssertEqual(HandOff.settle(entry(), read: .state(original)), .dropEntry)
+        XCTAssertEqual(HandOff.settle(nil, read: .state(original)), .nothingJournaled)
+    }
+
+    func testEndDuringSuspendedStartIsDeferredAndInvalidatesOlderWork() {
+        var state = HandOff.Lifecycle()
+        guard case .begin(let generation) = state.requestStart() else { return XCTFail("start refused") }
+        XCTAssertEqual(state.requestEnd(reason: "sourceTerminated"), .deferred)
+        XCTAssertEqual(state.requestStart(), .ignore)
+        XCTAssertEqual(state.phase, .starting)
+        XCTAssertEqual(state.started(), "sourceTerminated")
+        guard case .end = state.requestEnd(reason: "sourceTerminated") else { return XCTFail("end refused") }
+        XCTAssertFalse(state.isCurrent(generation))
+        XCTAssertEqual(state.phase, .idle)
+    }
+
+    func testFailedStartClearsDeferredEndWithoutActivatingTheSource() {
+        var state = HandOff.Lifecycle()
+        guard case .begin(let generation) = state.requestStart() else { return XCTFail("start refused") }
+        XCTAssertEqual(state.requestEnd(reason: "selectionChanged"), .deferred)
+        state.startFailed()
+        XCTAssertNil(state.deferredEnd)
+        XCTAssertEqual(state.phase, .idle)
+        XCTAssertFalse(state.isCurrent(generation))
+        XCTAssertEqual(state.requestEnd(reason: "old end"), .ignore)
+    }
+
 }
