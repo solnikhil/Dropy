@@ -1,0 +1,12 @@
+2026-09-30 07:41:49.965 Df replayd[87738:4864b8]  [INFO] -[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2416 TCC A
+2026-09-30 07:41:50.034 Df replayd[87738:4864bb]  [INFO] -[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2416 TCC A
+2026-09-30 07:41:50.137 Df replayd[87738:4864bb]  [INFO] -[RPClient verifyContentPickerFilter:]:2220 no saved picker content filter
+2026-09-30 07:41:50.148 Df replayd[87738:4864bb]  [INFO] -[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2416 TCC A
+2026-09-30 07:41:50.148 Df replayd[87738:4864bb]  [INFO] -[RPClient verifyContentPickerFilter:]:2220 no saved picker content filter
+2026-09-30 07:41:50.810 Df replayd[87738:4864bb]  [INFO] -[RPClient verifyContentPickerFilter:]:2220 no saved picker content filter
+2026-09-30 07:41:50.831 Df replayd[87738:4864bb]  [INFO] -[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2416 TCC A
+2026-09-30 07:41:50.831 Df replayd[87738:4864bb]  [INFO] -[RPClient verifyContentPickerFilter:]:2220 no saved picker content filter
+2026-09-30 07:41:52.431 Df replayd[87738:48d5b6]  [INFO] -[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2416 TCC A
+2026-09-30 07:41:54.575 Df replayd[87738:4864b8]  [INFO] -[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2416 TCC A
+2026-09-30 07:41:55.181 Df replayd[87738:48d5b6]  [INFO] -[RPClient verifyContentPickerFilter:]:2220 no saved picker content filter
+2026-09-30 07:41:55.191 Df replayd[87738:48d5b6]  [INFO] -[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2416 TCC A

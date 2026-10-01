@@ -108,12 +108,59 @@ struct DeviceInputRouterChecks {
         check(router.type(identity, text: "must-not-send") == .notApplicable("accessibility:noTextElementChosen"),
               "a stale target is dropped, not retried")
 
+        // Planning must not authorize a replacement target. Version lookup happens
+        // after the pointer class is captured and before the route is executed;
+        // replace the fixture field there to exercise that exact boundary.
+        let changingTarget = InputRouter(journal: PlacementJournal(url: root.appendingPathComponent("changing.json")),
+                                         evidence: testEvidence(), versionLookup: { _ in
+            DistributedNotificationCenter.default().postNotificationName(
+                .init("org.dropy.inputfixture.command"), object: "rebuild:A", userInfo: nil, deliverImmediately: true)
+            settle(0.6)
+            return "1.0"
+        })
+        let changedOutcome = changingTarget.click(identity, at: point, expectedWindowSize: windowFrame.size)
+        check({ if case .notApplicable(let reason) = changedOutcome { return reason.contains("clickTargetChanged") }
+                else { return false } }(), "a target replaced between planning and execution is refused", "\(changedOutcome)")
+        check(changingTarget.type(identity, text: "must-not-send") == .notApplicable("accessibility:noTextElementChosen"),
+              "a replacement target cannot become a typing target")
+        check(textField(a).map(value) == beforeA + "q" && value(fieldB) == beforeB,
+              "replacement during planning sent nothing")
+
         // Sending never moved the pointer, switched the frontmost app or changed desktops.
         check(CGEvent(source: nil)?.location == pointerBefore, "pointer never moved")
         check(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontBefore, "frontmost app unchanged")
         check(Spaces.current() == spacesBefore, "desktop unchanged")
 
-        // 6. Hidden source: not verified, refused. (Hiding is the check's own action.)
+        // 6. Permission loss while the preview is open: a router whose trust check fails
+        //    sends nothing for click, scroll or typing, even with a typing target chosen.
+        var trusted = true
+        let revocable = InputRouter(journal: PlacementJournal(url: root.appendingPathComponent("journal2.json")),
+                                    evidence: testEvidence(), trustCheck: { trusted })
+        _ = revocable.click(identity, at: point, expectedWindowSize: windowFrame.size)
+        settle(0.3)
+        let beforeRevoke = textField(a).map(value)
+        trusted = false
+        check(revocable.type(identity, text: "must-not-send") == .refused(.accessibilityNotGranted),
+              "typing after Accessibility is revoked is refused")
+        check(revocable.click(identity, at: point, expectedWindowSize: windowFrame.size) == .refused(.accessibilityNotGranted),
+              "a click after Accessibility is revoked is refused")
+        check(revocable.scroll(identity, at: point, delta: CGSize(width: 0, height: -40), expectedWindowSize: windowFrame.size)
+              == .refused(.accessibilityNotGranted), "a scroll after Accessibility is revoked is refused")
+        settle(0.3)
+        check(textField(a).map(value) == beforeRevoke && value(fieldB) == beforeB, "revoked permission sent nothing")
+
+        // 7. An updated app: evidence for fixture 1.0 grants nothing to another version,
+        //    or to a process whose version cannot be read.
+        for (label, running) in [("an updated app version", "2.0"), ("an unknown app version", nil)] as [(String, String?)] {
+            let other = InputRouter(journal: PlacementJournal(url: root.appendingPathComponent("journal-\(label.count).json")),
+                                    evidence: testEvidence(), versionLookup: { _ in running })
+            check(other.click(identity, at: point, expectedWindowSize: windowFrame.size) == .refused(.notVerified)
+                  && other.type(identity, text: "must-not-send") == .refused(.notVerified)
+                  && other.support(for: identity) == .viewOnly, "input to \(label) is refused")
+        }
+        check(textField(a).map(value) == beforeRevoke && value(fieldB) == beforeB, "version mismatch sent nothing")
+
+        // 8. Hidden source: not verified, refused. (Hiding is the check's own action.)
         let front = NSWorkspace.shared.frontmostApplication
         app.hide()
         settle(0.4)
@@ -184,7 +231,7 @@ struct DeviceInputRouterChecks {
         }
         let version = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         return InputEvidence(macOS: String(version), macOSMajor: version, sources: [
-            .init(bundleIdentifier: "org.dropy.inputfixture", appVersion: nil, report: "test-only", trials: trials)
+            .init(bundleIdentifier: "org.dropy.inputfixture", appVersion: "1.0", report: "test-only", trials: trials)
         ])
     }
 

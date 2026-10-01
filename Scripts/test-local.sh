@@ -6,7 +6,18 @@ set -euo pipefail
 
 repo_dir="${0:A:h:h}"
 build_dir="$repo_dir/.build/local"
-if [[ ! -f "$build_dir/libDropyCore.dylib" ]]; then
+# A removed source, an older timestamp, or a failed app build must never leave
+# tests running against stale artifacts. The manifest is published only after
+# the entire local build succeeds.
+source "$repo_dir/Scripts/lib/local-build-inputs.zsh"
+zsh "$repo_dir/Tests/LocalBuildInputsCheck.zsh"
+fingerprint="$(local_build_fingerprint "$repo_dir")"
+if [[ ! -f "$build_dir/libDropyCore.dylib" || ! -f "$build_dir/DropyCore.swiftmodule" ||
+      ! -x "$build_dir/Dropy.app/Contents/MacOS/Dropy" ||
+      ! -f "$build_dir/Dropy.app/Contents/Frameworks/libDropyCore.dylib" ||
+      ! -f "$build_dir/Dropy.app/Contents/Info.plist" ||
+      ! -f "$build_dir/Dropy.app/Contents/Resources/InputEvidence.json" ||
+      "$fingerprint" != "$(cat "$build_dir/build-inputs.sha256" 2>/dev/null || true)" ]]; then
   "$repo_dir/Scripts/build-local.sh" >/dev/null
 fi
 
@@ -60,7 +71,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 "$build_dir/PlacementJournalTests"
 
 # Probe judging is pure: no synthetic events, app activation or Accessibility access.
-swiftc -swift-version 6 -o "$build_dir/InputProbeChecks" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+swiftc -swift-version 6 -o "$build_dir/InputProbeChecks" "$repo_dir"/Scripts/bench/InputProbe/*.swift
 "$build_dir/InputProbeChecks" self-test
 
 # Probe results become shipped evidence only through this mapping.
@@ -69,6 +80,8 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rp
 "$build_dir/EvidenceToolChecks" self-test
 # The shipped evidence must decode with the current format.
 "$build_dir/EvidenceToolChecks" validate "$repo_dir/Resources/InputEvidence.json"
+# The shipped evidence must grant exactly what docs/COMPATIBILITY.md says, no more.
+"$build_dir/EvidenceToolChecks" policy "$repo_dir/Resources/InputEvidence.json"
 
 # AppKit-level regression checks for the overlay panel (no window is shown).
 swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
@@ -90,3 +103,6 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/FrameStampChecks" \
   "$repo_dir/Tests/LocalFrameStampCheck.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift"
 "$build_dir/FrameStampChecks"
+
+# Isolation of third-party apps under test (throwaway tree; no app is launched).
+"$repo_dir/Tests/LocalAppIsolationCheck.zsh"

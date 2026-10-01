@@ -47,7 +47,7 @@ device_session_begin input-probe-$target || exit 1
 trap device_session_end EXIT
 "$repo_dir/Scripts/bench/build-fixture.sh" >/dev/null
 [[ "$target" == electron ]] && "$repo_dir/Scripts/bench/build-electron-fixture.sh" >/dev/null
-swiftc -O -swift-version 6 -o "$build_dir/InputProbe" "$repo_dir/Scripts/bench/InputProbe/main.swift"
+swiftc -O -swift-version 6 -o "$build_dir/InputProbe" "$repo_dir"/Scripts/bench/InputProbe/*.swift
 # Refuse shared recovery state before changing windows or preferences.
 if [[ -e "$HOME/Library/Application Support/Dropy/placement-journal.json" ]]; then
   print -u2 "Recover pending Dropy placements before running the input probe."

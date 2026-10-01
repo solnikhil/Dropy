@@ -31,9 +31,17 @@ final class InputRouter {
     /// The text element last clicked in each window, so typing goes to that window only.
     private var textTargets: [WindowIdentity: AXUIElement] = [:]
 
-    init(journal: PlacementJournal, evidence: InputEvidence = InputRouter.bundledEvidence()) {
+    /// Whether this process may use Accessibility; replaceable so regressions can
+    /// simulate a revoked permission without touching system privacy settings.
+    private let trustCheck: () -> Bool
+
+    init(journal: PlacementJournal, evidence: InputEvidence = InputRouter.bundledEvidence(),
+         trustCheck: @escaping () -> Bool = { AXIsProcessTrusted() },
+         versionLookup: @escaping (WindowIdentity) -> String? = InputRouter.runningVersion) {
         self.journal = journal
         self.evidence = evidence
+        self.trustCheck = trustCheck
+        self.versionLookup = versionLookup
     }
 
     /// `InputEvidence.json` from the app bundle; empty (everything view-only) when missing.
@@ -47,8 +55,34 @@ final class InputRouter {
         return evidence
     }
 
+    /// The running app's version, read once per process launch. Nil (so nothing is
+    /// granted) when the process is gone, is a different launch, or has no version.
+    private var appVersions: [Int32: (launch: Date, version: String?)] = [:]
+    /// Replaceable so regressions can simulate an updated or unversioned app.
+    private let versionLookup: (WindowIdentity) -> String?
+
+    func appVersion(of identity: WindowIdentity) -> String? {
+        if let cached = appVersions[identity.processID], cached.launch == identity.processLaunchDate { return cached.version }
+        let version = versionLookup(identity)
+        appVersions[identity.processID] = (identity.processLaunchDate, version)
+        return version
+    }
+
+    /// `CFBundleShortVersionString` of the exact running process's bundle.
+    nonisolated static func runningVersion(_ identity: WindowIdentity) -> String? {
+        guard let app = NSRunningApplication(processIdentifier: identity.processID),
+              app.launchDate == identity.processLaunchDate, app.bundleIdentifier == identity.bundleIdentifier,
+              let url = app.bundleURL, let bundle = Bundle(url: url) else { return nil }
+        return bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    }
+
+    func evidenceMatch(for identity: WindowIdentity) -> InputEvidence.Match {
+        evidence.match(for: identity.bundleIdentifier, appVersion: appVersion(of: identity), macOSMajor: macOSMajor)
+    }
+
+    /// Capabilities for this exact app version; empty for an untested or unknown version.
     func capabilities(for identity: WindowIdentity) -> InputCapabilities {
-        evidence.capabilities(for: identity.bundleIdentifier, macOSMajor: macOSMajor)
+        evidence.capabilities(for: identity.bundleIdentifier, appVersion: appVersion(of: identity), macOSMajor: macOSMajor)
     }
 
     func support(for identity: WindowIdentity) -> InteractionSupport {
@@ -65,7 +99,8 @@ final class InputRouter {
     /// the first click, because Chromium builds its tree asynchronously. Nothing is
     /// changed for any other app.
     func prepare(_ identity: WindowIdentity) {
-        guard evidence.requiresManualAccessibility(for: identity.bundleIdentifier, macOSMajor: macOSMajor),
+        guard evidence.requiresManualAccessibility(for: identity.bundleIdentifier, appVersion: appVersion(of: identity),
+                                                   macOSMajor: macOSMajor),
               manualAccessibility[identity.processID] != identity.processLaunchDate,
               let app = NSRunningApplication(processIdentifier: identity.processID),
               app.launchDate == identity.processLaunchDate, app.bundleIdentifier == identity.bundleIdentifier else { return }
@@ -94,9 +129,21 @@ final class InputRouter {
     /// Only a successfully sent click selects a typing target. Rejected geometry or
     /// a failed caret action must never silently redirect later typing to another field.
     func click(_ identity: WindowIdentity, at point: CGPoint, expectedWindowSize: CGSize? = nil) -> Outcome {
-        send(.pointerClick, identity, expectedWindowSize: expectedWindowSize) { route, window, origin in
+        var authorizedHit: AXUIElement?
+        var authorizedPressable: AXUIElement?
+        // Evidence is per element class: a verified button press says nothing about
+        // placing a caret, so the class under the pointer decides which routes may act.
+        return send(.pointerClick, identity, expectedWindowSize: expectedWindowSize, classify: { window, origin in
+            let hit = Self.hitTest(window, CGPoint(x: origin.x + point.x, y: origin.y + point.y))
+            authorizedHit = hit
+            authorizedPressable = hit.flatMap(Self.pressable)
+            return Self.targetClass(hit)
+        }) { route, window, origin, target in
             let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
-            let hit = Self.hitTest(window, global)
+            let currentHit = Self.hitTest(window, global)
+            guard let target, Self.targetClass(currentHit) == target,
+                  Self.sameElement(authorizedHit, currentHit) else { return "clickTargetChanged" }
+            let hit = authorizedHit
             let result: String?
             switch route {
             case .windowTargetedEvent:
@@ -104,9 +151,12 @@ final class InputRouter {
             case .accessibility:
                 guard let hit else { return "nothingPressable" }
                 if Self.isTextElement(hit) {
+                    guard Self.windowID(of: hit) == identity.windowID else { return "clickTargetChanged" }
                     result = Self.placeCaret(hit, at: global)
                 } else {
-                    guard let pressable = Self.pressable(from: hit) else { return "nothingPressable" }
+                    guard let pressable = authorizedPressable else { return "nothingPressable" }
+                    guard Self.sameElement(pressable, Self.pressable(from: hit)),
+                          Self.windowID(of: pressable) == identity.windowID else { return "clickTargetChanged" }
                     let error = AXUIElementPerformAction(pressable, kAXPressAction as CFString)
                     result = error == .success ? nil : "axError(\(error.rawValue))"
                 }
@@ -137,7 +187,7 @@ final class InputRouter {
     }
 
     func scroll(_ identity: WindowIdentity, at point: CGPoint, delta: CGSize, expectedWindowSize: CGSize? = nil) -> Outcome {
-        send(.scroll, identity, expectedWindowSize: expectedWindowSize) { route, window, origin in
+        send(.scroll, identity, expectedWindowSize: expectedWindowSize) { route, window, origin, _ in
             let global = CGPoint(x: origin.x + point.x, y: origin.y + point.y)
             switch route {
             case .windowTargetedEvent:
@@ -156,7 +206,7 @@ final class InputRouter {
     }
 
     func type(_ identity: WindowIdentity, text: String) -> Outcome {
-        send(.text, identity) { route, _, _ in
+        send(.text, identity) { route, _, _, _ in
             guard route == .accessibility else { return "routeNotImplemented" }
             guard let target = self.textTargets[identity] else { return "noTextElementChosen" }
             // The element must still belong to the exact window.
@@ -169,9 +219,32 @@ final class InputRouter {
         }
     }
 
+    /// The element class of a hit-test result.
+    static func targetClass(_ hit: AXUIElement?) -> InputTargetClass {
+        guard let hit else { return .other }
+        if isTextElement(hit) { return .text }
+        return pressable(from: hit) == nil ? .other : .pressable
+    }
+
+    private static func sameElement(_ first: AXUIElement?, _ second: AXUIElement?) -> Bool {
+        switch (first, second) {
+        case (nil, nil): return true
+        case (let first?, let second?): return CFEqual(first, second)
+        default: return false
+        }
+    }
+
     /// Resolves the exact window, plans, and tries each verified route until one applies.
+    /// `classify` names the element class under the pointer for pointer kinds.
     private func send(_ kind: InputKind, _ identity: WindowIdentity, expectedWindowSize: CGSize? = nil,
-                      _ perform: (InputRoute, AXUIElement, CGPoint) -> String?) -> Outcome {
+                      classify: ((AXUIElement, CGPoint) -> InputTargetClass)? = nil,
+                      _ perform: (InputRoute, AXUIElement, CGPoint, InputTargetClass?) -> String?) -> Outcome {
+        // Checked on every send, not only when the preview was configured: the permission
+        // can be revoked while the overlay is open.
+        guard trustCheck() else {
+            NSLog("Dropy input: kind=%@ refused=accessibilityNotGranted", kind.rawValue)
+            return .refused(.accessibilityNotGranted)
+        }
         let resolution: InputTargetResolution
         var window: AXUIElement?
         do {
@@ -188,13 +261,16 @@ final class InputRouter {
             resolution = .ambiguous
         }
         let condition = condition(of: identity)
+        var target: InputTargetClass?
+        if let classify, let window, let origin = Self.frame(of: window)?.origin { target = classify(window, origin) }
         let planned = InputPlanner.candidates(kind, selectedWindowID: identity.windowID, resolution: resolution,
                                               condition: condition, capabilities: capabilities(for: identity),
-                                              policy: .preview)
+                                              policy: .preview, target: target)
         let routes: [InputRoute]
         switch planned {
         case .failure(let refusal):
-            NSLog("Dropy input: kind=%@ condition=%@ refused=%@", kind.rawValue, condition.rawValue, String(describing: refusal))
+            NSLog("Dropy input: kind=%@ condition=%@ refused=%@ target=%@", kind.rawValue, condition.rawValue,
+                  String(describing: refusal), target?.rawValue ?? "-")
             return .refused(refusal)
         case .success(let list): routes = list
         }
@@ -205,11 +281,12 @@ final class InputRouter {
         let origin = frame.origin
         var reasons: [String] = []
         for route in routes {
-            if let reason = perform(route, window, origin) {
+            if let reason = perform(route, window, origin, target) {
                 reasons.append("\(route.rawValue):\(reason)")
                 continue
             }
-            NSLog("Dropy input: kind=%@ condition=%@ route=%@", kind.rawValue, condition.rawValue, route.rawValue)
+            NSLog("Dropy input: kind=%@ condition=%@ route=%@ target=%@", kind.rawValue, condition.rawValue, route.rawValue,
+                  target?.rawValue ?? "-")
             return .sent(route)
         }
         NSLog("Dropy input: kind=%@ condition=%@ notApplicable=%@", kind.rawValue, condition.rawValue,

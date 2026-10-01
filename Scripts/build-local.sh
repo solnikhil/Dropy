@@ -5,6 +5,11 @@ repo_dir="${0:A:h:h}"
 build_dir="$repo_dir/.build/local"
 app_dir="$build_dir/Dropy.app"
 mkdir -p "$build_dir" "$app_dir/Contents/MacOS" "$app_dir/Contents/Frameworks"
+source "$repo_dir/Scripts/lib/local-build-inputs.zsh"
+build_fingerprint="$(local_build_fingerprint "$repo_dir")"
+# A failed build may already have replaced the library, so invalidate its old
+# success marker before replacing any artifact.
+rm -f "$build_dir/build-inputs.sha256"
 
 swiftc -swift-version 6 -parse-as-library -emit-library -emit-module \
   -module-name DropyCore \
@@ -23,4 +28,10 @@ cp "$repo_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 mkdir -p "$app_dir/Contents/Resources"
 cp "$repo_dir/Resources/InputEvidence.json" "$app_dir/Contents/Resources/InputEvidence.json"
 codesign --force --deep --sign - "$app_dir" >/dev/null
+if [[ "$(local_build_fingerprint "$repo_dir")" != "$build_fingerprint" ]]; then
+  print -u2 'Local build inputs changed during compilation; rebuild before testing.'
+  exit 1
+fi
+print -r -- "$build_fingerprint" > "$build_dir/build-inputs.sha256.tmp"
+mv "$build_dir/build-inputs.sha256.tmp" "$build_dir/build-inputs.sha256"
 print "$app_dir"

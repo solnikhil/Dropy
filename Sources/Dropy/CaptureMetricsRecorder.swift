@@ -46,6 +46,17 @@ struct CaptureCounts {
     }
 }
 
+/// The time Dropy last sent input to a source, for the latency trace. Written by the
+/// input router on the main thread, read on the capture queue.
+final class LatencyMarks: @unchecked Sendable {
+    static let shared = LatencyMarks()
+    private let lock = NSLock()
+    private var lastInput: Double?
+
+    func markInput() { lock.withLock { lastInput = HostClock.nowMilliseconds() } }
+    var latestInput: Double? { lock.withLock { lastInput } }
+}
+
 /// Carries one complete frame's timestamps from the capture callback to presentation.
 final class FrameStamp: @unchecked Sendable {
     let displayMilliseconds: Double?
@@ -53,20 +64,57 @@ final class FrameStamp: @unchecked Sendable {
     let recorder: CaptureMetricsRecorder
     private let outcomeLock = NSLock()
     private var finalOutcome = false
+    /// Stage times, only with `DROPY_DEBUG_FRAME_TRACE=1`; logged at the final outcome.
+    private var trace: FrameTrace?
+
+    /// Tracing is a development measurement: off unless explicitly requested.
+    static let tracing = ProcessInfo.processInfo.environment["DROPY_DEBUG_FRAME_TRACE"] == "1"
 
     init(displayMilliseconds: Double?, callbackMilliseconds: Double, recorder: CaptureMetricsRecorder) {
         self.displayMilliseconds = displayMilliseconds
         self.callbackMilliseconds = callbackMilliseconds
         self.recorder = recorder
+        if Self.tracing {
+            var trace = FrameTrace(display: displayMilliseconds, callback: callbackMilliseconds)
+            trace.input = LatencyMarks.shared.latestInput
+            self.trace = trace
+        }
+    }
+
+    /// Records a stage time on the trace, if tracing.
+    func mark(_ update: (inout FrameTrace, Double) -> Void) {
+        guard Self.tracing else { return }
+        let now = HostClock.nowMilliseconds()
+        outcomeLock.withLock { if trace != nil { update(&trace!, now) } }
+    }
+
+    /// A draw of this frame was committed; returns its index for the presentation result.
+    func beginDraw() -> Int? {
+        guard Self.tracing else { return nil }
+        let now = HostClock.nowMilliseconds()
+        return outcomeLock.withLock {
+            trace?.draws.append(.init(committed: now, presented: nil))
+            return trace.map { $0.draws.count - 1 }
+        }
+    }
+
+    func finishDraw(_ index: Int?, presented: Double?) {
+        guard let index else { return }
+        outcomeLock.withLock {
+            guard let count = trace?.draws.count, index < count else { return }
+            trace?.draws[index].presented = presented
+        }
     }
 
     /// A frame can retry several drawables but has only one final outcome.
     func claimFinalOutcome() -> Bool {
-        outcomeLock.withLock {
-            guard !finalOutcome else { return false }
+        let (claimed, line): (Bool, String?) = outcomeLock.withLock {
+            guard !finalOutcome else { return (false, nil) }
             finalOutcome = true
-            return true
+            return (true, trace?.logLine)
         }
+        if let line { NSLog("Dropy frame trace: %@", line) }
+        return claimed
     }
 }
 
@@ -139,14 +187,15 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
 
     /// `presentedTime` is Core Animation media time in seconds, or zero when the
     /// compositor never showed the drawable.
-    func recordPresented(_ stamp: FrameStamp, presentedTime: CFTimeInterval) {
+    func recordPresented(_ stamp: FrameStamp, presentedTime: CFTimeInterval, draw: Int? = nil) {
         lock.withLock {
             guard presentedTime > 0 else {
                 metrics.drawableMisses += 1
                 return
             }
-            guard stamp.claimFinalOutcome() else { return }
             let presented = presentedTime * 1_000 - metrics.presentClockOffsetMilliseconds
+            stamp.finishDraw(draw, presented: presented)
+            guard stamp.claimFinalOutcome() else { return }
             metrics.recordPresented(
                 callbackToPresent: presented - stamp.callbackMilliseconds,
                 frameAge: stamp.displayMilliseconds.map { presented - $0 })

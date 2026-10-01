@@ -53,13 +53,14 @@ final class InteractivePreviewTests: XCTestCase {
                                                      report: "docs/input-probe/x.md", trials: trials)])
         let decoded = try JSONDecoder().decode(InputEvidence.self, from: JSONEncoder().encode(evidence))
         XCTAssertEqual(decoded, evidence)
-        XCTAssertEqual(evidence.capabilities(for: "com.apple.TextEdit", macOSMajor: 27).verdict(.accessibility, .text, .parked),
-                       .verified)
-        XCTAssertEqual(evidence.capabilities(for: "com.apple.TextEdit", macOSMajor: 28).verdict(.accessibility, .text, .parked),
-                       .untested)
-        XCTAssertEqual(evidence.capabilities(for: "com.example.other", macOSMajor: 27).verdict(.accessibility, .text, .parked),
-                       .untested)
-        XCTAssertEqual(evidence.capabilities(for: nil, macOSMajor: 27).verdict(.accessibility, .text, .parked), .untested)
+        XCTAssertEqual(evidence.capabilities(for: "com.apple.TextEdit", appVersion: "1.21", macOSMajor: 27)
+                        .verdict(.accessibility, .text, .parked), .verified)
+        XCTAssertEqual(evidence.capabilities(for: "com.apple.TextEdit", appVersion: "1.21", macOSMajor: 28)
+                        .verdict(.accessibility, .text, .parked), .untested)
+        XCTAssertEqual(evidence.capabilities(for: "com.example.other", appVersion: "1.21", macOSMajor: 27)
+                        .verdict(.accessibility, .text, .parked), .untested)
+        XCTAssertEqual(evidence.capabilities(for: nil, appVersion: "1.21", macOSMajor: 27)
+                        .verdict(.accessibility, .text, .parked), .untested)
     }
 
     func testPreviewPolicyAllowsPrivateRouteButNotAppOrDesktopSwitches() {

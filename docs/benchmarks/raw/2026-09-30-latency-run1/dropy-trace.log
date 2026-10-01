@@ -1,0 +1,82 @@
+Dropy frame trace: capture=12.6 compare=0.3 forward=0.0 main=0.0 draws=1 misses=1 outcome=notPresented
+Dropy frame trace: capture=0.5 compare=0.1 forward=0.0 main=0.0 draw=55.0 compose=18.1 draws=3 misses=2 age=73.7
+Dropy reveal: firstFrame=422.3ms open=1 warm=no
+Dropy frame trace: capture=1.1 compare=0.2 forward=0.0 main=0.1 draw=34.3 compose=30.6 draws=3 misses=2 age=66.4
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.5 compare=0.1 forward=0.0 main=0.0 draw=22.4 compose=31.1 draws=3 misses=2 age=54.1 input=38555071.7 inputToDisplay=87.7 inputToPresent=141.8
+Dropy frame trace: capture=1.3 compare=1.2 forward=0.0 main=0.0 draw=0.2 compose=29.6 draws=1 misses=0 age=32.4 input=38555071.7 inputToDisplay=392.8 inputToPresent=425.2
+Dropy frame trace: capture=1.3 compare=1.2 forward=0.0 main=0.3 draw=0.2 compose=28.9 draws=1 misses=0 age=31.9 input=38555071.7 inputToDisplay=493.3 inputToPresent=525.2
+Dropy frame trace: capture=1.5 compare=0.4 forward=0.0 main=0.1 draw=25.9 compose=28.6 draws=3 misses=2 age=56.5 input=38555071.7 inputToDisplay=2252.0 inputToPresent=2308.5
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.7 compare=0.1 forward=0.0 main=0.0 draw=24.8 compose=31.1 draws=3 misses=2 age=56.7 input=38558961.8 inputToDisplay=78.4 inputToPresent=135.1
+Dropy frame trace: capture=1.2 compare=1.0 forward=0.0 main=0.1 draw=0.4 compose=16.9 draws=1 misses=0 age=19.5 input=38558961.8 inputToDisplay=382.3 inputToPresent=401.8
+Dropy frame trace: capture=1.2 compare=0.8 forward=0.0 main=0.3 draw=0.3 compose=16.5 draws=1 misses=0 age=19.0 input=38558961.8 inputToDisplay=482.7 inputToPresent=501.8
+Dropy frame trace: capture=1.6 compare=0.2 forward=0.0 main=0.1 draw=39.6 compose=28.1 draws=3 misses=2 age=69.5 input=38558961.8 inputToDisplay=2232.3 inputToPresent=2301.8
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.8 compare=0.1 forward=0.0 main=0.0 draw=23.7 compose=30.6 draws=3 misses=2 age=55.3 input=38562863.0 inputToDisplay=45.3 inputToPresent=100.5
+Dropy frame trace: capture=1.4 compare=0.2 forward=0.0 main=0.0 draw=0.2 compose=30.9 draws=1 misses=0 age=32.8 input=38562863.0 inputToDisplay=1051.1 inputToPresent=1083.9
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.7 compare=0.1 forward=0.0 main=0.0 draw=38.3 compose=23.8 draws=3 misses=2 age=62.9 input=38566769.8 inputToDisplay=64.2 inputToPresent=127.1
+Dropy frame trace: capture=1.5 compare=0.3 forward=0.0 main=0.1 draw=0.5 compose=34.7 draws=1 misses=0 age=37.0 input=38566769.8 inputToDisplay=1073.4 inputToPresent=1110.5
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.9 compare=0.1 forward=0.0 main=0.0 draw=57.0 compose=48.9 draws=4 misses=3 age=106.9 input=38570675.4 inputToDisplay=98.0 inputToPresent=204.9
+Dropy frame trace: capture=1.1 compare=0.8 forward=0.0 main=0.0 draw=0.1 compose=35.4 draws=1 misses=0 age=37.5 input=38570675.4 inputToDisplay=400.7 inputToPresent=438.2
+Dropy frame trace: capture=1.1 compare=1.1 forward=0.0 main=0.3 draw=0.2 compose=35.0 draws=1 misses=0 age=37.7 input=38570675.4 inputToDisplay=500.5 inputToPresent=538.2
+Dropy frame trace: capture=1.8 compare=0.4 forward=0.0 main=0.1 draw=41.4 compose=26.0 draws=3 misses=2 age=69.6 input=38570675.4 inputToDisplay=2251.9 inputToPresent=2321.6
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.7 compare=0.1 forward=0.0 main=0.0 draw=29.2 compose=31.0 draws=3 misses=2 age=60.9 input=38574559.9 inputToDisplay=76.1 inputToPresent=137.0
+Dropy frame trace: capture=1.2 compare=1.4 forward=0.0 main=0.1 draw=0.4 compose=19.1 draws=1 misses=0 age=22.1 input=38574559.9 inputToDisplay=381.6 inputToPresent=403.7
+Dropy frame trace: capture=1.1 compare=1.3 forward=0.0 main=0.4 draw=0.4 compose=18.2 draws=1 misses=0 age=21.5 input=38574559.9 inputToDisplay=482.2 inputToPresent=503.7
+Dropy frame trace: capture=1.6 compare=0.4 forward=0.0 main=0.0 draw=41.8 compose=26.6 draws=3 misses=2 age=70.4 input=38574559.9 inputToDisplay=2216.6 inputToPresent=2287.0
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.8 compare=0.1 forward=0.0 main=0.0 draw=25.5 compose=31.1 draws=3 misses=2 age=57.5 input=38578451.4 inputToDisplay=38.1 inputToPresent=95.6
+Dropy frame trace: capture=1.8 compare=0.3 forward=0.0 main=0.1 draw=0.5 compose=17.7 draws=1 misses=0 age=20.3 input=38578451.4 inputToDisplay=1041.9 inputToPresent=1062.2
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.5 compare=0.1 forward=0.0 main=0.0 draw=23.1 compose=29.5 draws=3 misses=2 age=53.1 input=38582350.3 inputToDisplay=60.2 inputToPresent=113.3
+Dropy frame trace: capture=1.1 compare=0.2 forward=0.0 main=0.1 draw=0.4 compose=42.2 draws=1 misses=0 age=44.0 input=38582350.3 inputToDisplay=1069.4 inputToPresent=1113.3
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=1.0 compare=0.1 forward=0.0 main=0.0 draw=29.0 compose=28.7 draws=3 misses=2 age=58.8 input=38586245.6 inputToDisplay=92.6 inputToPresent=151.4
+Dropy frame trace: capture=1.3 compare=0.9 forward=0.0 main=0.0 draw=0.3 compose=20.6 draws=1 misses=0 age=23.2 input=38586245.6 inputToDisplay=394.8 inputToPresent=418.1
+Dropy frame trace: capture=1.2 compare=1.0 forward=0.0 main=0.4 draw=0.3 compose=21.0 draws=1 misses=0 age=23.9 input=38586245.6 inputToDisplay=494.2 inputToPresent=518.1
+Dropy frame trace: capture=1.9 compare=0.3 forward=0.0 main=0.1 draw=53.8 compose=28.7 draws=3 misses=2 age=84.7 input=38586245.6 inputToDisplay=2250.0 inputToPresent=2334.7
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=1.1 compare=0.1 forward=0.0 main=0.0 draw=44.0 compose=24.3 draws=3 misses=2 age=69.5 input=38590145.7 inputToDisplay=65.1 inputToPresent=134.6
+Dropy frame trace: capture=1.5 compare=0.3 forward=0.0 main=0.1 draw=0.5 compose=31.3 draws=1 misses=0 age=33.7 input=38590145.7 inputToDisplay=1067.6 inputToPresent=1101.3
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.8 compare=0.1 forward=0.0 main=0.0 draw=60.2 compose=49.0 draws=4 misses=3 age=110.0 input=38594058.6 inputToDisplay=78.4 inputToPresent=188.4
+Dropy frame trace: capture=1.2 compare=0.7 forward=0.0 main=0.1 draw=0.4 compose=34.9 draws=1 misses=0 age=37.3 input=38594058.6 inputToDisplay=384.5 inputToPresent=421.7
+Dropy frame trace: capture=0.8 compare=0.3 forward=0.0 main=0.1 draw=0.1 compose=36.5 draws=1 misses=0 age=37.8 input=38594058.6 inputToDisplay=483.9 inputToPresent=521.8
+Dropy frame trace: capture=1.9 compare=0.3 forward=0.0 main=0.1 draw=41.9 compose=25.3 draws=3 misses=2 age=69.6 input=38594058.6 inputToDisplay=2218.8 inputToPresent=2288.4
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.6 compare=0.1 forward=0.0 main=0.0 draw=26.9 compose=31.3 draws=3 misses=2 age=58.9 input=38597949.5 inputToDisplay=38.6 inputToPresent=97.5
+Dropy frame trace: capture=1.3 compare=0.1 forward=0.0 main=0.0 draw=0.2 compose=20.6 draws=1 misses=0 age=22.3 input=38597949.5 inputToDisplay=1042.0 inputToPresent=1064.2
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=1.1 compare=0.1 forward=0.0 main=0.0 draw=52.7 compose=49.4 draws=4 misses=3 age=103.2 input=38601844.7 inputToDisplay=65.7 inputToPresent=169.0
+Dropy frame trace: capture=1.7 compare=0.3 forward=0.0 main=0.1 draw=0.4 compose=29.6 draws=1 misses=0 age=32.1 input=38601844.7 inputToDisplay=1070.2 inputToPresent=1102.3
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.7 compare=0.1 forward=0.0 main=0.0 draw=33.0 compose=30.2 draws=3 misses=2 age=64.0 input=38605760.2 inputToDisplay=89.5 inputToPresent=153.6
+Dropy frame trace: capture=1.1 compare=0.6 forward=0.0 main=0.0 draw=0.4 compose=21.8 draws=1 misses=0 age=24.0 input=38605760.2 inputToDisplay=396.2 inputToPresent=420.2
+Dropy frame trace: capture=1.3 compare=0.6 forward=0.0 main=0.4 draw=0.3 compose=20.8 draws=1 misses=0 age=23.3 input=38605760.2 inputToDisplay=496.9 inputToPresent=520.2
+Dropy frame trace: capture=2.0 compare=0.4 forward=0.0 main=0.1 draw=53.0 compose=28.8 draws=3 misses=2 age=84.3 input=38605760.2 inputToDisplay=2469.3 inputToPresent=2553.6
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=1.1 compare=0.1 forward=0.0 main=0.0 draw=44.5 compose=28.1 draws=3 misses=2 age=73.8 input=38609665.5 inputToDisplay=74.5 inputToPresent=148.3
+Dropy frame trace: capture=1.4 compare=0.3 forward=0.0 main=0.1 draw=0.6 compose=32.3 draws=1 misses=0 age=34.6 input=38609665.5 inputToDisplay=1080.3 inputToPresent=1114.9
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.8 compare=0.1 forward=0.0 main=0.0 draw=31.4 compose=30.3 draws=3 misses=2 age=62.5 input=38613579.1 inputToDisplay=88.8 inputToPresent=151.4
+Dropy frame trace: capture=1.3 compare=1.1 forward=0.0 main=0.0 draw=0.2 compose=18.4 draws=1 misses=0 age=21.0 input=38613579.1 inputToDisplay=397.1 inputToPresent=418.0
+Dropy frame trace: capture=1.4 compare=1.8 forward=0.0 main=0.4 draw=0.3 compose=17.3 draws=1 misses=0 age=21.2 input=38613579.1 inputToDisplay=496.8 inputToPresent=518.0
+Dropy frame trace: capture=1.0 compare=0.1 forward=0.0 main=0.0 draw=40.7 compose=29.7 draws=3 misses=2 age=71.5 input=38613579.1 inputToDisplay=2229.8 inputToPresent=2301.4
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.7 compare=0.1 forward=0.0 main=0.0 draw=30.6 compose=31.3 draws=3 misses=2 age=62.8 input=38617466.1 inputToDisplay=51.6 inputToPresent=114.4
+Dropy frame trace: capture=1.3 compare=0.3 forward=0.0 main=0.1 draw=0.3 compose=32.4 draws=1 misses=0 age=34.4 input=38617466.1 inputToDisplay=1063.3 inputToPresent=1097.7
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=1.0 compare=0.1 forward=0.0 main=0.0 draw=44.1 compose=23.9 draws=3 misses=2 age=69.1 input=38621394.7 inputToDisplay=66.6 inputToPresent=135.8
+Dropy frame trace: capture=1.0 compare=0.2 forward=0.0 main=0.1 draw=0.5 compose=31.3 draws=1 misses=0 age=33.1 input=38621394.7 inputToDisplay=1069.4 inputToPresent=1102.4
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=1.5 compare=0.2 forward=0.0 main=0.0 draw=30.6 compose=25.9 draws=3 misses=2 age=58.2 input=38625311.8 inputToDisplay=77.1 inputToPresent=135.3
+Dropy frame trace: capture=1.6 compare=0.2 forward=0.0 main=0.1 draw=0.8 compose=33.8 draws=1 misses=0 age=36.6 input=38625311.8 inputToDisplay=1082.1 inputToPresent=1118.7
+Dropy input: kind=pointerClick condition=visible route=accessibility
+Dropy frame trace: capture=0.8 compare=0.1 forward=0.0 main=0.0 draw=29.6 compose=30.3 draws=3 misses=2 age=60.8 input=38629228.5 inputToDisplay=91.2 inputToPresent=152.0
+Dropy frame trace: capture=1.3 compare=1.8 forward=0.0 main=0.1 draw=0.4 compose=16.6 draws=1 misses=0 age=20.1 input=38629228.5 inputToDisplay=398.6 inputToPresent=418.7
+Dropy frame trace: capture=1.2 compare=0.7 forward=0.0 main=0.5 draw=0.3 compose=17.6 draws=1 misses=0 age=20.5 input=38629228.5 inputToDisplay=498.2 inputToPresent=518.7
+Dropy capture metrics: window=4926 duration=90.3s start=207.8ms firstFrame=199.9ms output=1040x760/BGRA status=[complete=1169] completeRate=12.9/s unchanged=1109 rateChanges=10idle/9full mailboxDrops=0 presented=59 notPresented=1 drawableMisses=64 captureToCallback=[n=1169 p50=1.3 p95=2.0 p99=2.8 max=12.6] callbackToPresent=[n=59 p50=52.7 p95=102.1 p99=109.2 max=109.2] frameAge=[n=59 p50=53.1 p95=103.2 p99=110.0 max=110.0] clockOffset=0.000ms stop=closed

@@ -19,6 +19,8 @@ final class OverlayController: NSObject {
     private var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
     private var selectedIdentity: WindowIdentity?
+    /// Key composition state (a pending dead key); reset whenever the target window is.
+    private var keyInput = PreviewKeyInput()
     private var selectedApplicationName = ""
     private var restartedAfterInterruption = false
     private var identityTask: Task<Void, Never>?
@@ -112,6 +114,7 @@ final class OverlayController: NSObject {
         overlaySession = UUID()
         setState(.closed)
         if let selectedIdentity { inputRouter.forget(selectedIdentity) }
+        keyInput = PreviewKeyInput()
         selectedIdentity = nil
         selectedWindowSize = nil
         identityTask?.cancel()
@@ -426,6 +429,7 @@ final class OverlayController: NSObject {
         identityTask?.cancel()
         identityTask = nil
         if let previous = selectedIdentity { inputRouter.forget(previous) }
+        keyInput = PreviewKeyInput()
         selectedIdentity = selected.identity
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
@@ -622,6 +626,7 @@ final class OverlayController: NSObject {
         generation = UUID()
         let failedGeneration = generation
         if let selectedIdentity { inputRouter.forget(selectedIdentity) }
+        keyInput = PreviewKeyInput()
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
@@ -673,22 +678,22 @@ final class OverlayController: NSObject {
                   InteractionLabel.text(for: support, enabled: true, trusted: true))
         }
         if interactionMessage == nil {
-            interactionStatus?.stringValue = InteractionLabel.text(for: support, enabled: true, trusted: true)
+            // An app that updated past its evidence says so instead of a generic "untested".
+            let reason = support == .viewOnly ? InteractionLabel.viewOnlyReason(inputRouter.evidenceMatch(for: identity)) : nil
+            interactionStatus?.stringValue = reason ?? InteractionLabel.text(for: support, enabled: true, trusted: true)
         }
         // Each event re-checks that the drawn frame is this selection's window at its
         // current size; the router then confirms that size against the live window.
         renderer.onClick = { [weak self] point in
             guard let self, let mapping = self.mapping(for: identity, kind: .pointerClick),
                   let target = mapping.windowPoint(for: point) else { return }
-            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize),
-                        kind: .pointerClick, sourceWindowID: identity.windowID)
+            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize), kind: .pointerClick, sourceWindowID: identity.windowID)
         }
         renderer.onScroll = { [weak self] point, delta in
             guard let self, let mapping = self.mapping(for: identity, kind: .scroll),
                   let target = mapping.windowPoint(for: point) else { return }
             self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta),
-                                                expectedWindowSize: mapping.windowSize),
-                        kind: .scroll, sourceWindowID: identity.windowID)
+                                                expectedWindowSize: mapping.windowSize), kind: .scroll, sourceWindowID: identity.windowID)
         }
         renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
     }
@@ -720,22 +725,14 @@ final class OverlayController: NSObject {
     private func handleKey(_ event: NSEvent) -> Bool {
         guard preferences.value.interactivePreview, WindowPlacer.isTrusted, state.isCapturing,
               let identity = selectedIdentity else { return false }
-        if !event.modifierFlags.intersection([.command, .control]).isEmpty {
-            flash(InteractionLabel.text(for: .notVerified, kind: .keyShortcut))
-            return true
+        switch keyInput.classify(characters: event.characters,
+                                 charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                                 modifiers: PreviewModifiers(event.modifierFlags),
+                                 inputMethodActive: Self.inputMethodIsActive()) {
+        case .text(let characters): report(inputRouter.type(identity, text: characters), kind: .text, sourceWindowID: identity.windowID)
+        case .refuse(let kind): flash(InteractionLabel.text(for: .notVerified, kind: kind))
+        case .unsupportedKey: flash("This key is not supported in the preview yet")
         }
-        if Self.inputMethodIsActive() {
-            flash(InteractionLabel.text(for: .notVerified, kind: .imeComposition))
-            return true
-        }
-        guard let characters = event.characters, !characters.isEmpty,
-              characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && $0.value < 0xF700 })
-        else {
-            flash("This key is not supported in the preview yet")
-            return true
-        }
-        report(inputRouter.type(identity, text: characters), kind: .text,
-               sourceWindowID: identity.windowID)
         return true
     }
 
@@ -749,7 +746,10 @@ final class OverlayController: NSObject {
 
     private func report(_ outcome: InputRouter.Outcome, kind: InputKind, sourceWindowID: UInt32) {
         switch outcome {
-        case .sent: capture.noteInteraction(for: sourceWindowID)
+        case .sent:
+            capture.noteInteraction(for: sourceWindowID)
+            // The latency trace measures from here to the first frame showing the result.
+            if FrameStamp.tracing { LatencyMarks.shared.markInput() }
         case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
         case .notApplicable(let reason):
             flash(reason.contains("windowGeometryChanged") ? "Preview resizing · try again in a moment"
@@ -760,6 +760,8 @@ final class OverlayController: NSObject {
 
     /// Shows a short message in place of the interaction label, then restores the label.
     private func flash(_ message: String) {
+        // Logged so device checks can confirm every refusal is shown, not silent.
+        NSLog("Dropy input: shown=\"%@\"", message)
         interactionMessage?.cancel()
         interactionStatus?.stringValue = message
         let work = DispatchWorkItem { [weak self] in
