@@ -1,5 +1,13 @@
 # Dropy roadmap
 
+**2026-10-01 coding handoff:** device checks are paused again. The six interrupted
+streams are integrated for local verification: explicit hand-off, hidden-source
+update reporting, view-only region selection and app pinning, opt-in presentation
+experiments, release tooling, and safety fixes. The combined implementation still
+needs device evidence. Earlier resumed-device notes describe historical sessions;
+they do not authorize another run or promote M3/release gates.
+
+
 This is the working sequence for turning Dropy from a live window preview into a dependable notch container. The end goal is an existing app's UI inside a Dropy-owned overlay, with its session intact after dismissal. The current build is **view-only**, and the source window remains visible elsewhere. We will publish compatibility by tested workflow rather than imply universal support from an early demo.
 
 Milestones are **evidence gates**, not calendar promises. Work may move between phases when an experiment changes the architecture. Each milestone has an explicit completion condition so a narrow success cannot be mistaken for the full product.

@@ -126,3 +126,5 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rp
   -o "$build_dir/RegionRendererChecks" "$repo_dir/Tests/LocalRegionRendererCheck.swift" \
   "$repo_dir/Sources/Dropy/MetalFrameView.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift"
 "$build_dir/RegionRendererChecks"
+# Rehearse packaging only: ad-hoc signatures, no app launches or notarization.
+zsh "$repo_dir/Tests/LocalReleaseCheck.zsh"

@@ -184,6 +184,7 @@ public enum InteractionLabel {
     /// Why the routing gate would not send this event, in the preview's own words.
     public static func text(for refusal: PreviewInputGate.Refusal) -> String {
         switch refusal {
+        case .handOffActive: return HandOff.inputRefusedLabel
         case .regionMode: return regionModeViewOnly
         case .sourceChanged, .frameFromOtherWindow: return "Switching windows · input not sent"
         case .noFrame, .geometryChanging: return "Preview updating · input not sent"
