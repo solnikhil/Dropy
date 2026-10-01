@@ -14,8 +14,12 @@ codesign --verify --deep --strict "$work/unpacked/Dropy.app"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$work/unpacked/Dropy.app/Contents/Info.plist")" == 1 ]]
 # Misconfigured development signing must be caught even in a rehearsal. Check the
 # policy with the small CLI, without another expensive package build.
-swiftc -swift-version 6 -I "$repo_dir/.build/local" -L "$repo_dir/.build/local" -lDropyCore \
-  -Xlinker -rpath -Xlinker "$repo_dir/.build/local" -o "$work/ReleaseTool" \
+mkdir "$work/core"
+swiftc -swift-version 6 -parse-as-library -emit-library -emit-module -module-name DropyCore \
+  -Xlinker -install_name -Xlinker '@rpath/libDropyCore.dylib' \
+  -o "$work/core/libDropyCore.dylib" "$repo_dir"/Sources/DropyCore/*.swift
+swiftc -swift-version 6 -I "$work/core" -L "$work/core" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$work/core" -o "$work/ReleaseTool" \
   "$repo_dir/Scripts/release/ReleaseTool/main.swift"
 "$work/ReleaseTool" self-test
 if "$work/ReleaseTool" plan --mode dry-run --version-file "$repo_dir/VERSION" --build 1 \

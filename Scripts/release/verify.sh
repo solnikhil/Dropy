@@ -22,12 +22,12 @@ codesign -d --entitlements :- "$app" > "$work/entitlements.plist" 2> "$work/sign
 "$tool" check-entitlements "$work/entitlements.plist"
 if [[ "$mode" == release ]]; then
   codesign -dv --verbose=4 "$app" 2> "$work/identity.log"
-  rg -q '^Authority=Developer ID Application:' "$work/identity.log"
-  rg -q 'flags=.*runtime' "$work/identity.log"
+  grep -Eq '^Authority=Developer ID Application:' "$work/identity.log"
+  grep -Eq 'flags=.*runtime' "$work/identity.log"
   spctl --assess --type execute --verbose=2 "$app"
   xcrun stapler validate "$app"
 else
   codesign -dv "$app" 2> "$work/identity.log"
-  rg -q '^Signature=adhoc$' "$work/identity.log"
+  grep -Eq '^Signature=adhoc$' "$work/identity.log"
 fi
 print 'Release bundle verification passed'
