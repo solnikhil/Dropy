@@ -56,16 +56,22 @@ public struct PlacementEntry: Codable, Equatable, Sendable {
     /// Nil in older records means the placement was already observed.
     /// False means a crash may have interrupted the move or its journal update.
     public var applicationConfirmed: Bool?
+    /// Set while a hand-off has given the real window back to the person. Nil in every
+    /// record written before hand-off typing existed, and in every entry without one, so
+    /// older journals decode unchanged.
+    public var handOff: HandOffRecord?
     public let createdAt: Date
 
     public init(identity: WindowIdentity, mode: PlacementMode, original: WindowPlacementState,
-                applied: WindowPlacementState, createdAt: Date, applicationConfirmed: Bool? = nil) {
+                applied: WindowPlacementState, createdAt: Date, applicationConfirmed: Bool? = nil,
+                handOff: HandOffRecord? = nil) {
         self.identity = identity
         self.mode = mode
         self.original = original
         self.applied = applied
         self.createdAt = createdAt
         self.applicationConfirmed = applicationConfirmed
+        self.handOff = handOff
     }
 }
 
@@ -90,6 +96,12 @@ public enum PlacementRestorer {
     public static func decide(_ entry: PlacementEntry, current: WindowPlacementState?,
                               displays: [CGRect]) -> RestoreDecision {
         guard let current else { return .sourceGone }
+        // A hand-off was interrupted: its record says where the window belongs, and it
+        // never re-parks. Its own rules replace the ambiguity below, because the person
+        // asked for the window back at a known moment.
+        if let handOff = entry.handOff {
+            return HandOff.recovery(entry, handOff: handOff, current: current, displays: displays)
+        }
         if entry.applicationConfirmed == false, current != entry.applied {
             // The system may have clamped the move before a crash. It cannot be
             // distinguished from a later user move, so never discard the record

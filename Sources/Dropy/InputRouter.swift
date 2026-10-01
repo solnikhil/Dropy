@@ -154,7 +154,7 @@ final class InputRouter {
         return SourceConditionRule.condition(SourceObservation(
             applicationIsHidden: NSRunningApplication(processIdentifier: identity.processID)?.isHidden == true,
             isMinimized: minimized, windowSpaces: Spaces.of(identity.windowID), activeSpaces: Spaces.current(),
-            parkedByDropy: journal.entries.contains { $0.identity == identity && $0.mode.movesWindow },
+            parkedByDropy: journal.entries.contains { $0.identity == identity && $0.handOff == nil && $0.mode.movesWindow },
             visibleFraction: server.map { PlacementGeometry.visibleFraction(of: $0.bounds, on: WindowPlacer.displayBounds()) },
             coverage: coverage))
     }

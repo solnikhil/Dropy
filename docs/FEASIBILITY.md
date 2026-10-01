@@ -146,7 +146,7 @@ Device sessions now also refuse to start on battery below 30% (`DROPY_MIN_BATTER
 
 **Typing design.** No tested API inserts text at the caret of a Chromium or WebKit field whose window is not key. Keyboard events always follow the source app's key window. The only honest ways to type into those apps are:
 
-1. **Hand-off mode** (not built). The person asks to type. Dropy restores the source window to where it was, makes it key and frontmost, and says so; the person types into the real window, not the preview. Dropy's preview is then not the input surface, so this is containment-breaking by design and must be labelled as such.
+1. **Hand-off mode** (built, never run on a device). The person asks to type. Dropy restores the source window to where it was, makes it key and frontmost, and says so; the person types into the real window, not the preview. Dropy's preview is then not the input surface, so this is containment-breaking by design and must be labelled as such. It starts only from one overlay button, records itself write-ahead in the placement journal so a crash puts the window back and never re-parks it, and refuses every preview input while it lasts.
 2. **Per-field Accessibility insertion where the app reports a real caret for a non-key window.** Only AppKit text views did (TextEdit, the fixture), and that is what ships.
 
 Anything else, such as rewriting a field's value, typing while the source happens to be key, or posting keys to its process, was measured to put text in the wrong place, the wrong element or the wrong window.

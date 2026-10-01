@@ -84,7 +84,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rp
 "$build_dir/EvidenceToolChecks" policy "$repo_dir/Resources/InputEvidence.json"
 
 # AppKit-level regression checks for the overlay panel (no window is shown).
-swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/OverlayPanelChecks" \
   "$repo_dir/Tests/LocalOverlayPanelCheck.swift" "$repo_dir/Sources/Dropy/OverlayPanel.swift"
 "$build_dir/OverlayPanelChecks"
 

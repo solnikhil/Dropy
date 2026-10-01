@@ -9,9 +9,11 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var trigger: NotchTrigger?
     private var hotKey: GlobalHotKey?
+    private var sourceTerminationObserver: NSObjectProtocol?
     private let placementJournal = PlacementJournal()
     private let parkingTabs = ParkingTabs()
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
+    private lazy var handOff = HandOffSession(journal: placementJournal)
 
     static func main() {
         let app = NSApplication.shared
@@ -29,7 +31,24 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        overlay = OverlayController(preferences: preferences, inputRouter: InputRouter(journal: placementJournal))
+        overlay = OverlayController(preferences: preferences, inputRouter: InputRouter(journal: placementJournal),
+                                   handOff: handOff)
+        // A handed-over window is the person's again: no tab may cover it, and a tab comes
+        // back only when the end of a hand-off parked it again.
+        handOff.onRestored = { [weak self] identity in self?.parkingTabs.remove(identity) }
+        handOff.onRecoveryRequired = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
+        handOff.onReparked = { [weak self] entry in self?.parkingTabs.show(for: entry) }
+        sourceTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let processID = application.processIdentifier
+            MainActor.assumeIsolated {
+                guard let self, let active = self.handOff.active,
+                      processID == active.identity.processID else { return }
+                self.handOff.end(reason: "sourceTerminated")
+            }
+        }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
         recovery.onSettled = { [weak self] identity in self?.parkingTabs.remove(identity) }
@@ -45,6 +64,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSLog("Dropy placement: tab clicked restore=%@", PlacementJournal.name(outcome))
         }
         for entry in placementJournal.entries where entry.mode == .parked && entry.applicationConfirmed != false {
+            // A hand-off interrupted by a crash usually left the window back on screen,
+            // where a tab would cover a window in use. Cover it only while the window
+            // server still reports it parked, which needs no Accessibility.
+            if entry.handOff != nil, !WindowPlacer.isStillPlaced(entry) { continue }
             parkingTabs.show(for: entry)
         }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -190,9 +213,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let sourceTerminationObserver { NSWorkspace.shared.notificationCenter.removeObserver(sourceTerminationObserver) }
         trigger?.stop()
         hotKey?.unregister()
         recovery.stop()
+        // A hand-off is not ended here: re-parking a window as Dropy dies would leave it
+        // out of sight with nothing left to restore it. Its journal record is settled by
+        // restoreAll() below, which leaves the window where the person is using it.
         // A deferred entry stays in the journal; the next launch keeps trying.
         placementJournal.restoreAll()
         parkingTabs.removeAll()
@@ -281,7 +308,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard placementJournal.canRecover else { return }
         }
         recovery.recoverAll()
-        for entry in placementJournal.entries where entry.applicationConfirmed == false {
+        // An interrupted hand-off is not an ambiguous move: its record says where the
+        // window belongs, so it needs no question and gets none.
+        for entry in placementJournal.entries where entry.applicationConfirmed == false && entry.handOff == nil {
             let alert = NSAlert()
             alert.messageText = "Restore an interrupted window move?"
             alert.informativeText = "Dropy stopped before confirming this move. Restoring the original position may replace a later move you made."

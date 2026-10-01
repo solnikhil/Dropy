@@ -131,6 +131,68 @@ enum WindowPlacer {
         return entry
     }
 
+    /// Puts the exact window into `state` without touching the journal: unhides its app,
+    /// unminimizes it and writes its frame. The caller owns the write-ahead record, which
+    /// is what a hand-off needs: its record must survive while the window is back under
+    /// the person's hands, so `restore` (which drops the record) cannot be used.
+    static func apply(_ state: WindowPlacementState, to identity: WindowIdentity) async throws {
+        guard WindowCatalog.isRunning(identity) else { throw PlacementError.processGone }
+        let application = NSRunningApplication(processIdentifier: identity.processID)
+        if !state.isAppHidden, application?.isHidden == true { application?.unhide() }
+        // Hiding an app needs no Accessibility, so neither does undoing it. When the window
+        // server already shows the window on screen where `state` wants it, unhiding was
+        // the whole job; anything more genuinely needs the permission.
+        guard isTrusted else {
+            guard !state.isMinimized, let info = windowServerInfo(identity.windowID), info.onScreen,
+                  abs(info.bounds.minX - state.frame.minX) <= WindowPlacementState.frameTolerance,
+                  abs(info.bounds.minY - state.frame.minY) <= WindowPlacementState.frameTolerance else {
+                throw PlacementError.accessibilityNotTrusted
+            }
+            return
+        }
+        // Unhiding rebuilds the app's window list, and an app can answer with a partial
+        // one for a moment; retry only for causes that can clear on their own.
+        var lookup = try find(identity)
+        for _ in 0..<5 {
+            guard case .missing(let diagnosis) = lookup, diagnosis.mayBecomeReachable else { break }
+            try await Task.sleep(for: .milliseconds(100))
+            lookup = try find(identity)
+        }
+        let window: AXUIElement
+        switch lookup {
+        case .found(let element): window = element
+        case .missing(let diagnosis): throw PlacementError.windowNotFound(diagnosis)
+        }
+        let current = try readState(window, identity: identity)
+        if current.isMinimized != state.isMinimized { try setMinimized(state.isMinimized, window: window) }
+        // A minimized window has no frame to write; its position returns with it.
+        guard !state.isMinimized else { return }
+        let resize = abs(current.frame.width - state.frame.width) > WindowPlacementState.frameTolerance
+            || abs(current.frame.height - state.frame.height) > WindowPlacementState.frameTolerance
+        try setFrame(state.frame, of: window, resize: resize)
+    }
+
+    /// Brings the exact window to the front inside its own app. Activating the app alone
+    /// leaves whichever of its windows was in front there.
+    static func raise(_ identity: WindowIdentity) throws {
+        guard isTrusted else { throw PlacementError.accessibilityNotTrusted }
+        switch try find(identity) {
+        case .found(let window):
+            let result = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            guard result == .success else { throw PlacementError.attribute(kAXRaiseAction, result) }
+        case .missing(let diagnosis): throw PlacementError.windowNotFound(diagnosis)
+        }
+    }
+
+    /// Whether the window server still reports the window where Dropy placed it. It needs
+    /// no Accessibility, so a parked window can be recognized even while its restore is
+    /// deferred for want of permission.
+    static func isStillPlaced(_ entry: PlacementEntry) -> Bool {
+        guard let bounds = windowServerInfo(entry.identity.windowID)?.bounds else { return false }
+        return abs(bounds.minX - entry.applied.frame.minX) <= WindowPlacementState.frameTolerance
+            && abs(bounds.minY - entry.applied.frame.minY) <= WindowPlacementState.frameTolerance
+    }
+
     /// Undoes a placement if the window is still where Dropy left it. The journal
     /// entry is removed once the outcome is final. It stays, with the reason, when the
     /// window cannot be reached yet (no Accessibility, another Space, a busy app), so
@@ -199,6 +261,18 @@ enum WindowPlacer {
         } catch {
             return (.failed(String(describing: error)), nil)
         }
+    }
+
+    /// Hand-off needs actual Accessibility state; WindowServer cannot establish
+    /// minimized state and must never authorize handing over an unreadable window.
+    static func readForHandOff(_ identity: WindowIdentity) -> SourceWindowRead {
+        guard isTrusted else { return .unreachable(.accessibilityNotTrusted) }
+        do {
+            switch try find(identity) {
+            case .found(let window): return .state(try readState(window, identity: identity))
+            case .missing(let diagnosis): return .unreachable(diagnosis)
+            }
+        } catch { return .failed(String(describing: error)) }
     }
 
     /// Current placement facts for the exact window, or nil when it is unreachable.
