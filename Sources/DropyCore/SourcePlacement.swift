@@ -123,15 +123,54 @@ public enum PlacementGeometry {
                       width: frame.width, height: frame.height)
     }
 
-    /// The fraction of `frame` that lies on any display (displays do not overlap).
+    /// Uncovered area (square points) at or below which nothing of a source can be
+    /// seen. AppKit rounds panel frames, so a tab can fall a fraction of a point short
+    /// of the strip it covers, and a square point cannot show content.
+    public static let concealmentTolerance: Double = 1
+
+    /// The fraction of `frame` that lies on any display.
     public static func visibleFraction(of frame: CGRect, on displays: [CGRect]) -> Double {
         let area = Double(frame.width * frame.height)
         guard area > 0 else { return 0 }
-        let visible = displays.reduce(0.0) { total, display in
-            let overlap = frame.intersection(display)
-            return overlap.isNull ? total : total + Double(overlap.width * overlap.height)
+        return min(visibleArea(of: frame, on: displays) / area, 1)
+    }
+
+    /// The area of `frame` (square points) that lies on any display. Mirrored displays
+    /// report the same bounds, so the pieces are unioned rather than added.
+    public static func visibleArea(of frame: CGRect, on displays: [CGRect]) -> Double {
+        unionArea(visibleParts(of: frame, on: displays))
+    }
+
+    /// The area of `frame` (square points) that lies on a display and is not covered by
+    /// any of `covered`. Only Dropy's own covers belong here: another app's window on
+    /// top is not counted, so this never overstates how much is out of sight.
+    public static func uncoveredArea(of frame: CGRect, on displays: [CGRect],
+                                     covered: [CGRect]) -> Double {
+        let parts = visibleParts(of: frame, on: displays)
+        let visible = unionArea(parts)
+        guard visible > 0 else { return 0 }
+        let hidden = unionArea(parts.flatMap { part in covered.map { part.intersection($0) } })
+        return max(visible - hidden, 0)
+    }
+
+    /// The area of the union of possibly overlapping rectangles, by coordinate
+    /// compression: the distinct edges cut the plane into cells that each lie wholly
+    /// inside or wholly outside every rectangle, so no cell is counted twice. Adding
+    /// the rectangles instead would report overlapping tabs as covering more than they do.
+    public static func unionArea(_ rects: [CGRect]) -> Double {
+        let rects = rects.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+        guard !rects.isEmpty else { return 0 }
+        let xs = Set(rects.flatMap { [$0.minX, $0.maxX] }).sorted()
+        let ys = Set(rects.flatMap { [$0.minY, $0.maxY] }).sorted()
+        var total = 0.0
+        for (left, right) in zip(xs, xs.dropFirst()) {
+            for (top, bottom) in zip(ys, ys.dropFirst()) {
+                let centre = CGPoint(x: (left + right) / 2, y: (top + bottom) / 2)
+                guard rects.contains(where: { $0.contains(centre) }) else { continue }
+                total += Double((right - left) * (bottom - top))
+            }
         }
-        return min(visible / area, 1)
+        return total
     }
 
     /// The pieces of `frame` that lie on each display, in the same coordinates.
@@ -143,6 +182,12 @@ public enum PlacementGeometry {
     /// bottom-left screen coordinates, given the height of the main display.
     public static func appKitRect(fromGlobal rect: CGRect, mainDisplayHeight: CGFloat) -> CGRect {
         CGRect(x: rect.minX, y: mainDisplayHeight - rect.maxY, width: rect.width, height: rect.height)
+    }
+
+    /// The same flip the other way, for measuring a frame AppKit realized (a panel's own
+    /// `frame`, which may be rounded or constrained) against window-server bounds.
+    public static func globalRect(fromAppKit rect: CGRect, mainDisplayHeight: CGFloat) -> CGRect {
+        appKitRect(fromGlobal: rect, mainDisplayHeight: mainDisplayHeight)
     }
 
     /// Keeps the size where it fits and moves the frame fully inside `display`.

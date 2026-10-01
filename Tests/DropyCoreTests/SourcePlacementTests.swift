@@ -89,6 +89,13 @@ final class SourcePlacementTests: XCTestCase {
         // Global top-left to AppKit bottom-left: the strip sits at the bottom edge.
         XCTAssertEqual(PlacementGeometry.appKitRect(fromGlobal: parts[0], mainDisplayHeight: 1112),
                        CGRect(x: 1670, y: 0, width: 40, height: 118))
+        // And back, for reading a panel's realized frame: the same flip, so a round trip
+        // is the rect it started as, and a frame AppKit rounded comes back rounded.
+        XCTAssertEqual(PlacementGeometry.globalRect(fromAppKit: CGRect(x: 1670, y: 0, width: 40, height: 118),
+                                                    mainDisplayHeight: 1112), parts[0])
+        let rounded = CGRect(x: 1670, y: 0.02, width: 40, height: 117.98)
+        XCTAssertEqual(PlacementGeometry.globalRect(fromAppKit: rounded, mainDisplayHeight: 1112),
+                       CGRect(x: 1670, y: 994, width: 40, height: 117.98))
         XCTAssertTrue(PlacementMode.parked.movesWindow)
         XCTAssertFalse(PlacementMode.minimize.movesWindow)
     }

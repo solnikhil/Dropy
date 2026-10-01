@@ -98,11 +98,25 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 # Desktop-session lock and preference recovery (throwaway lock and preferences domain).
 "$repo_dir/Tests/LocalDeviceSessionCheck.zsh"
 
-# Drawable retries and racing callbacks must produce one final frame outcome.
+# Drawable retries and racing callbacks must produce one final frame outcome, and the
+# clocks the hidden-source rate compares must be one clock (mixing them is silent).
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/FrameStampChecks" \
-  "$repo_dir/Tests/LocalFrameStampCheck.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift"
+  "$repo_dir/Tests/LocalFrameStampCheck.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift" \
+  "$repo_dir/Sources/Dropy/HostClock.swift" "$repo_dir/Sources/Dropy/HiddenSourceRate.swift"
 "$build_dir/FrameStampChecks"
+
+# The hidden-source rate monitor is written from the capture queue and read on the main
+# actor; concurrent frames must not be lost. Built with the thread sanitizer because the
+# preconditions alone do not reliably catch a missing lock: measured 2026-10-01, a holder
+# with the lock taken out of recordChangedFrame passed once and crashed twice in three
+# runs without the sanitizer (exit 0, 139, 133), and with it aborted 3/3 naming the Swift
+# access race. halt_on_error stops at the first report rather than continuing past it.
+swiftc -swift-version 6 -sanitize=thread -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/HiddenSourceRateChecks" \
+  "$repo_dir/Tests/LocalHiddenSourceRateCheck.swift" "$repo_dir/Sources/Dropy/HiddenSourceRate.swift" \
+  "$repo_dir/Sources/Dropy/HostClock.swift"
+TSAN_OPTIONS=halt_on_error=1 "$build_dir/HiddenSourceRateChecks"
 
 # Isolation of third-party apps under test (throwaway tree; no app is launched).
 "$repo_dir/Tests/LocalAppIsolationCheck.zsh"
