@@ -750,6 +750,9 @@ final class OverlayController: NSObject {
             capture.noteInteraction(for: sourceWindowID)
             // The latency trace measures from here to the first frame showing the result.
             if FrameStamp.tracing { LatencyMarks.shared.markInput() }
+            // The earliest warning the presentation path gets that a changed frame is
+            // coming; only the warm presentation modes act on it.
+            renderer?.noteInputSent()
         case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
         case .notApplicable(let reason):
             flash(reason.contains("windowGeometryChanged") ? "Preview resizing · try again in a moment"

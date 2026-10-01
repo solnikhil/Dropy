@@ -179,3 +179,12 @@ These come from the baseline above and are **not yet release gates**. They shoul
 | Dropy CPU with the overlay closed | ≈ 0% | Pass (0.0%, 0.2 wakeups/s, pointer still, 2026-09-29) |
 
 Not covered yet: input-to-updated-frame (M3), WindowServer wakeups and footprint (need `powermetrics`), energy impact, a real media-decoder workload, and multi-display or full-screen placements.
+
+
+## Opt-in presentation comparison (2026-10-01)
+
+The interrupted presentation work is now wired and locally tested. `DROPY_PRESENT_MODE` accepts `retry` (default), `warm`, `transaction`, or `warm-transaction`. Invalid values are reported and keep the default. Warm modes run the display link only for a bounded period after successful input, a cold changed frame, or a current-frame drawable miss. Clear/close cancels it. Transaction modes commit/schedule the Metal buffer before presenting the drawable through the Core Animation path.
+
+These modes are hypotheses awaiting device comparison; none is a measured CPU or latency improvement. The default keeps the measured retry behavior plus PR32's successful-input capture wake. Late callbacks from an old source and cancelled retry tasks cannot restart the current path. The earlier bounded-input-tail prototype remains preserved on `codex/m4-latency-integration`; its trace is not evidence for these different display-link modes.
+
+After device checks resume, compare the same workload in each mode using `Scripts/latency-trace.sh`, then `Scripts/benchmark-phases.sh`. Hold the 50 ms frame-age and 2% idle CPU targets, record every run including failures, and check close/switch/occlusion before promoting a mode to the default.

@@ -2,6 +2,7 @@ import AppKit
 import CoreVideo
 import IOSurface
 import MetalKit
+import QuartzCore
 import DropyCore
 
 /// Presents the most recent ScreenCaptureKit pixel buffer without a CPU image conversion.
@@ -19,9 +20,16 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     /// Increments per presented frame so a late callback can tell whether it is stale.
     private var frameSequence = 0
     private var presentRetries = 0
-    private static let fastPresentRetries = 3
+    private var retryLadder = PresentationRetryLadder()
     private var drawableRetryTask: Task<Void, Never>?
-    private var drawableRetryDelayMilliseconds = 16
+    /// Which presentation path this view uses. `PresentationMode.retry`, the default,
+    /// is the behaviour docs/BENCHMARK.md measured; the others are opt-in experiments.
+    let presentMode: DropyCore.PresentationMode
+    /// When to keep the display link running (`PresentationMode.warm` only).
+    private var warmth = PresentationWarmth()
+    private var warmthCooldown: Task<Void, Never>?
+    /// Whether the view is currently drawing from its display link rather than on demand.
+    private var displayLinkRunning = false
     /// One-shot callback on the main thread with the Core Animation media time at
     /// which the next captured frame reached the screen.
     var onNextPresented: (@MainActor (CFTimeInterval) -> Void)?
@@ -112,7 +120,20 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         }
     }
 
-    static func make(frame: CGRect) throws -> MetalFrameView {
+    /// Resolved once per process. An unrecognised request keeps the measured default and
+    /// says so, so a typo in a benchmark run cannot pass for the experiment it meant.
+    static let environmentPresentMode: DropyCore.PresentationMode = {
+        let resolution = DropyCore.PresentationMode.resolve(ProcessInfo.processInfo.environment)
+        if let unrecognized = resolution.unrecognized {
+            NSLog("Dropy present mode: unrecognized=\"%@\" using=%@", unrecognized, resolution.mode.rawValue)
+        } else if resolution.mode != .measuredDefault {
+            NSLog("Dropy present mode: %@", resolution.mode.rawValue)
+        }
+        return resolution.mode
+    }()
+
+    static func make(frame: CGRect,
+                     presentMode: DropyCore.PresentationMode = environmentPresentMode) throws -> MetalFrameView {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else {
             throw RendererError.metalUnavailable
@@ -128,19 +149,24 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
         return MetalFrameView(frame: frame, metalDevice: device,
-                              commandQueue: queue, pipeline: pipeline)
+                              commandQueue: queue, pipeline: pipeline, presentMode: presentMode)
     }
 
     private init(frame: CGRect, metalDevice: MTLDevice,
-                 commandQueue: MTLCommandQueue, pipeline: MTLRenderPipelineState) {
+                 commandQueue: MTLCommandQueue, pipeline: MTLRenderPipelineState,
+                 presentMode: DropyCore.PresentationMode) {
         self.pipeline = pipeline
         self.commandQueue = commandQueue
+        self.presentMode = presentMode
         super.init(frame: frame, device: metalDevice)
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0.045, green: 0.05, blue: 0.07, alpha: 1)
         framebufferOnly = true
         // Two drawables keep presentation from queueing an extra refresh behind.
         (layer as? CAMetalLayer)?.maximumDrawableCount = 2
+        // Off by default: with it on, `draw(in:)` presents the drawable itself after the
+        // command buffer is scheduled, inside the current Core Animation transaction.
+        presentsWithTransaction = presentMode.presentsWithTransaction
         enableSetNeedsDisplay = true
         isPaused = true
         delegate = self
@@ -158,6 +184,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         (layer as? CAMetalLayer)?.maximumDrawableCount = 2
+        presentsWithTransaction = presentMode.presentsWithTransaction
         NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification,
                                                   object: nil)
         if let window {
@@ -187,11 +214,15 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         presentRetries = 0
         drawableRetryTask?.cancel()
         drawableRetryTask = nil
-        drawableRetryDelayMilliseconds = 16
+        retryLadder.reset()
         currentPixelBuffer = pixelBuffer
         // A pending frame does not replace the frame actually on screen. Keep its
         // mapping until a newer presentation succeeds; clear/viewport changes revoke it.
         pendingGeometry = geometry
+        // A frame after a quiet gap meets the cold presentation path the latency trace
+        // measures drawable misses on; in a warm mode that starts the display link.
+        warmth.noteFrame(at: CACurrentMediaTime())
+        applyWarmth()
         // Draw now instead of waiting for the next display cycle; the deferred
         // path showed about two refreshes of avoidable frame age.
         draw()
@@ -200,6 +231,54 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         if pendingStamp != nil {
             setNeedsDisplay(bounds)
             scheduleDrawableRetry()
+        }
+    }
+
+    /// Dropy just sent input to the source, so a changed frame is expected. This is the
+    /// earliest warning the presentation path gets: the 2026-09-30 trace measured
+    /// 64–75 ms at p50 from here to the frame arriving, which is enough time to start
+    /// the display link before the frame that must not be missed is drawn.
+    func noteInputSent() {
+        precondition(Thread.isMainThread)
+        warmth.noteInput(at: CACurrentMediaTime())
+        applyWarmth()
+    }
+
+    /// `MTKView` draws on demand while `enableSetNeedsDisplay` is set and then ignores
+    /// `isPaused`; the display link only runs with on-demand drawing switched off. The
+    /// two flags therefore always move together, never one at a time.
+    private func setDisplayLinkRunning(_ running: Bool) {
+        guard displayLinkRunning != running else { return }
+        displayLinkRunning = running
+        if running {
+            enableSetNeedsDisplay = false
+            isPaused = false
+        } else {
+            isPaused = true
+            enableSetNeedsDisplay = true
+            // A frame that arrived during the warm period may still be unpresented, and
+            // on-demand drawing will not pick it up by itself.
+            if pendingStamp != nil { setNeedsDisplay(bounds) }
+        }
+    }
+
+    /// Starts or stops the display link to match the current warmth, and schedules the
+    /// cool-down. Warmth always expires, so this cannot leave the link running.
+    private func applyWarmth() {
+        guard presentMode.keepsDisplayLinkWarm else { return }
+        let now = CACurrentMediaTime()
+        // Nothing to hold warm without a frame to show; `clear()` cools as well, so a
+        // closed overlay does no periodic work.
+        setDisplayLinkRunning(warmth.isWarm(at: now) && currentPixelBuffer != nil)
+        warmthCooldown?.cancel()
+        warmthCooldown = nil
+        guard displayLinkRunning, let remaining = warmth.remaining(at: now) else { return }
+        let delay = max(Int((remaining * 1_000).rounded(.up)), 1)
+        warmthCooldown = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.warmthCooldown = nil
+            self.applyWarmth()
         }
     }
 
@@ -217,6 +296,12 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         frameSequence += 1
         drawableRetryTask?.cancel()
         drawableRetryTask = nil
+        retryLadder.reset()
+        presentRetries = 0
+        // Nothing is on screen to keep warm. Ending warmth here, rather than letting it
+        // expire, is what keeps a closed overlay at no periodic work.
+        warmth.cool()
+        applyWarmth()
         visibilityGeneration = UUID()
         concealmentView.isHidden = false
         setNeedsDisplay(bounds)
@@ -230,7 +315,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         }
         presentRetries += 1
         pendingStamp = stamp
-        if presentRetries <= Self.fastPresentRetries { setNeedsDisplay(bounds) }
+        if retryLadder.redrawsImmediately(attempt: presentRetries) { setNeedsDisplay(bounds) }
         scheduleDrawableRetry()
     }
 
@@ -239,11 +324,10 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private func scheduleDrawableRetry() {
         guard pendingStamp != nil, drawableRetryTask == nil else { return }
         let sequence = frameSequence
-        let delay = drawableRetryDelayMilliseconds
-        drawableRetryDelayMilliseconds = min(delay * 2, 1_000)
+        let delay = retryLadder.nextDelayMilliseconds()
         drawableRetryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(delay))
-            guard let self else { return }
+            guard !Task.isCancelled, let self else { return }
             self.drawableRetryTask = nil
             guard self.frameSequence == sequence, self.pendingStamp != nil else { return }
             self.draw()
@@ -276,8 +360,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
               CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA,
               let unmanagedSurface = CVPixelBufferGetIOSurface(pixelBuffer) else {
             encoder.endEncoding()
-            buffer.present(drawable)
-            buffer.commit()
+            commit(buffer, presenting: drawable)
             return
         }
 
@@ -291,8 +374,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
             descriptor: textureDescriptor,
             iosurface: unmanagedSurface.takeUnretainedValue(), plane: 0) else {
             encoder.endEncoding()
-            buffer.present(drawable)
-            buffer.commit()
+            commit(buffer, presenting: drawable)
             return
         }
 
@@ -327,8 +409,14 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
             let presentedTime = drawable.presentedTime
             if let stamp { stamp.recorder.recordPresented(stamp, presentedTime: presentedTime, draw: drawIndex) }
             if presentedTime == 0 {
-                if let stamp {
-                    Task { @MainActor [weak self] in self?.retryPresent(stamp, sequence: sequence) }
+                // The compositor never showed this drawable. Direct evidence the path is
+                // cold, so a warm mode holds the display link for the redraw that follows.
+                Task { @MainActor [weak self] in
+                    guard let self, self.visibilityGeneration == generation,
+                          self.frameSequence == sequence, self.currentPixelBuffer != nil else { return }
+                    self.warmth.noteDrawableMiss(at: CACurrentMediaTime())
+                    self.applyWarmth()
+                    if let stamp { self.retryPresent(stamp, sequence: sequence) }
                 }
                 return
             }
@@ -346,8 +434,27 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
                 }
             }
         }
-        buffer.present(drawable)
+        commit(buffer, presenting: drawable)
+    }
+
+    /// Hands the finished command buffer to the compositor.
+    ///
+    /// By default the drawable is presented with the buffer: Metal schedules the layer's
+    /// surface swap when the buffer completes, outside any Core Animation transaction.
+    /// With `presentsWithTransaction` the buffer is committed first and the drawable is
+    /// presented here on the main thread instead, so the layer's contents change inside
+    /// the transaction that commits them. That is the documented way to keep presentation
+    /// in step with Core Animation; the cost is blocking this thread until the buffer is
+    /// scheduled, which is why it is opt-in and unmeasured (see docs/BENCHMARK.md).
+    private func commit(_ buffer: MTLCommandBuffer, presenting drawable: CAMetalDrawable) {
+        guard presentsWithTransaction else {
+            buffer.present(drawable)
+            buffer.commit()
+            return
+        }
         buffer.commit()
+        buffer.waitUntilScheduled()
+        drawable.present()
     }
 
     enum RendererError: Error {
