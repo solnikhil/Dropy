@@ -106,3 +106,6 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 
 # Isolation of third-party apps under test (throwaway tree; no app is launched).
 "$repo_dir/Tests/LocalAppIsolationCheck.zsh"
+
+# Rehearse packaging only: ad-hoc signatures, no app launches or notarization.
+zsh "$repo_dir/Tests/LocalReleaseCheck.zsh"

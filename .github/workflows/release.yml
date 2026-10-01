@@ -1,0 +1,84 @@
+name: Release packaging
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: macos-latest
+    env:
+      DROPY_SIGN_CERT_P12_BASE64: ${{ secrets.DROPY_SIGN_CERT_P12_BASE64 }}
+      DROPY_SIGN_CERT_PASSWORD: ${{ secrets.DROPY_SIGN_CERT_PASSWORD }}
+      DROPY_SIGN_IDENTITY: ${{ secrets.DROPY_SIGN_IDENTITY }}
+      DROPY_NOTARY_APPLE_ID: ${{ secrets.DROPY_NOTARY_APPLE_ID }}
+      DROPY_NOTARY_TEAM_ID: ${{ secrets.DROPY_NOTARY_TEAM_ID }}
+      DROPY_NOTARY_PASSWORD: ${{ secrets.DROPY_NOTARY_PASSWORD }}
+      DROPY_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Validate source
+        run: swift build && swift test
+      - name: Decide packaging mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$DROPY_SIGN_CERT_P12_BASE64$DROPY_SIGN_CERT_PASSWORD$DROPY_SIGN_IDENTITY$DROPY_NOTARY_APPLE_ID$DROPY_NOTARY_TEAM_ID$DROPY_NOTARY_PASSWORD" ]]; then
+            echo 'mode=dry-run' >> "$GITHUB_OUTPUT"
+            echo 'No release secrets: rehearsing packaging, no distribution.'
+          elif [[ -n "$DROPY_SIGN_CERT_P12_BASE64" && -n "$DROPY_SIGN_CERT_PASSWORD" && -n "$DROPY_SIGN_IDENTITY" && -n "$DROPY_NOTARY_APPLE_ID" && -n "$DROPY_NOTARY_TEAM_ID" && -n "$DROPY_NOTARY_PASSWORD" ]]; then
+            echo 'mode=release' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Release secrets partly configured; refusing.' >&2
+            exit 1
+          fi
+      - name: Prepare temporary signing keychain
+        if: steps.mode.outputs.mode == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/dropy-release.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$DROPY_SIGN_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$DROPY_SIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          echo "DROPY_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          xcrun notarytool store-credentials dropy-ci --keychain "$keychain" --apple-id "$DROPY_NOTARY_APPLE_ID" --team-id "$DROPY_NOTARY_TEAM_ID" --password "$DROPY_NOTARY_PASSWORD"
+          rm "$RUNNER_TEMP/certificate.p12"
+      - name: Package and verify
+        shell: bash
+        env:
+          PACKAGE_MODE: ${{ steps.mode.outputs.mode }}
+          DROPY_NOTARY_PROFILE: dropy-ci
+        run: |
+          set -euo pipefail
+          if [[ "$PACKAGE_MODE" == dry-run ]]; then
+            unset DROPY_SIGN_IDENTITY DROPY_NOTARY_PROFILE
+            ./Scripts/release/package.sh --dry-run
+          else
+            ./Scripts/release/package.sh
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dropy-package-${{ github.ref_name }}-${{ steps.mode.outputs.mode }}
+          path: |
+            .build/release/*.zip
+            .build/release/*.dmg
+            .build/release/SHA256SUMS
+      - name: Remove temporary credentials
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/dropy-release.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/certificate.p12"
