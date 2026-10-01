@@ -27,13 +27,16 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     static let idleThreshold = CaptureActivityTracker.defaultUnchangedThreshold
     private var activity = CaptureActivityTracker()
     private var activitySequence = 0
+    /// Changed-frame times for judging whether a hidden source's app slowed it.
+    private let hiddenRate: HiddenSourceRate
     /// Called on the capture queue when the source becomes idle (true) or changes again.
     private let onActivityChange: @Sendable (Bool, Int) -> Void
 
-    init(renderer: MetalFrameView, metrics: CaptureMetricsRecorder,
+    init(renderer: MetalFrameView, metrics: CaptureMetricsRecorder, hiddenRate: HiddenSourceRate,
          onActivityChange: @escaping @Sendable (Bool, Int) -> Void) {
         self.renderer = renderer
         self.metrics = metrics
+        self.hiddenRate = hiddenRate
         self.onActivityChange = onActivityChange
     }
 
@@ -82,6 +85,12 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
             onActivityChange(idle, activitySequence)
         }
         stamp.captureRevision = confirmation.observe(changed: !unchanged, at: HostClock.nowMilliseconds())
+        // Every frame is offered to the rate, changed or not: which ones count is the
+        // holder's rule (`HiddenSourceRate.recordFrame`), checked by
+        // Tests/LocalHiddenSourceRateCheck.swift, not something this call site decides
+        // by standing after an early return. The frame's callback time is already on the
+        // monotonic mach clock.
+        hiddenRate.recordFrame(changed: !unchanged, at: stamp.callbackMilliseconds / 1_000)
         if unchanged {
             metrics.recordUnchanged()
             return
@@ -165,6 +174,8 @@ enum CaptureStartError: Error { case previousStreamStopping }
 final class CaptureController {
     private var stream: SCStream?
     private var mailbox: FrameMailbox?
+    /// The active stream's changed-frame rate monitor; nil when nothing is capturing.
+    private var hiddenRate: HiddenSourceRate?
     private var stopObserver: StreamStopObserver?
     private var requestID = UUID()
     private var outputSize: CGSize?
@@ -215,7 +226,8 @@ final class CaptureController {
         let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
                               configuration: configuration, delegate: observer)
         let recorder = CaptureMetricsRecorder(windowID: window.windowID, requestedAt: requestedAt)
-        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder) { [weak self] idle, sequence in
+        let hiddenRate = HiddenSourceRate()
+        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder, hiddenRate: hiddenRate) { [weak self] idle, sequence in
             Task { @MainActor [weak self] in
                 await self?.setSourceIdle(idle, sequence: sequence, request: request)
             }
@@ -234,6 +246,7 @@ final class CaptureController {
         // this session first so that an early stop is not silently discarded.
         self.stream = stream
         self.mailbox = mailbox
+        self.hiddenRate = hiddenRate
         self.stopObserver = observer
         self.outputSize = CGSize(width: configuration.width, height: configuration.height)
         self.activeWindow = window
@@ -383,6 +396,18 @@ final class CaptureController {
     /// Totals for the active stream, if any.
     func currentCounts() -> CaptureCounts? { mailbox?.metrics.counts() }
 
+    /// Dropy's containment now hides every pixel of the source, or no longer does. The
+    /// monitor belongs to the active stream, so there is nothing to tell without one.
+    /// The time comes from the monitor's own clock; no clock is chosen here.
+    func setSourceHidden(_ hidden: Bool) {
+        hiddenRate?.setHidden(hidden)
+    }
+
+    /// What the changed-frame rate says about a source Dropy hid.
+    func hiddenSourceAssessment() -> HiddenSourceRateMonitor.Assessment {
+        hiddenRate?.assessment() ?? .notHidden
+    }
+
     /// `reason` is a log-safe label such as `closed` or a failure's diagnostic name.
     func stop(reason: String = "requested") async {
         requestID = UUID()
@@ -443,6 +468,10 @@ final class CaptureController {
         rateRetryScheduled = false
         mailbox?.invalidate()
         mailbox = nil
+        // Dropping the monitor with its stream is the reset for a source switch or a
+        // stop: an invalidated mailbox forwards nothing, and the next stream builds its
+        // own baseline.
+        hiddenRate = nil
         stopObserver = nil
         defer { stream = nil }
         return stream

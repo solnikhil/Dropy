@@ -32,7 +32,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         overlay = OverlayController(preferences: preferences, inputRouter: InputRouter(journal: placementJournal),
-                                   handOff: handOff)
+                                   handOff: handOff,
+                                   containment: SourceContainmentReader(journal: placementJournal, tabs: parkingTabs))
         // A handed-over window is the person's again: no tab may cover it, and a tab comes
         // back only when the end of a hand-off parked it again.
         handOff.onRestored = { [weak self] identity in self?.parkingTabs.remove(identity) }
@@ -51,7 +52,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
-        recovery.onSettled = { [weak self] identity in self?.parkingTabs.remove(identity) }
+        recovery.onSettled = { [weak self] identity in
+            self?.parkingTabs.remove(identity)
+            self?.overlay?.sourceContainmentChanged()
+        }
         recovery.start()
         parkingTabs.onRestoreRequest = { [weak self] identity in
             guard let self,
@@ -61,6 +65,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.parkingTabs.remove(identity)
             }
             if outcome.retriesAutomatically { self.recovery.requestRecovery(for: identity) }
+            self.overlay?.sourceContainmentChanged()
             NSLog("Dropy placement: tab clicked restore=%@", PlacementJournal.name(outcome))
         }
         for entry in placementJournal.entries where entry.mode == .parked && entry.applicationConfirmed != false {
@@ -267,27 +272,36 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // not being listed or not on screen both mean nothing is visible.
             var leak = server.map { $0.onScreen ? PlacementGeometry.visibleFraction(of: $0.bounds, on: displays) : 0 } ?? 0
             if mode == .parked, let server {
-                // Whatever the tabs cover is out of sight; report only the remainder.
+                // Whatever the tabs cover is out of sight; report only the remainder,
+                // counting rectangles that overlap once rather than twice.
                 let covered = self.parkingTabs.show(for: entry)
                 let area = Double(server.bounds.width * server.bounds.height)
-                let coveredArea = covered.reduce(0.0) { $0 + Double($1.width * $1.height) }
-                leak = area > 0 ? max(leak - coveredArea / area, 0) : leak
+                let onDisplay = PlacementGeometry.visibleArea(of: server.bounds, on: displays)
+                let uncovered = PlacementGeometry.uncoveredArea(of: server.bounds, on: displays,
+                                                                covered: covered)
+                if area > 0 { leak = server.onScreen ? uncovered / area : 0 }
                 NSLog("Dropy placement: parked tabs=%ld coveredFraction=%.3f", covered.count,
-                      area > 0 ? coveredArea / area : 0)
+                      area > 0 ? (onDisplay - uncovered) / area : 0)
             }
+            // The tabs are up, so the preview can now tell a hidden source from a
+            // visible one and start comparing its frame rate.
+            self.overlay.sourceContainmentChanged()
             let placed = self.overlay.captureCounts() ?? before
             try? await Task.sleep(for: .seconds(hold))
             let held = self.overlay.captureCounts() ?? placed
             let stateDuringHold = self.overlay.state.diagnosticName
+            // Read before restoring: showing the window again ends the comparison.
+            let hiddenSource = self.overlay.hiddenSourceAssessment
             let outcome = WindowPlacer.restore(entry, journal: self.placementJournal)
             if !self.placementJournal.entries.contains(where: { $0.identity == identity }) {
                 self.parkingTabs.remove(identity)
             }
             if outcome.retriesAutomatically { self.recovery.requestRecovery(for: identity) }
+            self.overlay.sourceContainmentChanged()
             try? await Task.sleep(for: .milliseconds(500))
             let restored = try? WindowPlacer.state(of: identity)
             let verified = restored.map { $0.approximatelyEquals(entry.original) }
-            NSLog("Dropy placement: mode=%@ placedFrameLeak=%.3f windowServerLeak=%@ windowOnScreen=%@ overlay=%@ capture=%@ restore=%@ verified=%@",
+            NSLog("Dropy placement: mode=%@ placedFrameLeak=%.3f windowServerLeak=%@ windowOnScreen=%@ overlay=%@ capture=%@ restore=%@ verified=%@ hiddenSource=%@",
                   mode.rawValue,
                   entry.applied.isMinimized || entry.applied.isAppHidden
                       ? 0 : PlacementGeometry.visibleFraction(of: entry.applied.frame, on: displays),
@@ -295,7 +309,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   server.map { $0.onScreen ? "yes" : "no" } ?? "notListed",
                   stateDuringHold, held.delta(since: placed),
                   PlacementJournal.name(outcome),
-                  verified.map { $0 ? "yes" : "no" } ?? "unknown")
+                  verified.map { $0 ? "yes" : "no" } ?? "unknown",
+                  hiddenSource.diagnosticName)
         }
     }
 
@@ -330,6 +345,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         recovery.recoverAll()
+        overlay?.sourceContainmentChanged()
         let waiting = recovery.deferred
         if !waiting.isEmpty {
             let alert = NSAlert()

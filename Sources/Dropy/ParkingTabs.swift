@@ -11,10 +11,10 @@ import DropyCore
 final class ParkingTabs {
     /// Called when a tab is clicked, with the parked window's identity.
     var onRestoreRequest: ((WindowIdentity) -> Void)?
-    private var tabs: [UInt32: (identity: WindowIdentity, panels: [NSPanel])] = [:]
+    private var tabs: [UInt32: (identity: WindowIdentity, panels: [NSPanel], covered: [CGRect])] = [:]
 
-    /// Shows tabs over every visible piece of the parked window and returns the
-    /// covered rectangles in global top-left coordinates.
+    /// Shows tabs over every visible piece of the parked window and returns what they
+    /// cover in global top-left coordinates.
     @discardableResult
     func show(for entry: PlacementEntry) -> [CGRect] {
         remove(entry.identity)
@@ -31,8 +31,22 @@ final class ParkingTabs {
             panel.orderFrontRegardless()
             return panel
         }
-        tabs[entry.identity.windowID] = (entry.identity, panels)
-        return parts
+        // What AppKit realized, read back after ordering front, not what Dropy asked
+        // for: a panel frame can be rounded to the backing grid or constrained, and a
+        // fraction of a point short is the case `concealmentTolerance` exists for.
+        // Claiming the requested rect instead would overstate the coverage.
+        let covered = panels.map {
+            PlacementGeometry.globalRect(fromAppKit: $0.frame, mainDisplayHeight: mainHeight)
+        }
+        tabs[entry.identity.windowID] = (entry.identity, panels, covered)
+        return covered
+    }
+
+    /// What this process currently covers of the parked window, in global top-left
+    /// coordinates; empty when Dropy shows no tab for that exact window.
+    func covered(_ identity: WindowIdentity) -> [CGRect] {
+        guard let tab = tabs[identity.windowID], tab.identity == identity else { return [] }
+        return tab.covered
     }
 
     func remove(_ identity: WindowIdentity) {
@@ -42,6 +56,30 @@ final class ParkingTabs {
     func removeAll() {
         tabs.values.forEach { $0.panels.forEach { $0.orderOut(nil) } }
         tabs = [:]
+    }
+}
+
+/// Gathers what Dropy knows about its own containment of a source window: the journal
+/// says what Dropy placed, the window server says where the window is now, and the
+/// parking tabs say what Dropy covers.
+///
+/// Read on the main actor when a placement changes and about once a second while a
+/// source is hidden, never per frame: the window-server query is the only cost, and a
+/// window Dropy never placed costs nothing but a lookup in the journal it holds already.
+@MainActor
+struct SourceContainmentReader {
+    let journal: PlacementJournal
+    let tabs: ParkingTabs
+
+    func containment(of identity: WindowIdentity) -> SourceContainment {
+        guard let entry = journal.entries.first(where: { $0.identity == identity }) else {
+            return SourceContainment()
+        }
+        let server = WindowPlacer.windowServerInfo(identity.windowID)
+        return SourceContainment(mode: entry.mode, bounds: server?.bounds,
+                                 isOnScreen: server?.onScreen ?? false,
+                                 displays: WindowPlacer.displayBounds(),
+                                 covered: tabs.covered(identity))
     }
 }
 

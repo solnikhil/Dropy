@@ -34,6 +34,15 @@ public func XCTAssertEqual<T: FloatingPoint>(_ lhs: @autoclosure () throws -> T,
     } catch { record("threw \(error)", file, line) }
 }
 
+public func XCTAssertNotEqual<T: Equatable>(_ lhs: @autoclosure () throws -> T, _ rhs: @autoclosure () throws -> T,
+                                            _ message: @autoclosure () -> String = "",
+                                            file: StaticString = #filePath, line: UInt = #line) {
+    do {
+        let (a, b) = (try lhs(), try rhs())
+        if a == b { record("XCTAssertNotEqual \(a) == \(b) \(message())", file, line) }
+    } catch { record("threw \(error)", file, line) }
+}
+
 public func XCTAssertTrue(_ value: @autoclosure () throws -> Bool, _ message: @autoclosure () -> String = "",
                           file: StaticString = #filePath, line: UInt = #line) {
     do { if try !value() { record("XCTAssertTrue \(message())", file, line) } }

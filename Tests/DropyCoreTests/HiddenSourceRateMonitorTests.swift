@@ -25,7 +25,7 @@ final class HiddenSourceRateMonitorTests: XCTestCase {
         XCTAssertEqual(before, 60, accuracy: 1)
         XCTAssertEqual(hidden, 5, accuracy: 1)
         XCTAssertEqual(HiddenSourceRateMonitor.label(monitor.assessment(at: 12)),
-                       "Hidden source slowed by its app · about 5 fps (was 60)")
+                       "Hidden updates: 5 fps (was 60)")
     }
 
     func testAKeptRateIsNormal() {
@@ -78,5 +78,45 @@ final class HiddenSourceRateMonitorTests: XCTestCase {
         monitor.recordChangedFrame(at: 3)  // earlier than the last frame
         monitor.recordChangedFrame(at: .nan)
         XCTAssertEqual(monitor.assessment(at: 7), .slowedWhileHidden(before: 60, hidden: 0))
+    }
+
+    func testALongCaptureHoldsOnlyTheTwoWindowsAndStillMeasuresCorrectly() {
+        // A preview left running for an hour must not accumulate an hour of frame times,
+        // and dropping them must not cost a shift of the whole buffer per frame: frames
+        // are dropped by moving an index and the array is compacted once half of it is
+        // dead. That leaves at most twice what the windows need: 2 x window x 60 fps
+        // live frames, and fewer dead ones than live, so under 500 for these rates.
+        var monitor = HiddenSourceRateMonitor()
+        feed(&monitor, fps: 60, from: 0, to: 60)
+        XCTAssertTrue(monitor.heldFrameCount < 500,
+                      "3600 frames fed, \(monitor.heldFrameCount) held")
+        // And the measurement is unaffected by how often the buffer was compacted. The
+        // frames run from just after the hiding to the verdict: the window is half-open,
+        // so ten frames at 5 fps land in it.
+        monitor.sourceHidden(at: 60)
+        feed(&monitor, fps: 5, from: 60.2, to: 62.2)
+        XCTAssertEqual(monitor.assessment(at: 62), .slowedWhileHidden(before: 60, hidden: 5))
+        XCTAssertTrue(monitor.heldFrameCount < 500, "\(monitor.heldFrameCount) held while hidden")
+    }
+
+    func testOnlyReadingsFromOneClockAgree() {
+        // Two reads of one clock, a little work apart.
+        XCTAssertTrue(HiddenSourceRateMonitor.clocksAgree(41_233.100, 41_233.104))
+        XCTAssertTrue(HiddenSourceRateMonitor.clocksAgree(41_233.100, 41_233.100))
+        // Seconds since boot against seconds since 1970: the mistake this rules out.
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(41_233.100, 1_790_000_000))
+        // A gap too long to be two reads in succession, either way round.
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(41_233.100, 41_233.400))
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(41_233.400, 41_233.100))
+        // A wider tolerance admits a longer gap; the default does not.
+        XCTAssertTrue(HiddenSourceRateMonitor.clocksAgree(10, 10.04))
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(10, 10.06))
+        XCTAssertTrue(HiddenSourceRateMonitor.clocksAgree(10, 10.4, tolerance: 0.5))
+        // A clock that produced no reading agrees with nothing, including itself: the
+        // difference is NaN and every comparison against it is false.
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(.nan, 10))
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(.nan, .nan))
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(.infinity, .infinity))
+        XCTAssertFalse(HiddenSourceRateMonitor.clocksAgree(.nan, .nan, tolerance: .infinity))
     }
 }

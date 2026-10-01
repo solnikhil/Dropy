@@ -8,6 +8,7 @@ final class OverlayController: NSObject {
     private let preferences: PreferenceStore
     private let inputRouter: InputRouter
     private let handOff: HandOffSession
+    private let containment: SourceContainmentReader
     private let capture = CaptureController()
     /// Size in points of the window being previewed, for mapping preview input.
     private var selectedWindowSize: CGSize?
@@ -45,15 +46,24 @@ final class OverlayController: NSObject {
     private var pointerHasEntered = false
     private var pendingPointerLeave: DispatchWorkItem?
     private var previousApplication: NSRunningApplication?
+    /// Whether Dropy's own containment currently hides every pixel of the source (the
+    /// decision itself is `DropyCore/HiddenSourceWatch`), and the one-second loop that
+    /// keeps the rate note current while it does.
+    private var watch = HiddenSourceWatch()
+    private var concealmentTask: Task<Void, Never>?
 
     /// The exact window being previewed, for development drivers.
     var currentSelection: WindowIdentity? { selectedIdentity }
     func captureCounts() -> CaptureCounts? { capture.currentCounts() }
+    /// What the changed-frame rate says about a source Dropy hid, for development drivers.
+    var hiddenSourceAssessment: HiddenSourceRateMonitor.Assessment { capture.hiddenSourceAssessment() }
 
-    init(preferences: PreferenceStore, inputRouter: InputRouter, handOff: HandOffSession) {
+    init(preferences: PreferenceStore, inputRouter: InputRouter, handOff: HandOffSession,
+         containment: SourceContainmentReader) {
         self.preferences = preferences
         self.inputRouter = inputRouter
         self.handOff = handOff
+        self.containment = containment
         super.init()
         handOff.onChange = { [weak self] in self?.configureInteraction() }
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -126,6 +136,7 @@ final class OverlayController: NSObject {
         selectedWindowSize = nil
         identityTask?.cancel()
         identityTask = nil
+        endConcealmentWatch()
         removeSessionWatchers()
         panel?.orderOut(nil)
         panel = nil
@@ -277,17 +288,17 @@ final class OverlayController: NSObject {
     private func setState(_ next: CapturePhase) {
         if next != state { NSLog("Dropy state: %@", next.diagnosticName) }
         state = next
-        switch next {
-        case .closed: break
-        case .selecting:
-            status?.stringValue = available.isEmpty
-                ? "No capturable windows. Open an app and refresh."
-                : "Choose a window · live preview only"
-        default:
-            status?.stringValue = next.message ?? ""
-        }
+        refreshStatus()
         privacyButton?.isHidden = next.failure?.opensPrivacySettings != true
         if !next.isCapturing { configureInteraction() }
+    }
+
+    /// The status line, with the note about a slowed hidden source when there is one.
+    private func refreshStatus() {
+        let hiddenSource: HiddenSourceRateMonitor.Assessment =
+            watch.hidden ? capture.hiddenSourceAssessment() : .notHidden
+        status?.stringValue = PreviewStatus.line(phase: state, hasWindows: !available.isEmpty,
+                                                 hiddenSource: hiddenSource)
     }
 
     private func buildContent(in panel: NSPanel, size: CGSize) {
@@ -456,6 +467,7 @@ final class OverlayController: NSObject {
         identityTask = nil
         if let previous = selectedIdentity { inputRouter.forget(previous) }
         keyInput = PreviewKeyInput()
+        endConcealmentWatch()
         selectedIdentity = selected.identity
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
@@ -514,6 +526,9 @@ final class OverlayController: NSObject {
             let started = try await capture.start(window: window, renderer: renderer,
                                                   onUnexpectedStop: onStop)
             guard started, isCurrent(request, identity) else { return }
+            // A new stream carries a new rate monitor, which knows nothing about an
+            // older one's concealment.
+            endConcealmentWatch()
             showVisibility(of: window)
             monitorWindow(identity, request: request, renderer: renderer)
         } catch {
@@ -530,6 +545,7 @@ final class OverlayController: NSObject {
         selectedWindowSize = window.frame.size
         setState(window.isOnScreen ? .viewing : .paused(applicationName: selectedApplicationName))
         configureInteraction()
+        updateConcealment()
     }
 
     private func monitorWindow(_ identity: WindowIdentity, request: UUID,
@@ -657,12 +673,72 @@ final class OverlayController: NSObject {
         selectedIdentity = nil
         identityTask?.cancel()
         identityTask = nil
+        endConcealmentWatch()
         renderer?.clear()
         setState(.failed(failure))
         await capture.stop(reason: failure.diagnosticName)
         guard generation == failedGeneration else { return }
         renderer?.clear()
         if !failure.opensPrivacySettings { reloadListKeepingState() }
+    }
+
+    // MARK: Hidden source rate (M3)
+    //
+    // Parking a window hides it completely, and its app then throttles its drawing
+    // (measured 2026-09-30: Safari about 60 to 5 changed frames per second, QuickTime
+    // to about 10). The preview says so rather than presenting a slowed picture as
+    // normal. Nothing here runs per frame: the capture queue only timestamps changed
+    // frames, and this side reads the verdict when a placement changes and once a
+    // second while the source is hidden.
+
+    /// Dropy placed or restored a source window, so its containment may have changed.
+    func sourceContainmentChanged() { updateConcealment() }
+
+    /// Re-reads whether Dropy's containment hides every pixel of the source, tells the
+    /// stream's rate monitor when that answer changes, and refreshes the status line.
+    /// Which readings arm the monitor, and which changes are events at all, is
+    /// `DropyCore/HiddenSourceWatch` (`HiddenSourceWatchTests`); this method only
+    /// supplies the facts and carries out what the watch returns.
+    private func updateConcealment() {
+        let capturing = state.isCapturing
+        let concealment = capturing ? selectedIdentity.map { containment.containment(of: $0).concealment } : nil
+        if let change = watch.update(concealment: concealment, capturing: capturing) {
+            NSLog("Dropy hidden source: concealment=%@", concealment?.rawValue ?? "none")
+            capture.setSourceHidden(change)
+        }
+        if watch.runsLoop { startConcealmentWatch() } else { stopConcealmentWatch() }
+        refreshStatus()
+    }
+
+    /// While the source is hidden, re-check about once a second: the rate needs a window
+    /// of frames before it means anything, and an uncovered tab or a restore must be
+    /// noticed promptly. Idle while nothing is hidden.
+    private func startConcealmentWatch() {
+        guard concealmentTask == nil else { return }
+        let request = generation
+        concealmentTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self, request == self.generation,
+                      self.watch.runsLoop else { return }
+                self.updateConcealment()
+            }
+        }
+    }
+
+    private func stopConcealmentWatch() {
+        concealmentTask?.cancel()
+        concealmentTask = nil
+    }
+
+    /// Forget the concealment entirely: a closed overlay, a new selection and a new
+    /// stream all start without one. The monitor is told as well, rather than relying on
+    /// the stream being dropped at the same time: the same `capture` may still hold the
+    /// old stream when the overlay closes, and a hidden verdict must not outlive the
+    /// concealment that justified it.
+    private func endConcealmentWatch() {
+        stopConcealmentWatch()
+        if let change = watch.reset() { capture.setSourceHidden(change) }
     }
 
     @objc private func applicationTerminated(_ notification: Notification) {
