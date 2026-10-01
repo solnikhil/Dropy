@@ -29,15 +29,23 @@ struct JournalChecks {
         // One bad record must not strand a separately valid hidden window. Preserve
         // the original bytes durably before permitting removals of valid records.
         let partialURL = root.appendingPathComponent("partial.json")
-        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(entry))
+        var confirmed = entry
+        confirmed.applicationConfirmed = true
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(confirmed))
         let partialBytes = try JSONSerialization.data(withJSONObject: [object, ["broken": true]])
         try partialBytes.write(to: partialURL)
         let partial = PlacementJournal(url: partialURL)
-        precondition(partial.loadError != nil && partial.canRecover && partial.entries == [entry])
+        precondition(partial.loadError != nil && partial.canRecover && partial.entries == [confirmed])
         let backup = partial.quarantineURL!
         let savedBytes = try Data(contentsOf: backup)
         precondition(savedBytes == partialBytes)
         do { try partial.upsert(entry); fatalError("quarantine must block new moves") } catch { }
+        try partial.markRestoreInProgress(confirmed)
+        precondition(partial.entries.first?.applicationConfirmed == false)
+        let stranger = PlacementEntry(identity: WindowIdentity(processID: 9, processLaunchDate: Date(), windowID: 101,
+                                                               bundleIdentifier: "unrecorded"),
+                                      mode: .parked, original: state, applied: state, createdAt: Date())
+        do { try partial.markRestoreInProgress(stranger); fatalError("recovery introduced a new target") } catch { }
         try partial.remove(entry.identity)
         let retainedBytes = try Data(contentsOf: backup)
         precondition(retainedBytes == partialBytes)

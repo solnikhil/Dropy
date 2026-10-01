@@ -460,7 +460,7 @@ final class CaptureController {
     /// An input result may arrive after a source switch. Never wake another
     /// window's stream on behalf of the former selection.
     func noteInteraction(for windowID: UInt32) {
-        guard activeWindow?.windowID == windowID else { return }
+        guard appliedShape?.windowID == windowID else { return }
         mailbox?.noteInteraction()
     }
 

@@ -97,6 +97,16 @@ final class PlacementJournal {
         entries = next
     }
 
+    /// Recovery may mark an existing, validated record before touching its window.
+    /// It cannot introduce or alter a target, original state or restore destination.
+    func markRestoreInProgress(_ entry: PlacementEntry) throws {
+        guard let index = entries.firstIndex(of: entry) else { throw CocoaError(.fileWriteUnknown) }
+        var next = entries
+        next[index].applicationConfirmed = false
+        try save(next, recovering: true)
+        entries = next
+    }
+
     func remove(_ identity: WindowIdentity) throws {
         let next = entries.filter { $0.identity != identity }
         try save(next, recovering: true)

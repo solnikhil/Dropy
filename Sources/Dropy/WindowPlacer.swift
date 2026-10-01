@@ -202,7 +202,7 @@ enum WindowPlacer {
         if entry.mode != .hideApp, !isTrusted { return .deferred(.accessibilityNotTrusted) }
         let (read, window) = readForRestore(entry)
         let plan = RestorePlan.make(for: entry, read: read, displays: displayBounds())
-        let decision: RestoreDecision
+        var decision: RestoreDecision
         switch plan {
         case .deferral(let reason):
             return .deferred(reason)
@@ -213,9 +213,7 @@ enum WindowPlacer {
             // A restore may partly succeed (unminimize/unhide) before the frame
             // write fails or the process crashes. Preserve that ambiguity rather
             // than classifying our partial restore as the user's later change.
-            var restoring = entry
-            restoring.applicationConfirmed = false
-            do { try journal.upsert(restoring) }
+            do { try journal.markRestoreInProgress(entry) }
             catch { return .deferred(.journalWriteFailed(String(describing: error))) }
             do {
                 if unhide { NSRunningApplication(processIdentifier: entry.identity.processID)?.unhide() }
@@ -226,6 +224,11 @@ enum WindowPlacer {
                 }
             } catch {
                 return .deferred(.applyFailed(String(describing: error)))
+            }
+            let (observed, _) = readForRestore(entry)
+            switch RestoreConfirmation.check(planned, read: observed) {
+            case .success(let confirmed): decision = confirmed
+            case .failure(let reason): return .deferred(reason)
             }
         }
         // An unconfirmed move stays for explicit recovery.

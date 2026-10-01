@@ -136,7 +136,7 @@ public enum SourceWindowRead: Equatable, Sendable {
 
 /// Why a restore could not be decided or carried out yet. The journal entry stays,
 /// and recovery tries again.
-public enum RestoreDeferral: Equatable, Sendable, CustomStringConvertible {
+public enum RestoreDeferral: Error, Equatable, Sendable, CustomStringConvertible {
     case accessibilityNotTrusted
     case windowUnreachable(WindowLookupDiagnosis)
     case readFailed(String)
@@ -227,5 +227,28 @@ public enum RecoveryBackoff {
 
     public static func delay(afterAttempt attempt: Int) -> TimeInterval {
         min(pow(2, Double(min(max(attempt, 0), 16))), maximumDelay)
+    }
+}
+
+/// A successful AX write is not proof of restoration: an app can ignore or clamp it.
+/// The journal is settled only after the expected state or exact source disappearance
+/// is observed. A failed read or mismatched state retains the write-ahead record.
+public enum RestoreConfirmation {
+    public static func check(_ decision: RestoreDecision, read: SourceWindowRead)
+        -> Result<RestoreDecision, RestoreDeferral> {
+        let expected: WindowPlacementState
+        switch decision {
+        case .restore(let state), .restoreOnFallbackDisplay(let state): expected = state
+        default: return .failure(.applyFailed("invalidRestoreDecision"))
+        }
+        switch read {
+        case .state(let observed):
+            return expected.approximatelyEquals(observed)
+                ? .success(decision) : .failure(.applyFailed("restorationNotObserved"))
+        case .failed(let reason): return .failure(.readFailed(reason))
+        case .unreachable(let diagnosis):
+            return diagnosis.mayBecomeReachable
+                ? .failure(.windowUnreachable(diagnosis)) : .success(.sourceGone)
+        }
     }
 }

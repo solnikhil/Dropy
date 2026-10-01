@@ -941,7 +941,7 @@ final class OverlayController: NSObject {
                                  modifiers: PreviewModifiers(event.modifierFlags),
                                  inputMethodActive: Self.inputMethodIsActive()) {
         case .text(let characters):
-            guard mapping(for: identity, kind: .text, sourceWindowID: identity.windowID) != nil else { return true }
+            guard mapping(for: identity, kind: .text) != nil else { return true }
             report(inputRouter.type(identity, text: characters), kind: .text, sourceWindowID: identity.windowID)
         case .refuse(let kind): flash(InteractionLabel.text(for: .notVerified, kind: kind))
         case .unsupportedKey: flash("This key is not supported in the preview yet")

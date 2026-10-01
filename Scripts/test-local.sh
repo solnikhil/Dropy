@@ -124,7 +124,8 @@ TSAN_OPTIONS=halt_on_error=1 "$build_dir/HiddenSourceRateChecks"
 # Compile the GPU region shader without opening a window or capturing a source.
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rpath -Xlinker "$build_dir" \
   -o "$build_dir/RegionRendererChecks" "$repo_dir/Tests/LocalRegionRendererCheck.swift" \
-  "$repo_dir/Sources/Dropy/MetalFrameView.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift"
+  "$repo_dir/Sources/Dropy/MetalFrameView.swift" "$repo_dir/Sources/Dropy/CaptureMetricsRecorder.swift" \
+  "$repo_dir/Sources/Dropy/HostClock.swift"
 "$build_dir/RegionRendererChecks"
 # Rehearse packaging only: ad-hoc signatures, no app launches or notarization.
 zsh "$repo_dir/Tests/LocalReleaseCheck.zsh"

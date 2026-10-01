@@ -2,6 +2,20 @@ import XCTest
 import DropyCore
 
 final class CaptureConfirmationTests: XCTestCase {
+    func testRestorationRequiresObservedState() {
+        let expected = WindowPlacementState(frame: CGRect(x: 20, y: 20, width: 400, height: 300),
+                                            isMinimized: false, isAppHidden: false)
+        let decision = RestoreDecision.restore(expected)
+        XCTAssertEqual(RestoreConfirmation.check(decision, read: .state(expected)), .success(decision))
+        var hidden = expected
+        hidden.frame.origin.x = -1000
+        XCTAssertEqual(RestoreConfirmation.check(decision, read: .state(hidden)),
+                       .failure(.applyFailed("restorationNotObserved")))
+        XCTAssertEqual(RestoreConfirmation.check(decision, read: .failed("busy")), .failure(.readFailed("busy")))
+        XCTAssertEqual(RestoreConfirmation.check(decision, read: .unreachable(.onOtherSpace)),
+                       .failure(.windowUnreachable(.onOtherSpace)))
+    }
+
     func testPendingStopHasItsOwnRecoveryMessage() {
         XCTAssertFalse(CaptureFailure.previousStreamStopping.opensPrivacySettings)
         XCTAssertTrue(CaptureFailure.previousStreamStopping.message.contains("still stopping"))

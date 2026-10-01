@@ -15,7 +15,7 @@ Failed stops retain their stream and metrics and retry with bounded backoff. A n
 
 ## Journal damage
 
-Valid records in a partially damaged JSON array can be recovered independently. Before permitting removal of any such record, the entire original file is copied atomically and a persistent quarantine marker is written. Duplicate identities and invalid placement geometry are excluded. New placements remain blocked across relaunch until damaged records are resolved. Fully undecodable journals remain untouched and blocked. The recovery menu reports the preserved location.
+Valid records in a partially damaged JSON array can be recovered independently. Before permitting removal of any such record, the entire original file is copied atomically and a persistent quarantine marker is written. Duplicate identities and invalid placement geometry are excluded. New placements remain blocked across relaunch until damaged records are resolved. Recovery alone can update an existing exact record before applying a restore; it cannot introduce another target. After applying a restore, the expected state must be observed before the entry is removed. Fully undecodable journals remain untouched and blocked. The recovery menu reports the preserved location.
 
 The quarantine is intentionally not dismissed automatically. An unknown damaged record might describe a still-hidden window, so successful recovery of known records cannot establish that all recovery work is complete.
 
