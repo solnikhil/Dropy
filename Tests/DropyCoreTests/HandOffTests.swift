@@ -175,7 +175,7 @@ final class HandOffTests: XCTestCase {
                                                              pixelSize: CGSize(width: 1600, height: 1200)))
         let size = CGSize(width: 800, height: 600)
         XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: identity, frame: frame,
-                                             sourceWindowSize: size), .success(size))
+                                             sourceWindowSize: size, contentMode: .fit), .success(size))
         XCTAssertEqual(PreviewInputGate.check(handler: identity, selected: identity, frame: frame,
                                              sourceWindowSize: size, contentMode: .fit, handOffActive: true),
                        .failure(.handOffActive))

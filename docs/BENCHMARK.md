@@ -15,6 +15,7 @@ This page explains what Dropy measures, how to reproduce the numbers, and what t
 | `mailboxDrops` | Complete frames replaced before the main thread took them (latest-frame policy) | — |
 | `presented` / `notPresented` | Frames the compositor reported shown, or never shown (for example a replaced drawable) | — |
 | `drawableMisses` | Drawable attempts not shown, including retries whose frame later succeeds | — |
+| `interactionWakeRequests` | Successful preview inputs that asked an idle stream to return to full rate; `rateChanges` confirms completed configuration changes | — |
 | `captureToCallback` | `SCStreamFrameInfo.displayTime` → Dropy's callback | mach host time on both sides |
 | `callbackToPresent` | Callback → `MTLDrawable.presentedTime` | mach time vs Core Animation media time |
 | `frameAge` | `displayTime` → on-glass presentation, per shown frame | as above |
@@ -133,6 +134,13 @@ The static source's rate reconfiguration produced a changed frame, which previou
 
 `notPresented` now counts final frame outcomes once. Zero-time drawable attempts are counted separately as `drawableMisses`; retrying and later successfully showing the same frame cannot count it both shown and unshown. This corrects the earlier static presentation-budget failure. Idle frame-age p95 remains **100.4 ms**, based on only three changed frames, above the provisional 50 ms target; idle response latency and quiet-system replication remain M4 work.
 
+## M4 interaction wake, pending device validation
+
+An idle source is sampled at 10 fps. A later trace of 20 clicks, each three seconds apart, measured input-to-display p50 63.7 ms / p95 88.1 ms and input-to-presentation p50 124.6 ms / p95 152.9 ms. Of the response frames, 39 drawable attempts were not shown before retry, and draw plus composition each took about 30 ms at p50. See [the latency trace on the M3 branch](https://github.com/solnikhil/Dropy/blob/4c4f6e2/docs/benchmarks/2026-09-30-latency-trace-run3.md) for the per-click breakdown. This trace is an input-response baseline, not a measurement of the change below.
+
+On a successful, verified preview input, Dropy now requests full-rate capture for that same source. The activity tracker resets its unchanged count and returns the stream to 10 fps after 30 unchanged frames. Refused input and input for a source that has since been replaced do not wake the active stream. The `interactionWakeRequests` count records requests; `rateChanges` records completed rate changes. This is intended to reduce the wait for an updated capture without keeping a quiet source at 60 fps.
+
+**Device validation: NOT RUN.** Device checks remain paused at the user's request. This change has passed local build and unit tests, but neither the input latency nor CPU budget has been remeasured. The drawable misses and compositor delay in the trace are separate issues; do not mark the 50 ms frame-age budget as passing on the strength of this change.
 ## Idle input-to-visible latency trace, 2026-09-30
 
 Measurement only; the pipeline and the provisional 50 ms frame-age target are unchanged. `DROPY_DEBUG_FRAME_TRACE=1` (off by default) logs, per forwarded frame, the time spent in each stage: `capture` (ScreenCaptureKit display time to Dropy's callback), `compare` (identical-frame check), `forward` (mailbox), `main` (hand-off to the main thread), `draw` (delivery to the commit of the draw that was finally shown, so drawable misses and their retries land here), `compose` (commit to on-glass), plus each draw's outcome and the time since the last input Dropy sent. `Scripts/latency-trace.sh 20 3` previews the disposable Electron fixture on the static text page, waits 10 s, then clicks the page's Press button through the preview 20 times, 3 s apart, so capture is back at its idle 10 fps before every click. `Scripts/bench/latency-summary.py` groups frames. Three runs on the same Mac, same load as above:
@@ -171,3 +179,12 @@ These come from the baseline above and are **not yet release gates**. They shoul
 | Dropy CPU with the overlay closed | ≈ 0% | Pass (0.0%, 0.2 wakeups/s, pointer still, 2026-09-29) |
 
 Not covered yet: input-to-updated-frame (M3), WindowServer wakeups and footprint (need `powermetrics`), energy impact, a real media-decoder workload, and multi-display or full-screen placements.
+
+
+## Opt-in presentation comparison (2026-10-01)
+
+The interrupted presentation work is now wired and locally tested. `DROPY_PRESENT_MODE` accepts `retry` (default), `warm`, `transaction`, or `warm-transaction`. Invalid values are reported and keep the default. Warm modes run the display link only for a bounded period after successful input, a cold changed frame, or a current-frame drawable miss. Clear/close cancels it. Transaction modes commit/schedule the Metal buffer before presenting the drawable through the Core Animation path.
+
+These modes are hypotheses awaiting device comparison; none is a measured CPU or latency improvement. The default keeps the measured retry behavior plus PR32's successful-input capture wake. Late callbacks from an old source and cancelled retry tasks cannot restart the current path. The earlier bounded-input-tail prototype remains preserved on `codex/m4-latency-integration`; its trace is not evidence for these different display-link modes.
+
+After device checks resume, compare the same workload in each mode using `Scripts/latency-trace.sh`, then `Scripts/benchmark-phases.sh`. Hold the 50 ms frame-age and 2% idle CPU targets, record every run including failures, and check close/switch/occlusion before promoting a mode to the default.

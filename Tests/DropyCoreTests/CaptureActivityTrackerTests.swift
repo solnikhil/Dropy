@@ -33,4 +33,18 @@ final class CaptureActivityTrackerTests: XCTestCase {
         XCTAssertNil(tracker.record(unchanged: true))
         XCTAssertEqual(tracker.record(unchanged: true), true)
     }
+
+    func testInteractionWakesIdleCaptureAndReturnsToIdleAfterUnchangedFrames() {
+        var tracker = CaptureActivityTracker(unchangedThreshold: 3)
+        for _ in 0..<2 { XCTAssertNil(tracker.record(unchanged: true)) }
+        XCTAssertEqual(tracker.record(unchanged: true), true)
+
+        XCTAssertTrue(tracker.resumeForInteraction())
+        XCTAssertFalse(tracker.isIdle)
+        XCTAssertNil(tracker.record(unchanged: true))
+        XCTAssertFalse(tracker.resumeForInteraction())
+        XCTAssertNil(tracker.record(unchanged: true))
+        XCTAssertNil(tracker.record(unchanged: true))
+        XCTAssertEqual(tracker.record(unchanged: true), true)
+    }
 }

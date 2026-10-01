@@ -27,17 +27,35 @@ final class FrameMailbox: NSObject, SCStreamOutput, @unchecked Sendable {
     static let idleThreshold = CaptureActivityTracker.defaultUnchangedThreshold
     private var activity = CaptureActivityTracker()
     private var activitySequence = 0
-    /// Changed-frame times for judging whether a hidden source's app slowed it.
     private let hiddenRate: HiddenSourceRate
-    /// Called on the capture queue when the source becomes idle (true) or changes again.
+    /// Activity mutations share the serial stream callback queue.
+    private let sampleHandlerQueue: DispatchQueue
     private let onActivityChange: @Sendable (Bool, Int) -> Void
 
     init(renderer: MetalFrameView, metrics: CaptureMetricsRecorder, hiddenRate: HiddenSourceRate,
+         sampleHandlerQueue: DispatchQueue,
          onActivityChange: @escaping @Sendable (Bool, Int) -> Void) {
         self.renderer = renderer
         self.metrics = metrics
         self.hiddenRate = hiddenRate
+        self.sampleHandlerQueue = sampleHandlerQueue
         self.onActivityChange = onActivityChange
+    }
+
+    /// Only successful input reaches this method. Serializing it with sample
+    /// callbacks preserves activity ordering and their sequence numbers.
+    func noteInteraction() {
+        sampleHandlerQueue.async { [self] in
+            lock.lock()
+            let active = !invalidated
+            lock.unlock()
+            guard active else { return }
+            if activity.resumeForInteraction() {
+                metrics.recordInteractionWakeRequest()
+                activitySequence += 1
+                onActivityChange(false, activitySequence)
+            }
+        }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
@@ -246,14 +264,16 @@ final class CaptureController {
                               configuration: configuration, delegate: observer)
         let recorder = CaptureMetricsRecorder(windowID: window.windowID, requestedAt: requestedAt)
         let hiddenRate = HiddenSourceRate()
-        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder, hiddenRate: hiddenRate) { [weak self] idle, sequence in
+        let sampleHandlerQueue = DispatchQueue(label: "org.dropy.capture.frames")
+        let mailbox = FrameMailbox(renderer: renderer, metrics: recorder, hiddenRate: hiddenRate,
+                                   sampleHandlerQueue: sampleHandlerQueue) { [weak self] idle, sequence in
             Task { @MainActor [weak self] in
                 await self?.setSourceIdle(idle, sequence: sequence, request: request)
             }
         }
         do {
             try stream.addStreamOutput(mailbox, type: .screen,
-                                       sampleHandlerQueue: DispatchQueue(label: "org.dropy.capture.frames"))
+                                       sampleHandlerQueue: sampleHandlerQueue)
         } catch {
             recorder.finish(reason: "startFailed(\((error as NSError).code))")
             throw error
@@ -435,6 +455,13 @@ final class CaptureController {
     /// What the changed-frame rate says about a source Dropy hid.
     func hiddenSourceAssessment() -> HiddenSourceRateMonitor.Assessment {
         hiddenRate?.assessment() ?? .notHidden
+    }
+
+    /// An input result may arrive after a source switch. Never wake another
+    /// window's stream on behalf of the former selection.
+    func noteInteraction(for windowID: UInt32) {
+        guard activeWindow?.windowID == windowID else { return }
+        mailbox?.noteInteraction()
     }
 
     /// `reason` is a log-safe label such as `closed` or a failure's diagnostic name.

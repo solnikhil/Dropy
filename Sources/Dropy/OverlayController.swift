@@ -850,13 +850,13 @@ final class OverlayController: NSObject {
         renderer.onClick = { [weak self] point in
             guard let self, let mapping = self.mapping(for: identity, kind: .pointerClick),
                   let target = mapping.windowPoint(for: point) else { return }
-            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize), kind: .pointerClick)
+            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize), kind: .pointerClick, sourceWindowID: identity.windowID)
         }
         renderer.onScroll = { [weak self] point, delta in
             guard let self, let mapping = self.mapping(for: identity, kind: .scroll),
                   let target = mapping.windowPoint(for: point) else { return }
             self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta),
-                                                expectedWindowSize: mapping.windowSize), kind: .scroll)
+                                                expectedWindowSize: mapping.windowSize), kind: .scroll, sourceWindowID: identity.windowID)
         }
         renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
     }
@@ -941,8 +941,8 @@ final class OverlayController: NSObject {
                                  modifiers: PreviewModifiers(event.modifierFlags),
                                  inputMethodActive: Self.inputMethodIsActive()) {
         case .text(let characters):
-            guard mapping(for: identity, kind: .text) != nil else { return true }
-            report(inputRouter.type(identity, text: characters), kind: .text)
+            guard mapping(for: identity, kind: .text, sourceWindowID: identity.windowID) != nil else { return true }
+            report(inputRouter.type(identity, text: characters), kind: .text, sourceWindowID: identity.windowID)
         case .refuse(let kind): flash(InteractionLabel.text(for: .notVerified, kind: kind))
         case .unsupportedKey: flash("This key is not supported in the preview yet")
         }
@@ -957,11 +957,15 @@ final class OverlayController: NSObject {
         return type != (kTISTypeKeyboardLayout as String)
     }
 
-    private func report(_ outcome: InputRouter.Outcome, kind: InputKind) {
+    private func report(_ outcome: InputRouter.Outcome, kind: InputKind, sourceWindowID: UInt32) {
         switch outcome {
         case .sent:
+            capture.noteInteraction(for: sourceWindowID)
             // The latency trace measures from here to the first frame showing the result.
             if FrameStamp.tracing { LatencyMarks.shared.markInput() }
+            // The earliest warning the presentation path gets that a changed frame is
+            // coming; only the warm presentation modes act on it.
+            renderer?.noteInputSent()
         case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
         case .notApplicable(let reason):
             flash(reason.contains("windowGeometryChanged") ? "Preview resizing · try again in a moment"
