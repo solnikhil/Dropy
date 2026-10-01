@@ -235,6 +235,7 @@ textedit_case() {
     close (every window whose name is not "interactive-A.txt" and name is not "interactive-B.txt") saving no
     set bounds of window "interactive-A.txt" to {60, 120, 700, 700}
     set bounds of window "interactive-B.txt" to {760, 120, 1400, 640}
+    set index of window "interactive-A.txt" to 1
     set index of window "interactive-B.txt" to 1
   end tell' >/dev/null
   local pid="$(lsappinfo info -only pid -app com.apple.TextEdit | grep -oE '[0-9]+' | head -1)"

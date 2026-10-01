@@ -1,0 +1,19 @@
+/Users/nikhil/.codex/worktrees/pr27-review/dropy/.build/local/Dropy.app: replacing existing signature
+no modifiers held
+  TextEdit · click: FAIL (caret A 0→0 B 0→0; ind=pointerClick condition=covered refused=notVerified target=text)
+  TextEdit · typing: FAIL (A 2031→2031 caret 0→0, B 2031→2031; ind=text condition=covered refused=notVerified target=-)
+  TextEdit · focus stays with Dropy: PASS (frontmost=org.dropy.app)
+# TextEdit exact-window input retry
+Revision: 7732db8, with working-tree changes
+| Source | Input | Result | Observed |
+|---|---|---|---|
+| TextEdit | click | FAIL | caret A 0→0 B 0→0; ind=pointerClick condition=covered refused=notVerified target=text |
+| TextEdit | typing | FAIL | A 2031→2031 caret 0→0, B 2031→2031; ind=text condition=covered refused=notVerified target=- |
+| TextEdit | focus stays with Dropy | PASS | frontmost=org.dropy.app |
+
+## Window coverage metadata
+owner=Wispr Flow pid=22826 bounds=(0.0, 38.0, 490.0, 988.0) layer=1000
+owner=Dropy pid=22776 bounds=(255.0, 0.0, 1200.0, 700.0) layer=25
+owner=Dock pid=87982 bounds=(0.0, 0.0, 1710.0, 1112.0) layer=20
+owner=TextEdit pid=22724 bounds=(66.0, 126.0, 66.0, 20.0) layer=0
+Restored saved Dropy preferences.

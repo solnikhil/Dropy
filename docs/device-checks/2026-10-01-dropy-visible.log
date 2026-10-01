@@ -1,0 +1,29 @@
+2026-10-01 14:32:43.786 Dropy[20459:1120639] Dropy trigger: notchPanels=1 fallbackMonitors=no
+2026-10-01 14:32:43.829 Dropy[20459:1120639] Dropy state: selecting
+2026-10-01 14:32:43.918 Dropy[20459:1120639] Dropy state: starting
+2026-10-01 14:32:44.189 Dropy[20459:1120639] Dropy capture started: window=3912 running=1
+2026-10-01 14:32:44.189 Dropy[20459:1120639] Dropy state: viewing
+2026-10-01 14:32:44.248 Dropy[20459:1120639] Dropy input: preview=543,95,888,555 support=Interactive (beta): click, scroll, type
+2026-10-01 14:32:44.279 Dropy[20459:1120639] Dropy reveal: firstFrame=460.6ms open=1 warm=no
+2026-10-01 14:32:46.115 Dropy[20459:1120639] Dropy dismiss: pointer entered
+2026-10-01 14:32:46.201 Dropy[20459:1120639] Dropy input: kind=pointerClick condition=covered route=windowTargetedEvent target=pressable
+2026-10-01 14:32:47.420 Dropy[20459:1120639] Dropy input: shown="Click not sent: not verified for this app here"
+2026-10-01 14:32:48.256 Dropy[20459:1120639] Dropy input: kind=pointerClick condition=covered route=windowTargetedEvent target=text
+2026-10-01 14:32:49.063 Dropy[20459:1120639] Dropy input: kind=text condition=covered route=accessibility target=-
+2026-10-01 14:32:49.126 Dropy[20459:1120639] Dropy input: kind=text condition=covered route=accessibility target=-
+2026-10-01 14:32:49.234 Dropy[20459:1120639] Dropy input: kind=text condition=covered route=accessibility target=-
+2026-10-01 14:32:51.189 Dropy[20459:1120639] Dropy input event: scroll point=732,273
+2026-10-01 14:32:51.193 Dropy[20459:1120639] Dropy input: kind=scroll condition=covered route=windowTargetedEvent target=-
+2026-10-01 14:32:51.523 Dropy[20459:1120639] Dropy input event: scroll point=732,273
+2026-10-01 14:32:51.528 Dropy[20459:1120639] Dropy input: kind=scroll condition=covered route=windowTargetedEvent target=-
+2026-10-01 14:32:51.874 Dropy[20459:1120639] Dropy input event: scroll point=732,273
+2026-10-01 14:32:51.877 Dropy[20459:1120639] Dropy input: kind=scroll condition=covered route=windowTargetedEvent target=-
+2026-10-01 14:32:53.278 Dropy[20459:1120639] Dropy input: shown="Right-click not sent: not verified for this app here"
+2026-10-01 14:32:54.329 Dropy[20459:1120639] Dropy input: shown="Preview updating · input not sent"
+2026-10-01 14:32:54.356 Dropy[20459:1120639] Dropy input: shown="Click not sent: not verified for this app here"
+2026-10-01 14:32:55.484 Dropy[20459:1120639] Dropy input: shown="Drag not sent: not verified for this app here"
+2026-10-01 14:32:57.859 Dropy[20459:1120639] Dropy input event: scroll point=994,513
+2026-10-01 14:32:57.859 Dropy[20459:1120639] Dropy input: shown="Scroll not sent: not verified for this app here"
+2026-10-01 14:32:58.893 Dropy[20459:1120639] Dropy input: shown="Shortcut not sent: not verified for this app here"
+2026-10-01 14:32:59.900 Dropy[20459:1120639] Dropy input: shown="This key is not supported in the preview yet"
+2026-10-01 14:33:00.864 Dropy[20459:1120639] Dropy input: shown="This key is not supported in the preview yet"

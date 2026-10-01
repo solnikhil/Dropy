@@ -1,14 +1,16 @@
 # Dropy roadmap
 
-**2026-10-01 coding handoff:** device checks are paused again. The six interrupted
-streams are integrated for local verification: explicit hand-off, hidden-source
-update reporting, view-only region selection and app pinning, opt-in presentation
-experiments, release tooling, and safety fixes. The combined implementation still
-needs device evidence. Earlier resumed-device notes describe historical sessions;
-they do not authorize another run or promote M3/release gates.
+**2026-10-01 internal testing:** the user resumed device checks on the integrated
+six-stream branch. TextEdit restoration/crash recovery, 8/8 dismissal checks and
+native routing regressions passed. TextEdit preview input under foreign overlays
+was refused because covered input is not verified. Two preview-update input misses
+also remain unresolved. New hand-off/region/pin paths,
+performance and remaining compatibility gates still need evidence. See the
+[session report](docs/device-checks/2026-10-01-internal-alpha.md). M3 and release
+readiness remain incomplete.
 
 
-This is the working sequence for turning Dropy from a live window preview into a dependable notch container. The end goal is an existing app's UI inside a Dropy-owned overlay, with its session intact after dismissal. The current build is **view-only**, and the source window remains visible elsewhere. We will publish compatibility by tested workflow rather than imply universal support from an early demo.
+This is the working sequence for turning Dropy from a live window preview into a dependable notch container. The end goal is an existing app's UI inside a Dropy-owned overlay, with its session intact after dismissal. The current build offers an opt-in interactive beta for explicitly verified app workflows, experimental containment, and a view-only fallback for unsupported input. We will publish compatibility by tested workflow rather than imply universal support from an early demo.
 
 Milestones are **evidence gates**, not calendar promises. Work may move between phases when an experiment changes the architecture. Each milestone has an explicit completion condition so a narrow success cannot be mistaken for the full product.
 

@@ -25,3 +25,7 @@ The combined implementation reconciles shared AppKit/capture code, rather than a
 ## Still requires device or release evidence
 
 Device checks remain paused. This continuation did not launch/capture personal apps or use synthetic input. The new runtime paths need device verification once the pause is lifted, including real-window hand-off, visible GPU cropping, stale/static input behavior, stop/revocation behavior and hidden-source reporting. Third-party compatibility, signing/notarization with actual distribution credentials, performance budgets and the update policy remain evidence gates. M3 and release readiness are not marked complete.
+
+## Device testing resumed after this coding handoff
+
+The user subsequently resumed testing. The [first integrated session](device-checks/2026-10-01-internal-alpha.md) records actual passes, the TextEdit covered-input failure, cleanup and still-unverified paths. The paused-device statements above describe the coding handoff, not the subsequent session. Milestone exits are unchanged.

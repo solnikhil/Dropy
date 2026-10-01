@@ -1,0 +1,20 @@
+2026-10-01 14:33:46.075 Dropy[21359:1125291] Dropy trigger: notchPanels=1 fallbackMonitors=no
+2026-10-01 14:33:46.274 Dropy[21359:1125291] Dropy state: selecting
+2026-10-01 14:33:46.386 Dropy[21359:1125291] Dropy state: starting
+2026-10-01 14:33:46.642 Dropy[21359:1125291] Dropy capture started: window=4033 running=1
+2026-10-01 14:33:46.642 Dropy[21359:1125291] Dropy state: viewing
+2026-10-01 14:33:46.700 Dropy[21359:1125291] Dropy input: manualAccessibility pid=21296 result=0
+2026-10-01 14:33:46.700 Dropy[21359:1125291] Dropy input: preview=543,95,888,555 support=Interactive (beta): click, scroll
+2026-10-01 14:33:46.729 Dropy[21359:1125291] Dropy reveal: firstFrame=503.2ms open=1 warm=no
+2026-10-01 14:33:49.181 Dropy[21359:1125291] Dropy input: kind=pointerClick condition=covered route=accessibility target=pressable
+2026-10-01 14:33:51.132 Dropy[21359:1125291] Dropy input: kind=scroll condition=covered route=windowTargetedEvent target=-
+2026-10-01 14:33:51.436 Dropy[21359:1125291] Dropy input: kind=scroll condition=covered route=windowTargetedEvent target=-
+2026-10-01 14:33:51.794 Dropy[21359:1125291] Dropy input: kind=scroll condition=covered route=windowTargetedEvent target=-
+2026-10-01 14:33:54.274 Dropy[21359:1125291] Dropy input: shown="Preview updating · input not sent"
+2026-10-01 14:33:56.072 Dropy[21359:1125291] Dropy input: kind=pointerClick condition=covered refused=notVerified target=text
+2026-10-01 14:33:56.072 Dropy[21359:1125291] Dropy input: shown="Click not sent: not verified for this app here"
+2026-10-01 14:33:56.886 Dropy[21359:1125291] Dropy input: kind=text condition=covered refused=notVerified target=-
+2026-10-01 14:33:56.886 Dropy[21359:1125291] Dropy input: shown="Typing not sent: not verified for this app here"
+2026-10-01 14:33:56.954 Dropy[21359:1125291] Dropy input: kind=text condition=covered refused=notVerified target=-
+2026-10-01 14:33:56.954 Dropy[21359:1125291] Dropy input: shown="Typing not sent: not verified for this app here"
+2026-10-01 14:33:57.080 Dropy[21359:1125291] Dropy input: shown="Preview updating · input not sent"

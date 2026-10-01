@@ -93,7 +93,7 @@ public enum CapturePhase: Equatable, Sendable {
         switch self {
         case .closed, .selecting: nil
         case .starting(let app): "Starting preview: \(app)…"
-        case .viewing: "Live preview · interaction bridge not enabled yet"
+        case .viewing: "Live preview"
         case .paused(let app):
             "\(app) window is minimized, hidden or on another Space · preview paused"
         case .failed(let failure): failure.message

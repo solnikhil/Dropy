@@ -1,0 +1,84 @@
+2026-10-01 14:33:16.889 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:17.757 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=pointerClick condition=covered route=windowTargetedEvent target=text
+2026-10-01 14:33:18.076 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered route=accessibility target=-
+2026-10-01 14:33:18.385 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.388 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.391 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.394 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.400 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.403 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.406 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.409 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.412 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.416 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.419 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.422 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.425 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.427 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.434 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.437 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.439 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.442 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.445 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.449 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.451 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.454 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.457 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.459 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.461 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.468 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.471 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:18.478 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=pointerClick condition=covered route=windowTargetedEvent target=text
+2026-10-01 14:33:19.392 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:textElementGone
+2026-10-01 14:33:19.396 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:20.011 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=pointerClick condition=covered notApplicable=windowTargetedEvent:clickTargetChanged
+2026-10-01 14:33:20.016 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered notApplicable=accessibility:noTextElementChosen
+2026-10-01 14:33:20.026 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=pointerClick condition=covered route=windowTargetedEvent target=other
+2026-10-01 14:33:20.331 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text refused=accessibilityNotGranted
+2026-10-01 14:33:20.331 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=pointerClick refused=accessibilityNotGranted
+2026-10-01 14:33:20.331 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=scroll refused=accessibilityNotGranted
+2026-10-01 14:33:20.643 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=pointerClick condition=covered refused=notVerified target=text
+2026-10-01 14:33:20.648 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered refused=notVerified target=-
+2026-10-01 14:33:20.655 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=pointerClick condition=covered refused=notVerified target=text
+2026-10-01 14:33:20.658 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=covered refused=notVerified target=-
+2026-10-01 14:33:21.064 DeviceInputRouterChecks[20968:1122914] Dropy input: kind=text condition=hidden refused=notVerified target=-
+PASS click mapped for a stale size is refused
+PASS a refused click chooses no typing target
+PASS source resized for the check
+PASS click during a source resize is refused
+PASS scroll during a source resize is refused
+PASS source size restored
+PASS click at the current size is sent
+PASS typing after the click is sent
+PASS typing reached A only
+PASS switching to B does not reuse A's typing target
+PASS rapid switching leaves no typing target behind
+PASS rapid switching sent nothing
+PASS typing into a replaced field is refused
+PASS stale target sent nothing
+PASS a stale target is dropped, not retried
+PASS a target replaced between planning and execution is refused
+PASS a replacement target cannot become a typing target
+PASS replacement during planning sent nothing
+PASS pointer never moved
+PASS frontmost app unchanged
+PASS desktop unchanged
+PASS typing after Accessibility is revoked is refused
+PASS a click after Accessibility is revoked is refused
+PASS a scroll after Accessibility is revoked is refused
+PASS revoked permission sent nothing
+PASS input to an updated app version is refused
+PASS input to an unknown app version is refused
+PASS version mismatch sent nothing
+PASS source hidden for the check
+PASS input to a hidden source is refused
+old-identity 20412 1790845361.213491 3912
+Native router regressions passed
+2026-10-01 14:33:25.934 DeviceInputRouterChecks[21109:1123783] Dropy placement lookup: wanted=3912 diagnosis=windowClosed axWindows=ok roles=[AXWindow,AXWindow] candidates=[3997,3996,3997,3997] server=notListed spaces= active=4
+2026-10-01 14:33:25.936 DeviceInputRouterChecks[21109:1123783] Dropy placement lookup: wanted=3912 diagnosis=windowClosed axWindows=ok roles=[AXWindow,AXWindow] candidates=[3997,3996,3997,3997] server=notListed spaces= active=4
+PASS old identity refused after relaunch
+PASS old identity refused after relaunch
+PASS old identity refused after relaunch
+PASS no typing target survives a relaunch
+PASS relaunched instance untouched
+Native router regressions passed

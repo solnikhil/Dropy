@@ -193,7 +193,15 @@ struct DeviceInputRouterChecks {
         for outcome in [router.click(old, at: CGPoint(x: 40, y: 40)), router.scroll(old, at: CGPoint(x: 40, y: 200),
                                                                                      delta: CGSize(width: 0, height: -40)),
                         router.type(old, text: "must-not-send")] {
-            guard case .refused(.targetUnreachable) = outcome else {
+            // The current-condition gate can reject a vanished process before the
+            // exact-target lookup. Both reasons must refuse every send; the new
+            // instance's contents are checked independently below.
+            let safelyRefused: Bool
+            switch outcome {
+            case .refused(.targetUnreachable), .refused(.sourceConditionUnknown): safelyRefused = true
+            default: safelyRefused = false
+            }
+            guard safelyRefused else {
                 check(false, "old identity refused after relaunch", "\(outcome)")
                 continue
             }
@@ -219,15 +227,17 @@ struct DeviceInputRouterChecks {
     }
 
     /// Evidence as the shipped fixture evidence says: window-targeted clicks and scrolls,
-    /// Accessibility text, visible only.
+    /// Accessibility text, visible or covered by the supervisor's window.
     @MainActor static func testEvidence() -> InputEvidence {
-        let trials = [FocusState.otherWindowKey, .appInactive].flatMap { focus in
-            [InputTrial(route: .windowTargetedEvent, kind: .pointerClick, condition: .visible, focus: focus,
-                        outcome: .pass, sideEffects: [.sourceKeyWindow]),
-             InputTrial(route: .windowTargetedEvent, kind: .scroll, condition: .visible, focus: focus,
-                        outcome: .pass, sideEffects: []),
-             InputTrial(route: .accessibility, kind: .text, condition: .visible, focus: focus,
-                        outcome: .pass, sideEffects: [])]
+        let trials = [SourceCondition.visible, .covered].flatMap { condition in
+            [FocusState.otherWindowKey, .appInactive].flatMap { focus in
+                [InputTrial(route: .windowTargetedEvent, kind: .pointerClick, condition: condition, focus: focus,
+                            outcome: .pass, sideEffects: [.sourceKeyWindow]),
+                 InputTrial(route: .windowTargetedEvent, kind: .scroll, condition: condition, focus: focus,
+                            outcome: .pass, sideEffects: []),
+                 InputTrial(route: .accessibility, kind: .text, condition: condition, focus: focus,
+                            outcome: .pass, sideEffects: [])]
+            }
         }
         let version = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         return InputEvidence(macOS: String(version), macOSMajor: version, sources: [
