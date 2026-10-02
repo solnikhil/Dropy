@@ -88,7 +88,7 @@ stop() {
 
 is_open() { [[ "$("$hid" panel "$dropy_pid")" != none ]]; }
 fixture_center() { print -r -- "$((fx + fw / 2)) $((fy + fh / 2))"; }
-open_by_shortcut() { "$hid" key 2 opt,cmd; sleep 1.2; }
+open_by_shortcut() { "$hid" key 2 ctrl,opt; sleep 1.2; }  # ⌃⌥D, the default shortcut
 
 result() {
   # result <check> <expected open state after> <expect handback yes|no>

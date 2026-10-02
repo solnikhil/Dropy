@@ -12,6 +12,18 @@ public enum OverlayGeometry {
                       height: height)
     }
 
+    /// macOS keeps the pointer out of the camera housing: pushed up there, it stops
+    /// just below the notch. The trigger covers that strip, so the notch can be
+    /// reached at all. It does not reach beside the notch: sweeping along the menu
+    /// bar makes the pointer jump across the notch and land there, which opened the
+    /// overlay by accident.
+    public static let notchReachBelow: CGFloat = 6
+
+    public static func notchReach(_ notch: CGRect) -> CGRect {
+        CGRect(x: notch.minX, y: notch.minY - notchReachBelow,
+               width: notch.width, height: notch.height + notchReachBelow)
+    }
+
     public static func notchTrigger(on screen: CGRect, notchWidth: CGFloat,
                                     bandHeight: CGFloat) -> CGRect {
         let width = min(max(notchWidth, 96), screen.width)

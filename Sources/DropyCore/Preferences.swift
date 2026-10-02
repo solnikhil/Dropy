@@ -40,6 +40,40 @@ public enum SizePreset: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// A system-wide shortcut as Carbon registers it: a virtual key code and a Carbon
+/// modifier mask (cmdKey 0x100, shiftKey 0x200, optionKey 0x800, controlKey 0x1000).
+public struct KeyShortcut: Codable, Equatable, Sendable {
+    public var keyCode: UInt32
+    public var modifiers: UInt32
+    /// As shown to the person, e.g. "⌃⌥D"; recorded with the shortcut.
+    public var display: String
+
+    public init(keyCode: UInt32, modifiers: UInt32, display: String) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        self.display = display
+    }
+
+    public static let command: UInt32 = 0x100
+    public static let shift: UInt32 = 0x200
+    public static let option: UInt32 = 0x800
+    public static let control: UInt32 = 0x1000
+
+    /// Control-Option-D. The earlier Option-Command-D is macOS's "Turn Dock hiding
+    /// on/off", so pressing it hid the Dock as well.
+    public static let `default` = KeyShortcut(keyCode: 2, modifiers: control | option, display: "⌃⌥D")
+
+    /// A global shortcut needs Command, Control or Option; Shift alone would take a
+    /// character away from typing everywhere.
+    public var isAcceptable: Bool { modifiers & (Self.command | Self.control | Self.option) != 0 }
+
+    /// Modifier symbols in the order macOS menus show them.
+    public static func symbols(for modifiers: UInt32) -> String {
+        (modifiers & control != 0 ? "⌃" : "") + (modifiers & option != 0 ? "⌥" : "")
+            + (modifiers & shift != 0 ? "⇧" : "") + (modifiers & command != 0 ? "⌘" : "")
+    }
+}
+
 public struct DropyPreferences: Codable, Equatable, Sendable {
     public var trigger: Trigger
     public var openBehavior: OpenBehavior
@@ -51,16 +85,27 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     /// Send clicks, scrolling and typing in the preview to the source window, where
     /// verified. Off by default: interaction is a beta that needs Accessibility.
     public var interactivePreview: Bool
+    /// Show a Dock icon and Dropy's own menu bar like an ordinary app. Off leaves only
+    /// the menu-bar item (the Settings window still brings the Dock icon while open).
+    public var showInDock: Bool
+    /// The app shown in the notch: every opening shows its window, launching the app
+    /// first when needed. Nil leaves the open behavior to choose.
+    public var pinnedBundleIdentifier: String?
+    /// Opens and closes the overlay from anywhere.
+    public var shortcut: KeyShortcut
 
     public init(
         trigger: Trigger = .notchHover,
         openBehavior: OpenBehavior = .picker,
-        dismissBehavior: DismissBehavior = .manual,
+        dismissBehavior: DismissBehavior = .pointerLeave,
         contentMode: ContentMode = .fit,
         sizePreset: SizePreset = .medium,
         selectedBundleIdentifier: String? = nil,
         lastUsedBundleIdentifier: String? = nil,
-        interactivePreview: Bool = false
+        interactivePreview: Bool = false,
+        showInDock: Bool = true,
+        pinnedBundleIdentifier: String? = nil,
+        shortcut: KeyShortcut = .default
     ) {
         self.trigger = trigger
         self.openBehavior = openBehavior
@@ -70,11 +115,26 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.selectedBundleIdentifier = selectedBundleIdentifier
         self.lastUsedBundleIdentifier = lastUsedBundleIdentifier
         self.interactivePreview = interactivePreview
+        self.showInDock = showInDock
+        self.pinnedBundleIdentifier = pinnedBundleIdentifier
+        self.shortcut = shortcut
+    }
+
+    /// The app whose window an opening selects by itself, if any. A pinned app wins
+    /// over the open behavior.
+    public var openTargetBundleIdentifier: String? {
+        if let pinnedBundleIdentifier { return pinnedBundleIdentifier }
+        switch openBehavior {
+        case .direct: return selectedBundleIdentifier
+        case .lastUsed: return lastUsedBundleIdentifier
+        case .picker: return nil
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
-        case selectedBundleIdentifier, lastUsedBundleIdentifier, interactivePreview
+        case selectedBundleIdentifier, lastUsedBundleIdentifier, interactivePreview, showInDock
+        case pinnedBundleIdentifier, shortcut
     }
 
     /// Settings saved before a field existed keep every other choice; a new field takes
@@ -90,5 +150,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         selectedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .selectedBundleIdentifier)
         lastUsedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .lastUsedBundleIdentifier)
         interactivePreview = try container.decodeIfPresent(Bool.self, forKey: .interactivePreview) ?? defaults.interactivePreview
+        showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
+        pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
+        shortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut) ?? defaults.shortcut
     }
 }

@@ -117,8 +117,11 @@ final class InteractivePreviewTests: XCTestCase {
         XCTAssertEqual(preferences.sizePreset, .wide)
         XCTAssertEqual(preferences.selectedBundleIdentifier, "com.apple.TextEdit")
         XCTAssertFalse(preferences.interactivePreview)
+        // Settings saved before the Dock option existed get the ordinary-app default.
+        XCTAssertTrue(preferences.showInDock)
         var enabled = preferences
         enabled.interactivePreview = true
+        enabled.showInDock = false
         XCTAssertEqual(try JSONDecoder().decode(DropyPreferences.self, from: JSONEncoder().encode(enabled)), enabled)
     }
 

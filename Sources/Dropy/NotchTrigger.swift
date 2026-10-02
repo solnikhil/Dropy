@@ -3,22 +3,25 @@ import DropyCore
 
 /// Opens the overlay from the notch while costing nothing the rest of the time.
 ///
-/// On a screen with a camera housing, a transparent panel sits exactly over the
-/// notch, which is dead space with no menu items, and its tracking area wakes Dropy
+/// On a screen with a camera housing, a transparent panel sits over the notch, which
+/// is dead space with no menu items, plus the thin edges the pointer can actually
+/// reach (macOS keeps it out of the notch itself). Its tracking area wakes Dropy
 /// only when the pointer enters it. Screens without a notch fall back to global
 /// mouse-move and click monitors, because an invisible window in the menu bar
 /// there could sit on top of real menu items; those monitors are installed only
 /// while such a screen is connected.
 @MainActor
 final class NotchTrigger {
-    static let hoverDelay: TimeInterval = 0.22
-
     private let mode: () -> Trigger
     private let isArmed: () -> Bool
     private let open: () -> Void
     private var panels: [NotchPanel] = []
     private var monitors: [Any] = []
     private var pendingHover: DispatchWorkItem?
+    /// After a close the notch stays quiet for a moment and until the pointer has
+    /// left the zone, so a close cannot turn straight into another opening.
+    private var quietUntil = Date.distantPast
+    private var waitingForExit = false
     private var screenObserver: NSObjectProtocol?
 
     /// - Parameters:
@@ -62,8 +65,8 @@ final class NotchTrigger {
                 continue
             }
             let panel = NotchPanel(frame: zone)
-            panel.onEnter = { [weak self] in self?.pointerEntered { zone.contains(NSEvent.mouseLocation) } }
-            panel.onExit = { [weak self] in self?.cancelHover() }
+            panel.onEnter = { [weak self] in self?.pointerEntered(zone) }
+            panel.onExit = { [weak self] in self?.pointerLeftZone() }
             panel.onClick = { [weak self] in self?.clicked() }
             panel.orderFrontRegardless()
             panels.append(panel)
@@ -73,25 +76,45 @@ final class NotchTrigger {
               needsMonitors ? "yes" : "no")
     }
 
-    /// The notch rectangle in screen coordinates, or nil for a screen without one.
+    /// Where the pointer can reach at the notch, in screen coordinates, or nil for a
+    /// screen without one. The pointer cannot enter the notch itself, so the zone
+    /// also covers a thin band below it and beside it.
     static func notchZone(on screen: NSScreen) -> CGRect? {
         guard let left = screen.auxiliaryTopLeftArea,
               let right = screen.auxiliaryTopRightArea,
               right.minX > left.maxX else { return nil }
-        return OverlayGeometry.notchTrigger(on: screen.frame, notchWidth: right.minX - left.maxX,
-                                            bandHeight: max(screen.safeAreaInsets.top, 24))
+        let notch = CGRect(x: left.maxX, y: screen.frame.maxY - screen.safeAreaInsets.top,
+                           width: right.minX - left.maxX, height: screen.safeAreaInsets.top)
+        return OverlayGeometry.notchReach(notch)
     }
 
-    private func pointerEntered(stillInside: @escaping () -> Bool) {
-        guard mode() == .notchHover, isArmed(), pendingHover == nil else { return }
+    /// The overlay closed: keep the notch quiet until the pointer has left it.
+    func overlayClosed() {
+        cancelHover()
+        quietUntil = Date().addingTimeInterval(HoverIntent.rearmDelay)
+        waitingForExit = true
+    }
+
+    /// Opens after the hover delay only if the pointer rested there rather than
+    /// passing through (HoverIntent).
+    private func pointerEntered(_ zone: CGRect) {
+        guard mode() == .notchHover, isArmed(), pendingHover == nil,
+              !waitingForExit, Date() >= quietUntil else { return }
+        let entry = NSEvent.mouseLocation
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingHover = nil
-            guard self.mode() == .notchHover, self.isArmed(), stillInside() else { return }
+            guard self.mode() == .notchHover, self.isArmed(),
+                  HoverIntent.confirms(enteredAt: entry, now: NSEvent.mouseLocation, zone: zone) else { return }
             self.open()
         }
         pendingHover = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverDelay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + HoverIntent.delay, execute: work)
+    }
+
+    private func pointerLeftZone() {
+        cancelHover()
+        waitingForExit = false
     }
 
     private func cancelHover() {
@@ -100,7 +123,7 @@ final class NotchTrigger {
     }
 
     private func clicked() {
-        guard mode() == .notchClick, isArmed() else { return }
+        guard mode() == .notchClick, isArmed(), Date() >= quietUntil else { return }
         open()
     }
 
@@ -137,10 +160,10 @@ final class NotchTrigger {
     private func fallbackPointerMoved() {
         guard mode() == .notchHover, isArmed(), let zone = fallbackZone(),
               zone.contains(NSEvent.mouseLocation) else {
-            cancelHover()
+            pointerLeftZone()
             return
         }
-        pointerEntered { zone.contains(NSEvent.mouseLocation) }
+        pointerEntered(zone)
     }
 
     private func fallbackClicked() {
@@ -149,7 +172,7 @@ final class NotchTrigger {
     }
 }
 
-/// A transparent, non-activating panel over the notch that reports pointer entry,
+/// A transparent, non-activating panel over the notch and its edges that reports pointer entry,
 /// exit and clicks. It never takes focus and joins every Space.
 private final class NotchPanel: NSPanel {
     var onEnter: (() -> Void)?

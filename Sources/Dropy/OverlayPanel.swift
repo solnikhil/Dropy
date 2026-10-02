@@ -14,8 +14,10 @@ final class OverlayPanel: NSPanel {
         let panel = OverlayPanel(contentRect: contentRect, styleMask: [.borderless], backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
-        panel.isOpaque = true
+        // Clear: the overlay's outline (MorphBackdropView) draws the shape, with
+        // rounded corners and the curves where it joins the top edge.
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
         // An active window's shadow was re-rendered on every composite while content
         // behind it changed, adding about 25 points of GPU utilization with nothing
         // captured. A hairline border separates the panel instead.
@@ -35,6 +37,9 @@ final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 
     override func cancelOperation(_ sender: Any?) { onEscape?() }
+    /// Command-W from the menu bar closes the overlay like Esc (a borderless panel
+    /// would only beep).
+    override func performClose(_ sender: Any?) { onEscape?() }
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .scrollWheel, ProcessInfo.processInfo.environment["DROPY_DEBUG_INPUT_EVENTS"] == "1" {

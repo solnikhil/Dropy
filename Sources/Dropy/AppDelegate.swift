@@ -12,12 +12,24 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let placementJournal = PlacementJournal()
     private let parkingTabs = ParkingTabs()
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
+    private var settings: SettingsWindowController!
+    /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
+    private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
+    private var interactiveItems: [NSMenuItem] = []
+    /// "Open Dropy" items whose titles show the current shortcut.
+    private var openItems: [NSMenuItem] = []
+    /// Check scripts launch the binary with debug variables or --show; they keep the
+    /// menu-bar-only policy their focus and timing measurements were taken with.
+    private static let launchedByCheck = CommandLine.arguments.contains("--show")
+        || ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("DROPY_DEBUG_") }
 
     static func main() {
         let app = NSApplication.shared
         let delegate = DropyAppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
+        // Info.plist starts Dropy as a menu-bar app, so no Dock icon flashes when
+        // "Show in Dock" is off; the policy is set before the first event.
+        app.setActivationPolicy(delegate.wantsDockIcon ? .regular : .accessory)
         app.run()
     }
 
@@ -47,17 +59,18 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for entry in placementJournal.entries where entry.mode == .parked && entry.applicationConfirmed != false {
             parkingTabs.show(for: entry)
         }
+        settings = SettingsWindowController(model: SettingsModel(
+            preferences: preferences.value, change: { [weak self] edit in self?.change(edit) }))
+        settings.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        overlay.onPinChange = { [weak self] bundleID in self?.change { $0.pinnedBundleIdentifier = bundleID } }
+        NSApp.mainMenu = makeMainMenu()
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "◆"
         item.button?.toolTip = "Dropy"
         let menu = NSMenu(title: "Dropy")
         menu.delegate = self
-        hotKey = GlobalHotKey { [weak self] in self?.overlay.toggle() }
-        let openTitle = hotKey == nil ? "Open Dropy" : "Open Dropy (\(GlobalHotKey.defaultDisplay))"
-        menu.addItem(NSMenuItem(title: openTitle, action: #selector(toggleOverlay), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Refresh windows", action: #selector(refresh), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Recover pending source windows…",
-                                action: #selector(recoverPlacements), keyEquivalent: ""))
+        openItems.append(addOverlayItems(to: menu))
         menu.addItem(.separator())
         let triggers = NSMenu(title: "Notch trigger")
         for trigger in Trigger.allCases {
@@ -75,6 +88,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let triggerItem = NSMenuItem(title: "Notch trigger", action: nil, keyEquivalent: "")
         triggerItem.submenu = triggers
         menu.addItem(triggerItem)
+        choiceMenus.append((triggers, { $0.trigger.rawValue }))
         let dismissals = NSMenu(title: "Dismiss")
         for behavior in [DismissBehavior.manual, .clickOutside, .pointerLeave] {
             let title = switch behavior {
@@ -91,6 +105,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let dismissItem = NSMenuItem(title: "Dismiss", action: nil, keyEquivalent: "")
         dismissItem.submenu = dismissals
         menu.addItem(dismissItem)
+        choiceMenus.append((dismissals, { $0.dismissBehavior.rawValue }))
         let sizes = NSMenu(title: "Overlay size")
         for preset in SizePreset.allCases {
             let entry = NSMenuItem(title: preset.rawValue.capitalized,
@@ -102,6 +117,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let sizeItem = NSMenuItem(title: "Overlay size", action: nil, keyEquivalent: "")
         sizeItem.submenu = sizes
         menu.addItem(sizeItem)
+        choiceMenus.append((sizes, { $0.sizePreset.rawValue }))
         let openModes = NSMenu(title: "Open behavior")
         for mode in OpenBehavior.allCases {
             let entry = NSMenuItem(title: mode.rawValue == "lastUsed" ? "Last used" : mode.rawValue.capitalized,
@@ -113,6 +129,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let openItem = NSMenuItem(title: "Open behavior", action: nil, keyEquivalent: "")
         openItem.submenu = openModes
         menu.addItem(openItem)
+        choiceMenus.append((openModes, { $0.openBehavior.rawValue }))
         let contentModes = NSMenu(title: "Content view")
         for mode in [ContentMode.fit, .fill, .nativeScale] {
             let title = mode == .nativeScale ? "Native scale" : mode.rawValue.capitalized
@@ -124,12 +141,15 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let contentItem = NSMenuItem(title: "Content view", action: nil, keyEquivalent: "")
         contentItem.submenu = contentModes
         menu.addItem(contentItem)
+        choiceMenus.append((contentModes, { $0.contentMode.rawValue }))
         let interactive = NSMenuItem(title: "Interactive preview (beta)", action: #selector(toggleInteractivePreview(_:)),
                                      keyEquivalent: "")
         interactive.state = preferences.value.interactivePreview ? .on : .off
         interactive.toolTip = "Send clicks, scrolling and typing in the preview to the source window, only where verified for that app."
         menu.addItem(interactive)
+        interactiveItems.append(interactive)
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Quit Dropy", action: #selector(quit), keyEquivalent: "q"))
         for entry in menu.items { if entry.action != nil { entry.target = self } }
         for entry in sizes.items { entry.target = self }
@@ -138,12 +158,15 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for entry in contentModes.items { entry.target = self }
         item.menu = menu
         statusItem = item
+        registerShortcut()
 
         let trigger = NotchTrigger(mode: { [weak self] in self?.preferences.value.trigger ?? .notchHover },
                                    isArmed: { [weak self] in self?.overlay.state == .closed },
                                    open: { [weak self] in self?.overlay.open() })
         trigger.start()
         self.trigger = trigger
+        overlay.onClose = { [weak trigger] in trigger?.overlayClosed() }
+        if wantsDockIcon { NSApp.activate(ignoringOtherApps: true) }
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.async { [weak self] in self?.overlay.open() }
         }
@@ -319,56 +342,204 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleOverlay() { overlay.toggle() }
     @objc private func refresh() { if overlay.state == .closed { overlay.open() } else { overlay.refreshWindows() } }
     @objc private func quit() { overlay.close(); NSApp.terminate(nil) }
+    @objc private func showSettings() { settings.show() }
+
+    @objc private func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: NSAttributedString(string: "Your apps, near the notch.\nFree and MIT-licensed.")
+        ])
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openProjectPage() {
+        if let url = URL(string: "https://github.com/solnikhil/Dropy") { NSWorkspace.shared.open(url) }
+    }
 
     @objc private func changeSize(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let size = SizePreset(rawValue: raw) else { return }
-        preferences.update { $0.sizePreset = size }
-        updateChecks(in: sender.menu, selected: sender)
-        if overlay.state != .closed { overlay.close(); overlay.open() }
+        change { $0.sizePreset = size }
     }
 
     @objc private func changeTrigger(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let trigger = Trigger(rawValue: raw) else { return }
-        preferences.update { $0.trigger = trigger }
-        updateChecks(in: sender.menu, selected: sender)
+        change { $0.trigger = trigger }
     }
 
     @objc private func changeDismissBehavior(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let behavior = DismissBehavior(rawValue: raw) else { return }
-        preferences.update { $0.dismissBehavior = behavior }
-        updateChecks(in: sender.menu, selected: sender)
+        change { $0.dismissBehavior = behavior }
     }
 
     @objc private func changeContentMode(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let mode = ContentMode(rawValue: raw) else { return }
-        preferences.update { $0.contentMode = mode }
-        updateChecks(in: sender.menu, selected: sender)
-        if overlay.state != .closed { overlay.close(); overlay.open() }
+        change { $0.contentMode = mode }
     }
 
     @objc private func toggleInteractivePreview(_ sender: NSMenuItem) {
-        let enabled = !preferences.value.interactivePreview
-        preferences.update { $0.interactivePreview = enabled }
-        sender.state = enabled ? .on : .off
-        // Input to another app needs Accessibility; ask macOS to show its prompt once.
-        if enabled, !WindowPlacer.isTrusted {
-            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-        }
-        overlay.configureInteraction()
+        change { $0.interactivePreview.toggle() }
     }
 
     @objc private func changeOpenBehavior(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let mode = OpenBehavior(rawValue: raw) else { return }
-        preferences.update { $0.openBehavior = mode }
-        updateChecks(in: sender.menu, selected: sender)
+        change { $0.openBehavior = mode }
     }
 
-    private func updateChecks(in menu: NSMenu?, selected: NSMenuItem) {
-        for item in menu?.items ?? [] { item.state = item === selected ? .on : .off }
+    /// The one place preferences change, from a menu or the Settings window.
+    private func change(_ edit: (inout DropyPreferences) -> Void) {
+        let old = preferences.value
+        preferences.update(edit)
+        let new = preferences.value
+        guard new != old else { return }
+        if new.interactivePreview != old.interactivePreview {
+            // Input to another app needs Accessibility; ask macOS to show its prompt once.
+            if new.interactivePreview, !WindowPlacer.isTrusted {
+                _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+            }
+            overlay.configureInteraction()
+        }
+        if new.sizePreset != old.sizePreset || new.contentMode != old.contentMode, overlay.state != .closed {
+            overlay.close()
+            overlay.open()
+        }
+        if new.showInDock != old.showInDock { updateActivationPolicy() }
+        if new.shortcut != old.shortcut, !registerShortcut() {
+            // Another app owns it: keep the shortcut that works and say why.
+            preferences.update { $0.shortcut = old.shortcut }
+            registerShortcut()
+            settings.model.shortcutRejected("Another app already uses \(new.shortcut.display). Choose a different one.")
+        }
+        if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier {
+            overlay.updatePinButton()
+            // An open overlay still choosing a window shows the newly pinned app now.
+            if new.pinnedBundleIdentifier != nil, overlay.state == .selecting { overlay.refreshWindows() }
+        }
+        syncMenuChecks()
+        settings.model.preferencesChanged(preferences.value)
+    }
+
+    /// Registers the shortcut from preferences in place of the current one; false when
+    /// another app owns it. Menu titles show it only while it works.
+    @discardableResult
+    private func registerShortcut() -> Bool {
+        hotKey?.unregister()
+        let shortcut = preferences.value.shortcut
+        hotKey = GlobalHotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
+            self?.overlay.toggle()
+        }
+        for item in openItems { item.title = openTitle }
+        settings.model.shortcutRegistered = hotKey != nil
+        return hotKey != nil
+    }
+
+    private var openTitle: String {
+        hotKey == nil ? "Open Dropy" : "Open Dropy (\(preferences.value.shortcut.display))"
+    }
+
+    private func syncMenuChecks() {
+        for (menu, selected) in choiceMenus {
+            let raw = selected(preferences.value)
+            for item in menu.items { item.state = item.representedObject as? String == raw ? .on : .off }
+        }
+        for item in interactiveItems { item.state = preferences.value.interactivePreview ? .on : .off }
+    }
+
+    // MARK: Ordinary-app behavior
+
+    private var wantsDockIcon: Bool { preferences.value.showInDock && !Self.launchedByCheck }
+
+    /// A Dock icon and Dropy's own menu bar when "Show in Dock" is on, and always while
+    /// Settings is open so the window can be found with Command-Tab.
+    private func updateActivationPolicy() {
+        let regular = wantsDockIcon || settings.isVisible
+        guard NSApp.activationPolicy() != (regular ? .regular : .accessory) else { return }
+        NSApp.setActivationPolicy(regular ? .regular : .accessory)
+        if regular { NSApp.activate(ignoringOtherApps: true) }
+    }
+
+    /// Opening Dropy again from Finder, Spotlight or the Dock shows Settings, the way an
+    /// ordinary app shows its main window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if overlay.state == .closed { settings.show() }
+        return false
+    }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        addOverlayItems(to: menu)
+        menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ""))
+        for item in menu.items { item.target = self }
+        return menu
+    }
+
+    /// Adds Open, Refresh and Recover; returns the Open item.
+    @discardableResult
+    private func addOverlayItems(to menu: NSMenu) -> NSMenuItem {
+        let open = NSMenuItem(title: openTitle, action: #selector(toggleOverlay), keyEquivalent: "")
+        menu.addItem(open)
+        menu.addItem(NSMenuItem(title: "Refresh windows", action: #selector(refresh), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Recover pending source windows…",
+                                action: #selector(recoverPlacements), keyEquivalent: ""))
+        for item in menu.items { item.target = self }
+        return open
+    }
+
+    /// The menu bar shown while Dropy is the active app.
+    private func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+        func submenu(_ title: String, _ items: [NSMenuItem]) -> NSMenu {
+            let menu = NSMenu(title: title)
+            items.forEach(menu.addItem)
+            let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            holder.submenu = menu
+            main.addItem(holder)
+            return menu
+        }
+        func item(_ title: String, _ action: Selector, _ key: String = "",
+                  _ modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            item.target = target
+            return item
+        }
+
+        _ = submenu("Dropy", [
+            item("About Dropy", #selector(showAbout), target: self),
+            .separator(),
+            item("Settings…", #selector(showSettings), ",", target: self),
+            .separator(),
+            item("Hide Dropy", #selector(NSApplication.hide(_:)), "h", target: NSApp),
+            item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option], target: NSApp),
+            item("Show All", #selector(NSApplication.unhideAllApplications(_:)), target: NSApp),
+            .separator(),
+            item("Quit Dropy", #selector(quit), "q", target: self),
+        ])
+
+        let overlayMenu = NSMenu(title: "Overlay")
+        openItems.append(addOverlayItems(to: overlayMenu))
+        overlayMenu.addItem(.separator())
+        let interactive = item("Interactive Preview (Beta)", #selector(toggleInteractivePreview(_:)), target: self)
+        overlayMenu.addItem(interactive)
+        interactiveItems.append(interactive)
+        let overlayHolder = NSMenuItem(title: "Overlay", action: nil, keyEquivalent: "")
+        overlayHolder.submenu = overlayMenu
+        main.addItem(overlayHolder)
+
+        let window = submenu("Window", [
+            item("Close", #selector(NSWindow.performClose(_:)), "w"),
+            item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
+            item("Zoom", #selector(NSWindow.performZoom(_:))),
+            .separator(),
+            item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:)), target: NSApp),
+        ])
+        NSApp.windowsMenu = window
+
+        let help = submenu("Help", [item("Dropy on GitHub", #selector(openProjectPage), target: self)])
+        NSApp.helpMenu = help
+        return main
     }
 }
