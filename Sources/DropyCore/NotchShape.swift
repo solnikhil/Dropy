@@ -23,6 +23,12 @@ public struct NotchShape: Equatable, Sendable {
 
     /// Circle-approximating control distance for a cubic Bézier quarter arc.
     static let kappa: CGFloat = 0.5523
+    /// Continuous ("squircle") lower corners, as Apple draws its own: each corner
+    /// starts this many radii from the vertex and its control points sit close to the
+    /// vertex, so the curve eases out of the straight edge instead of bending at once
+    /// as a circular arc does.
+    static let cornerSpan: CGFloat = 1.35
+    static let cornerControl: CGFloat = 0.3
 
     /// The filled outline, closed along the top edge.
     public var fillPath: CGPath {
@@ -42,10 +48,11 @@ public struct NotchShape: Equatable, Sendable {
 
     private func addOutline(to path: CGMutablePath) {
         let left = body.minX, right = body.maxX, top = body.maxY, bottom = body.minY
-        // Radii never exceed what the body can hold, so a tiny shape stays well formed.
-        let radius = max(0, min(bottomRadius, body.width / 2, body.height / 2))
+        // Corners never exceed what the body can hold, so a tiny shape stays well formed.
+        let radius = max(0, min(bottomRadius * Self.cornerSpan, body.width / 2, body.height / 2))
         let ear = max(0, min(earRadius, body.height - radius))
         let k = Self.kappa
+        let c = Self.cornerControl
         path.move(to: CGPoint(x: left - ear, y: top))
         // Left ear: from the top edge, curving down into the body's side.
         path.addCurve(to: CGPoint(x: left, y: top - ear),
@@ -53,16 +60,22 @@ public struct NotchShape: Equatable, Sendable {
                       control2: CGPoint(x: left, y: top - ear * k))
         path.addLine(to: CGPoint(x: left, y: bottom + radius))
         path.addCurve(to: CGPoint(x: left + radius, y: bottom),
-                      control1: CGPoint(x: left, y: bottom + radius * (1 - k)),
-                      control2: CGPoint(x: left + radius * (1 - k), y: bottom))
+                      control1: CGPoint(x: left, y: bottom + radius * c),
+                      control2: CGPoint(x: left + radius * c, y: bottom))
         path.addLine(to: CGPoint(x: right - radius, y: bottom))
         path.addCurve(to: CGPoint(x: right, y: bottom + radius),
-                      control1: CGPoint(x: right - radius * (1 - k), y: bottom),
-                      control2: CGPoint(x: right, y: bottom + radius * (1 - k)))
+                      control1: CGPoint(x: right - radius * c, y: bottom),
+                      control2: CGPoint(x: right, y: bottom + radius * c))
         path.addLine(to: CGPoint(x: right, y: top - ear))
         path.addCurve(to: CGPoint(x: right + ear, y: top),
                       control1: CGPoint(x: right, y: top - ear * k),
                       control2: CGPoint(x: right + ear * (1 - k), y: top))
+    }
+
+    /// The same outline moved by (dx, dy): for when the window that draws it moves
+    /// but the outline must stay put on screen.
+    public func offsetBy(dx: CGFloat, dy: CGFloat) -> NotchShape {
+        NotchShape(body: body.offsetBy(dx: dx, dy: dy), bottomRadius: bottomRadius, earRadius: earRadius)
     }
 
     /// The camera housing as the overlay's starting point: `notchSize` centered at the

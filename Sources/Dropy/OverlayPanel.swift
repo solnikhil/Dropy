@@ -31,6 +31,10 @@ final class OverlayPanel: NSPanel {
         return panel
     }
 
+    /// This borderless surface intentionally covers the menu-bar band. AppKit
+    /// must not move it down to the display’s visibleFrame during a resize.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
     var onEscape: (() -> Void)?
     /// Interactive preview: returns true when it consumed the key.
     var onKey: ((NSEvent) -> Bool)?

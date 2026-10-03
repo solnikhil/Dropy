@@ -62,7 +62,6 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings = SettingsWindowController(model: SettingsModel(
             preferences: preferences.value, change: { [weak self] edit in self?.change(edit) }))
         settings.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
-        overlay.onPinChange = { [weak self] bundleID in self?.change { $0.pinnedBundleIdentifier = bundleID } }
         NSApp.mainMenu = makeMainMenu()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -162,9 +161,17 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let trigger = NotchTrigger(mode: { [weak self] in self?.preferences.value.trigger ?? .notchHover },
                                    isArmed: { [weak self] in self?.overlay.state == .closed },
-                                   open: { [weak self] in self?.overlay.open() })
+                                   restrictCrossing: { [weak self] in self?.preferences.value.restrictNotchCrossing ?? false },
+                                   open: { [weak self] in
+                                       // A light tap on a Force Touch trackpad as the notch
+                                       // gives way, like the system's own snap feedback.
+                                       NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                                       self?.overlay.open()
+                                   })
+        trigger.onRestrictionStatus = { [weak self] message in self?.settings.model.cursorRestrictionStatus = message }
         trigger.start()
         self.trigger = trigger
+        overlay.onOpen = { [weak trigger] in trigger?.overlayOpened() }
         overlay.onClose = { [weak trigger] in trigger?.overlayClosed() }
         if wantsDockIcon { NSApp.activate(ignoringOtherApps: true) }
         if CommandLine.arguments.contains("--show") {
@@ -395,6 +402,12 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         preferences.update(edit)
         let new = preferences.value
         guard new != old else { return }
+        if new.trigger != old.trigger || new.restrictNotchCrossing != old.restrictNotchCrossing {
+            if new.restrictNotchCrossing, !WindowPlacer.isTrusted {
+                _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+            }
+            trigger?.preferencesChanged()
+        }
         if new.interactivePreview != old.interactivePreview {
             // Input to another app needs Accessibility; ask macOS to show its prompt once.
             if new.interactivePreview, !WindowPlacer.isTrusted {
@@ -402,7 +415,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             overlay.configureInteraction()
         }
-        if new.sizePreset != old.sizePreset || new.contentMode != old.contentMode, overlay.state != .closed {
+        if new.sizePreset != old.sizePreset || new.contentMode != old.contentMode || new.automaticWindowSize != old.automaticWindowSize, overlay.state != .closed {
             overlay.close()
             overlay.open()
         }
@@ -414,7 +427,6 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settings.model.shortcutRejected("Another app already uses \(new.shortcut.display). Choose a different one.")
         }
         if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier {
-            overlay.updatePinButton()
             // An open overlay still choosing a window shows the newly pinned app now.
             if new.pinnedBundleIdentifier != nil, overlay.state == .selecting { overlay.refreshWindows() }
         }

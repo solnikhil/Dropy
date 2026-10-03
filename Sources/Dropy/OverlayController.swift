@@ -4,7 +4,7 @@ import DropyCore
 import ScreenCaptureKit
 
 @MainActor
-final class OverlayController: NSObject {
+final class OverlayController: NSObject, NSMenuDelegate {
     private let preferences: PreferenceStore
     private let inputRouter: InputRouter
     private let capture = CaptureController()
@@ -16,14 +16,18 @@ final class OverlayController: NSObject {
     private var list: NSStackView?
     private var status: NSTextField?
     private var privacyButton: NSButton?
-    private var pinButton: NSButton?
+    private var workspace: OverlayWorkspaceView?
+    private var overlayScreen: NSScreen?
+    private var expandedPreview = false
+    /// Changes with every layout change; a resize finishing later leaves a newer one alone.
+    private var layoutGeneration = UUID()
     /// The black outline that morphs out of the notch, and the content it reveals.
     private var backdrop: MorphBackdropView?
     private var content: NSView?
     /// The camera housing the overlay grows from; nil on a screen without one.
     private var notchSize: CGSize?
-    /// Pins (or with nil, unpins) an app; the app delegate saves it and updates Settings.
-    var onPinChange: ((String?) -> Void)?
+    /// Called when opening so notch affordances release their input ownership.
+    var onOpen: (() -> Void)?
     /// Called whenever the overlay closes, so the notch trigger can stay quiet.
     var onClose: (() -> Void)?
     /// When the opening morph finishes; pointer-leave does not close before then.
@@ -87,14 +91,16 @@ final class OverlayController: NSObject {
                 ?? NSScreen.main else { return }
         generation = UUID()
         overlaySession = UUID()
+        overlayScreen = screen
+        expandedPreview = false
         let full = OverlayGeometry.frame(on: screen.frame,
                                          preferredSize: preferences.value.sizePreset.dimensions)
         // The window is final from the start, with a transparent margin for the ears
         // and the opening overshoot; only the outline inside it moves. Resizing the
         // window itself each frame stuttered.
         let margin = NotchMorph.overshootMargin(for: full.size)
-        let canvas = CGRect(x: full.minX - margin, y: full.minY - margin,
-                            width: full.width + 2 * margin, height: full.height + margin)
+        let canvas = OverlayGeometry.pixelAligned(CGRect(x: full.minX - margin, y: full.minY - margin,
+                            width: full.width + 2 * margin, height: full.height + margin), scale: screen.backingScaleFactor)
         let panel = OverlayPanel.make(contentRect: canvas)
         notchSize = Self.notchSize(on: screen)
         buildContent(in: panel, size: full.size)
@@ -118,6 +124,7 @@ final class OverlayController: NSObject {
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         setState(.selecting)
+        onOpen?()
         refreshWindows()
     }
 
@@ -144,9 +151,16 @@ final class OverlayController: NSObject {
         interactionMessage?.cancel()
         interactionMessage = nil
         privacyButton = nil
-        pinButton = nil
-        renderer?.clear()
+        workspace = nil
+        overlayScreen = nil
+        // The last frame stays on screen while the content fades and the outline
+        // collapses; clearing it at once blanked the preview mid-close.
+        let closingRenderer = renderer
         renderer = nil
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(OverlayMotion.wall(NotchMorph.close.duration)))
+            closingRenderer?.clear()
+        }
         Task { await capture.stop(reason: "closed") }
         // Hand focus back to the app that was in front before the overlay opened.
         if NSApplication.shared.isActive, let previousApplication, !previousApplication.isTerminated {
@@ -181,14 +195,14 @@ final class OverlayController: NSObject {
         } else {
             let duration = backdrop.morph(from: closedShape(in: canvas), to: open, motion: NotchMorph.open,
                                           clipping: content)
-            settlesAt = Date().addingTimeInterval(duration)
+            settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
         }
         OverlayMotion.revealContent(content)
         // Without a notch to grow from, the whole overlay also fades in.
         if notchSize == nil || OverlayMotion.reduced {
             panel.alphaValue = 0
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = OverlayMotion.reduced ? 0.2 : 0.25
+                context.duration = OverlayMotion.wall(OverlayMotion.reduced ? 0.2 : 0.25)
                 panel.animator().alphaValue = 1
             }
         }
@@ -211,15 +225,15 @@ final class OverlayController: NSObject {
         }
         let canvas = backdrop.bounds.size
         OverlayMotion.hideContent(content)
-        // Start from the outline's target shape: the open overlay, even mid-opening.
-        let duration = backdrop.morph(from: backdrop.currentShape ?? .open(body: content.frame),
+        // Start from where the outline is on screen, even mid-opening or mid-resize.
+        let duration = backdrop.morph(from: backdrop.visibleShape ?? .open(body: content.frame),
                                       to: closedShape(in: canvas), motion: NotchMorph.close, clipping: content)
         // The last stretch fades, so the outline melts into the notch; without a notch
         // there is nothing to merge with, so it fades throughout.
         let fadeStart = notchSize == nil ? 0 : duration * 0.55
         OverlayMotion.fadeOut(panel, after: fadeStart, over: duration - fadeStart)
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(duration))
+            try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
             panel.orderOut(nil)
         }
     }
@@ -401,145 +415,191 @@ final class OverlayController: NSObject {
         case .closed: break
         case .selecting:
             status?.stringValue = available.isEmpty
-                ? "No capturable windows. Open an app and refresh."
-                : preferences.value.pinnedBundleIdentifier == nil
-                    ? "Choose a window, then Pin app to show it here every time"
-                    : "Choose a window · live preview only"
+                ? "No open windows. Open an app, then use the window menu."
+                : "Choose a window"
         default:
             status?.stringValue = next.message ?? ""
         }
         privacyButton?.isHidden = next.failure?.opensPrivacySettings != true
-        updatePinButton()
+        // Closing keeps the layout it had: switching to the window list here flashed
+        // the list inside the outline as it collapsed.
+        if next != .closed {
+            workspace?.showsPreview = next.isCapturing
+            status?.isHidden = next == .viewing
+        }
+        workspace?.needsLayout = true
         if !next.isCapturing { configureInteraction() }
     }
 
     private func buildContent(in panel: NSPanel, size: CGSize) {
-        // The root spans the window, ears included; the outline draws the overlay's
-        // shape and the content sits in the body. No masks: masking a layer tree
-        // forced an offscreen pass on every composite.
-        let margin = NotchMorph.overshootMargin(for: size)
-        let root = PointerTrackingView(frame: CGRect(x: 0, y: 0, width: size.width + 2 * margin,
-                                                     height: size.height + margin))
+        let root = PointerTrackingView(frame: CGRect(origin: .zero, size: panel.frame.size))
         root.wantsLayer = true
+        root.layer?.speed = Float(1 / OverlayMotion.slowdown)
         panel.contentView = root
         let backdrop = MorphBackdropView(frame: root.bounds)
         backdrop.autoresizingMask = [.width, .height]
         root.addSubview(backdrop)
         self.backdrop = backdrop
-        let content = NSView(frame: CGRect(x: margin, y: margin, width: size.width, height: size.height))
-        content.wantsLayer = true
-        root.addSubview(content)
-        self.content = content
-
-        let title = NSTextField(labelWithString: "DROPY")
-        title.frame = CGRect(x: 26, y: size.height - 64, width: 220, height: 28)
-        title.font = .boldSystemFont(ofSize: 21)
-        title.textColor = .white
-        content.addSubview(title)
-
-        let subtitle = NSTextField(labelWithString: "Your apps, near the notch")
-        subtitle.frame = CGRect(x: 27, y: size.height - 85, width: 270, height: 18)
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-        content.addSubview(subtitle)
-
-        let close = NSButton(title: "Close", target: self, action: #selector(closeClicked))
-        close.frame = CGRect(x: size.width - 90, y: size.height - 65, width: 66, height: 28)
-        content.addSubview(close)
-
-        let pin = NSButton(title: "Pin app", target: self, action: #selector(pinClicked))
-        pin.frame = CGRect(x: size.width - 196, y: size.height - 65, width: 100, height: 28)
-        pin.toolTip = "Show this app here every time Dropy opens, launching it when needed"
-        content.addSubview(pin)
-        pinButton = pin
-
-        let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshClicked))
-        refresh.frame = CGRect(x: 22, y: size.height - 124, width: 90, height: 27)
-        content.addSubview(refresh)
-
-        let privacy = NSButton(title: "Open Privacy Settings", target: self,
-                               action: #selector(privacyClicked))
-        privacy.frame = CGRect(x: 118, y: size.height - 124, width: 160, height: 27)
-        privacy.isHidden = true
-        content.addSubview(privacy)
-        privacyButton = privacy
-
-        let scroll = NSScrollView(frame: CGRect(x: 18, y: 50,
-                                                width: 252, height: size.height - 185))
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        let stack = NSStackView(frame: CGRect(x: 0, y: 0, width: 230, height: 1))
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 7
-        scroll.documentView = stack
-        content.addSubview(scroll)
-        list = stack
-
-        let previewFrame = CGRect(x: 288, y: 50,
-                                  width: max(100, size.width - 312),
-                                  height: max(100, size.height - 145))
-        let previewShell = NSView(frame: previewFrame)
-        previewShell.wantsLayer = true
-        previewShell.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
-        previewShell.layer?.cornerRadius = 16
-        content.addSubview(previewShell)
+        let workspace = OverlayWorkspaceView(frame: CGRect(x: (root.bounds.width - size.width) / 2,
+            y: root.bounds.height - size.height, width: size.width, height: size.height))
+        root.addSubview(workspace)
+        self.workspace = workspace
+        content = workspace
+        list = workspace.windowList
+        status = workspace.status
+        interactionStatus = workspace.interaction
+        privacyButton = workspace.privacy
+        workspace.privacy.target = self
+        workspace.privacy.action = #selector(privacyClicked)
+        workspace.expand.target = self
+        workspace.expand.action = #selector(expandClicked)
+        workspace.previewRect = WorkspaceLayout.preview(in: size, notch: notchSize ?? CGSize(width: 180, height: 32))
+        workspace.needsLayout = true
+        workspace.layoutSubtreeIfNeeded()
         do {
-            let view = try MetalFrameView.make(frame: previewShell.bounds)
+            let view = try MetalFrameView.make(frame: workspace.previewShell.bounds)
             view.autoresizingMask = [.width, .height]
             view.contentMode = preferences.value.contentMode
-            // Clip the Metal layer itself: it has no sublayers, so rounding it does
-            // not need an offscreen pass the way masking the shell's tree did.
-            view.layer?.cornerRadius = 16
+            view.layer?.cornerRadius = 12
             view.layer?.masksToBounds = true
-            previewShell.addSubview(view)
+            workspace.previewShell.addSubview(view)
             renderer = view
         } catch {
-            let failure = NSTextField(labelWithString: "Metal unavailable: \(error.localizedDescription)")
-            failure.frame = CGRect(x: 15, y: 15, width: previewFrame.width - 30, height: 80)
-            failure.textColor = .systemRed
-            previewShell.addSubview(failure)
+            workspace.status.stringValue = "Metal unavailable: \(error.localizedDescription)"
         }
+        rebuildWindowList()
+        workspace.needsLayout = true
+        workspace.layoutSubtreeIfNeeded()
+    }
 
-        let rowWidth = max(100, size.width - 310)
-        let status = NSTextField(labelWithString: "Finding open windows…")
-        status.frame = CGRect(x: 288, y: 20, width: rowWidth * 0.55, height: 20)
-        status.font = .systemFont(ofSize: 11)
-        status.textColor = .secondaryLabelColor
-        status.lineBreakMode = .byTruncatingTail
-        content.addSubview(status)
-        self.status = status
+    /// Morphs the overlay to the chosen window's size: the outline springs from where
+    /// it is on screen to the new size, the new layout grows into view clipped to it,
+    /// and the panel is resized only twice (to cover both sizes, then to fit), never
+    /// every animation frame. The existing renderer survives, preserving capture
+    /// ownership.
+    private func layoutSelectedWindow() {
+        guard let source = selectedWindowSize, let screen = overlayScreen,
+              let panel, let workspace, let root = panel.contentView else { return }
+        let layout: WorkspaceLayout
+        if preferences.value.automaticWindowSize || expandedPreview {
+            layout = WorkspaceLayout.make(source: source, screen: screen.frame.size,
+                notch: notchSize ?? CGSize(width: 180, height: 32), expanded: expandedPreview,
+                maximumSize: preferences.value.sizePreset.dimensions)
+        } else {
+            let size = OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions).size
+            layout = WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size,
+                notch: notchSize ?? CGSize(width: 180, height: 32)))
+        }
+        guard workspace.frame.size != layout.size || workspace.previewRect != layout.preview else { return }
+        renderer?.prepareForLayoutChange()
+        // Do not leave an old-size animation mask clipping the new viewport.
+        workspace.layer?.mask = nil
+        let generation = UUID()
+        layoutGeneration = generation
+        // Both bodies in screen coordinates, hanging from the top edge, centered.
+        let oldOrigin = panel.frame.origin
+        let oldBody = (backdrop?.visibleShape?.body ?? workspace.frame).offsetBy(dx: oldOrigin.x, dy: oldOrigin.y)
+        let newBody = CGRect(x: screen.frame.midX - layout.size.width / 2, y: screen.frame.maxY - layout.size.height,
+                             width: layout.size.width, height: layout.size.height)
+        // Workspace sizes can be smaller than the general picker minimum.
+        func canvas(around body: CGRect) -> CGRect {
+            let margin = NotchMorph.overshootMargin(for: body.size)
+            return OverlayGeometry.pixelAligned(CGRect(x: body.minX - margin, y: body.minY - margin,
+                          width: body.width + 2 * margin, height: body.height + margin), scale: screen.backingScaleFactor)
+        }
+        let animate = !OverlayMotion.reduced && backdrop?.visibleShape != nil
+        let frame = animate ? canvas(around: oldBody).union(canvas(around: newBody)) : canvas(around: newBody)
+        let startShape = backdrop?.visibleShape?.offsetBy(dx: oldOrigin.x - frame.minX, dy: oldOrigin.y - frame.minY)
+        place(panel: panel, root: root, workspace: workspace, frame: frame, body: newBody, preview: layout.preview)
+        let endShape = NotchShape.open(body: workspace.frame)
+        if animate, let backdrop, let startShape {
+            let duration = backdrop.morph(from: startShape, to: endShape, motion: NotchMorph.resize, clipping: workspace)
+            OverlayMotion.relayoutContent(workspace)
+            settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
+            // Once settled, shrink the panel to fit; nothing moves on screen.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
+                guard let self, self.layoutGeneration == generation, let panel = self.panel,
+                      let root = panel.contentView, let workspace = self.workspace else { return }
+                self.place(panel: panel, root: root, workspace: workspace, frame: canvas(around: newBody),
+                           body: newBody, preview: layout.preview)
+                self.backdrop?.settle(.open(body: workspace.frame))
+            }
+        } else {
+            backdrop?.settle(endShape)
+            settlesAt = Date().addingTimeInterval(DismissBehavior.pointerLeaveGrace)
+        }
+        pendingPointerLeave?.cancel()
+        pendingPointerLeave = nil
+        pointerHasEntered = pointerHasEntered || frame.contains(NSEvent.mouseLocation)
+        if pointerHasEntered, !frame.contains(NSEvent.mouseLocation) { pointerExited() }
+    }
 
-        let interaction = NSTextField(labelWithString: "")
-        interaction.frame = CGRect(x: 288 + rowWidth * 0.55, y: 20, width: rowWidth * 0.45, height: 20)
-        interaction.font = .systemFont(ofSize: 11)
-        interaction.textColor = .secondaryLabelColor
-        interaction.alignment = .right
-        interaction.lineBreakMode = .byTruncatingTail
-        content.addSubview(interaction)
-        interactionStatus = interaction
+    /// Puts the panel at `frame` (screen) with the workspace at `body` (screen).
+    private func place(panel: NSPanel, root: NSView, workspace: OverlayWorkspaceView, frame: CGRect,
+                       body: CGRect, preview: CGRect) {
+        panel.setFrame(frame, display: false)
+        let actual = panel.frame
+        root.frame = CGRect(origin: .zero, size: actual.size)
+        workspace.frame = body.offsetBy(dx: -actual.minX, dy: -actual.minY)
+        workspace.previewRect = preview
+        workspace.needsLayout = true
+        workspace.layoutSubtreeIfNeeded()
+        backdrop?.frame = root.bounds
+    }
+
+    @objc private func expandClicked() {
+        expandedPreview.toggle()
+        layoutSelectedWindow()
+        // The live-window watcher updates capture resolution without restarting it.
+        configureInteraction()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { refreshWindows() }
+
+    @objc private func menuWindowClicked(_ item: NSMenuItem) {
+        guard let identity = item.representedObject as? WindowIdentity,
+              let index = available.firstIndex(where: { $0.identity == identity }) else { return }
+        selectWindow(at: index)
     }
 
     private func rebuildWindowList() {
-        guard let list else { return }
+        guard let list, let workspace else { return }
         for view in list.arrangedSubviews { list.removeArrangedSubview(view); view.removeFromSuperview() }
-        for (index, window) in available.enumerated() {
-            let button = NSButton(title: window.displayName, target: self,
-                                  action: #selector(windowClicked(_:)))
-            button.frame = CGRect(x: 0, y: 0, width: 226, height: 42)
-            button.tag = index
+        let menu = workspace.apps.menu ?? NSMenu()
+        menu.removeAllItems()
+        menu.delegate = self
+        let label = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        label.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "Choose a window")
+        if let selectedIdentity, let icon = NSRunningApplication(processIdentifier: selectedIdentity.processID)?.icon?.copy() as? NSImage {
+            icon.size = CGSize(width: 16, height: 16)
+            label.image = icon
+        }
+        menu.addItem(label)
+        for window in available {
+            let button = WindowChoiceButton(title: window.displayName, target: self, action: #selector(windowClicked))
+            button.frame = CGRect(x: 0, y: 0, width: max(1, workspace.bounds.width - 32), height: 42)
+            button.identity = window.identity
             button.alignment = .left
             button.lineBreakMode = .byTruncatingTail
             list.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 42).isActive = true
+            let item = NSMenuItem(title: window.displayName, action: #selector(menuWindowClicked), keyEquivalent: "")
+            item.target = self
+            item.representedObject = window.identity
+            item.state = selectedIdentity == window.identity ? .on : .off
+            menu.addItem(item)
         }
-        list.frame.size.height = max(CGFloat(available.count) * 49, 1)
+        menu.addItem(.separator())
+        let close = NSMenuItem(title: "Close Dropy", action: #selector(closeClicked), keyEquivalent: "w")
+        close.target = self
+        menu.addItem(close)
+        workspace.apps.menu = menu
+        workspace.needsLayout = true
     }
 
-    /// Development-only stress driver for rapid A/B switching without input automation:
-    /// `DROPY_DEBUG_ALTERNATE=<bundle-id>[,<switches>[,<max-interval-ms>[,close]]]` alternates between
-    /// that app's first two picker windows with random gaps up to the interval, then logs
-    /// the window that should be showing; `close` then closes the overlay after three
-    /// seconds to check that no stream survives. Logs window IDs only.
+    /// Development-only exact-window switching driver; does not send input.
     private func startDebugAlternationIfRequested() {
         guard let spec = ProcessInfo.processInfo.environment["DROPY_DEBUG_ALTERNATE"] else { return }
         let parts = spec.split(separator: ",").map(String.init)
@@ -580,6 +640,7 @@ final class OverlayController: NSObject {
         selectedIdentity = selected.identity
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
+        rebuildWindowList()
         restartedAfterInterruption = false
         if let bundleID = selected.bundleIdentifier {
             preferences.update {
@@ -631,6 +692,8 @@ final class OverlayController: NSObject {
             await fail(unavailable(resolution), request: request)
             return
         }
+        selectedWindowSize = WindowCatalog.presentationFacts(for: window).size
+        layoutSelectedWindow()
         do {
             let started = try await capture.start(window: window, renderer: renderer,
                                                   onUnexpectedStop: onStop)
@@ -645,11 +708,14 @@ final class OverlayController: NSObject {
         }
     }
 
-    /// Minimized, hidden and other-Space windows stop producing frames; say so
-    /// instead of presenting a frozen image as live.
+    /// A window on another display is still available. Report only confirmed
+    /// visibility facts, independently of whether capture can deliver frames.
     private func showVisibility(of window: SCWindow) {
-        selectedWindowSize = window.frame.size
-        setState(window.isOnScreen ? .viewing : .paused(applicationName: selectedApplicationName))
+        let facts = WindowCatalog.presentationFacts(for: window)
+        selectedWindowSize = facts.size
+        layoutSelectedWindow()
+        setState(facts.visibility == .available ? .viewing
+            : .sourceVisibility(applicationName: selectedApplicationName, visibility: facts.visibility))
         configureInteraction()
     }
 
@@ -667,6 +733,8 @@ final class OverlayController: NSObject {
                         await self.fail(self.unavailable(resolution), request: request)
                         return
                     }
+                    self.selectedWindowSize = WindowCatalog.presentationFacts(for: window).size
+                    self.layoutSelectedWindow()
                     try await self.capture.updateWindow(window, renderer: renderer)
                     guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
                     self.showVisibility(of: window)
@@ -803,16 +871,16 @@ final class OverlayController: NSObject {
     /// the source's condition (parked, minimized, other desktop) can change.
     func configureInteraction() {
         guard let renderer else { return }
+        if interactionMessage == nil {
+            interactionStatus?.isHidden = true
+            interactionStatus?.stringValue = ""
+        }
         let enabled = preferences.value.interactivePreview
         let trusted = WindowPlacer.isTrusted
         guard enabled, trusted, state.isCapturing, let identity = selectedIdentity else {
             renderer.onClick = nil
             renderer.onScroll = nil
             renderer.onUnsupported = nil
-            if interactionMessage == nil {
-                interactionStatus?.stringValue = state.isCapturing
-                    ? InteractionLabel.text(for: .viewOnly, enabled: enabled, trusted: trusted) : ""
-            }
             return
         }
         let support = inputRouter.support(for: identity)
@@ -823,11 +891,6 @@ final class OverlayController: NSObject {
             let top = (NSScreen.screens.first?.frame.maxY ?? frame.maxY) - frame.maxY
             NSLog("Dropy input: preview=%.0f,%.0f,%.0f,%.0f support=%@", frame.minX, top, frame.width, frame.height,
                   InteractionLabel.text(for: support, enabled: true, trusted: true))
-        }
-        if interactionMessage == nil {
-            // An app that updated past its evidence says so instead of a generic "untested".
-            let reason = support == .viewOnly ? InteractionLabel.viewOnlyReason(inputRouter.evidenceMatch(for: identity)) : nil
-            interactionStatus?.stringValue = reason ?? InteractionLabel.text(for: support, enabled: true, trusted: true)
         }
         // Each event re-checks that the drawn frame is this selection's window at its
         // current size; the router then confirms that size against the live window.
@@ -904,12 +967,13 @@ final class OverlayController: NSObject {
         }
     }
 
-    /// Shows a short message in place of the interaction label, then restores the label.
+    /// Shows a transient refusal over the preview, then removes it.
     private func flash(_ message: String) {
         // Logged so device checks can confirm every refusal is shown, not silent.
         NSLog("Dropy input: shown=\"%@\"", message)
         interactionMessage?.cancel()
         interactionStatus?.stringValue = message
+        interactionStatus?.isHidden = false
         let work = DispatchWorkItem { [weak self] in
             self?.interactionMessage = nil
             self?.configureInteraction()
@@ -930,20 +994,10 @@ final class OverlayController: NSObject {
     }
 
     @objc private func closeClicked() { close() }
-    @objc private func refreshClicked() { refreshWindows() }
 
-    /// Pins the app being shown, or unpins it when it is already the pinned app.
-    @objc private func pinClicked() {
-        guard let bundleID = selectedIdentity?.bundleIdentifier else { return }
-        onPinChange?(preferences.value.pinnedBundleIdentifier == bundleID ? nil : bundleID)
+    @objc private func windowClicked(_ button: WindowChoiceButton) {
+        guard let identity = button.identity,
+              let index = available.firstIndex(where: { $0.identity == identity }) else { return }
+        selectWindow(at: index)
     }
-
-    /// "Pin app" for the app on show, "Unpin app" once it is the pinned one.
-    func updatePinButton() {
-        guard let pinButton else { return }
-        let bundleID = state.isCapturing ? selectedIdentity?.bundleIdentifier : nil
-        pinButton.isEnabled = bundleID != nil
-        pinButton.title = bundleID != nil && bundleID == preferences.value.pinnedBundleIdentifier ? "Unpin app" : "Pin app"
-    }
-    @objc private func windowClicked(_ button: NSButton) { selectWindow(at: button.tag) }
 }

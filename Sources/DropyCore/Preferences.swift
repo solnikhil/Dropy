@@ -84,6 +84,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var lastUsedBundleIdentifier: String?
     /// Send clicks, scrolling and typing in the preview to the source window, where
     /// verified. Off by default: interaction is a beta that needs Accessibility.
+    public var restrictNotchCrossing: Bool
+    public var automaticWindowSize: Bool
     public var interactivePreview: Bool
     /// Show a Dock icon and Dropy's own menu bar like an ordinary app. Off leaves only
     /// the menu-bar item (the Settings window still brings the Dock icon while open).
@@ -99,9 +101,11 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         openBehavior: OpenBehavior = .picker,
         dismissBehavior: DismissBehavior = .pointerLeave,
         contentMode: ContentMode = .fit,
-        sizePreset: SizePreset = .medium,
+        sizePreset: SizePreset = .compact,
         selectedBundleIdentifier: String? = nil,
         lastUsedBundleIdentifier: String? = nil,
+        restrictNotchCrossing: Bool = false,
+        automaticWindowSize: Bool = true,
         interactivePreview: Bool = false,
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
@@ -114,6 +118,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.sizePreset = sizePreset
         self.selectedBundleIdentifier = selectedBundleIdentifier
         self.lastUsedBundleIdentifier = lastUsedBundleIdentifier
+        self.restrictNotchCrossing = restrictNotchCrossing
+        self.automaticWindowSize = automaticWindowSize
         self.interactivePreview = interactivePreview
         self.showInDock = showInDock
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
@@ -134,7 +140,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
         case selectedBundleIdentifier, lastUsedBundleIdentifier, interactivePreview, showInDock
-        case pinnedBundleIdentifier, shortcut
+        case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize
     }
 
     /// Settings saved before a field existed keep every other choice; a new field takes
@@ -149,6 +155,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         sizePreset = try container.decodeIfPresent(SizePreset.self, forKey: .sizePreset) ?? defaults.sizePreset
         selectedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .selectedBundleIdentifier)
         lastUsedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .lastUsedBundleIdentifier)
+        restrictNotchCrossing = try container.decodeIfPresent(Bool.self, forKey: .restrictNotchCrossing) ?? defaults.restrictNotchCrossing
+        automaticWindowSize = try container.decodeIfPresent(Bool.self, forKey: .automaticWindowSize) ?? defaults.automaticWindowSize
         interactivePreview = try container.decodeIfPresent(Bool.self, forKey: .interactivePreview) ?? defaults.interactivePreview
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)

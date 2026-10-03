@@ -64,6 +64,21 @@ public enum NotchMorph {
     public static let close = Motion(width: MorphSpring(response: 0.4, dampingRatio: 1),
                                      height: MorphSpring(response: 0.3, dampingRatio: 1))
 
+    /// Between two open sizes, as when the window list gives way to the chosen
+    /// window: settled, with barely any overshoot, since the overlay is already open.
+    public static let resize = Motion(width: MorphSpring(response: 0.44, dampingRatio: 0.88),
+                                      height: MorphSpring(response: 0.48, dampingRatio: 0.9))
+
+    /// The frame on screen `elapsed` seconds into a morph: the nearest sample, or the
+    /// end shape once it has settled. Lets an interrupting morph start from where the
+    /// outline actually is instead of jumping to the previous target.
+    public static func shape(in frames: [NotchShape], duration: TimeInterval, at elapsed: TimeInterval) -> NotchShape? {
+        guard let last = frames.last else { return nil }
+        guard duration > 0, elapsed < duration, frames.count > 1 else { return last }
+        let index = Int((max(0, elapsed) / duration * Double(frames.count - 1)).rounded())
+        return frames[min(index, frames.count - 1)]
+    }
+
     /// The outline part way: width (and the ears) at `widthProgress`, height (and the
     /// lower corners) at `heightProgress`. It stays centered and hangs from the top
     /// edge; progress past 1 is the spring's overshoot.

@@ -12,7 +12,15 @@ Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app 
 - The capture stream stops when the overlay closes. The source app continues running.
 - A selected window is rechecked by process, launch time, bundle and window ID while the overlay is open. Closing it clears the preview; resizing it updates capture dimensions.
 
-The preview says what it can do: "View only", or "Interactive (beta)" with the verified input kinds; unverified input is refused with a reason. Direct and last-used opening match a saved *app* and choose one of its current windows; they do not yet remember a particular document window. Dropy does not yet launch an app that is closed, pin installed apps, or select a crop region. Esc, the shortcut, click-outside and pointer-leave dismissal are checked with real input by `Scripts/dismissal-checks.sh`. Input is refused whenever the drawn frame cannot be tied to the selected window at its current size, for example during a resize or right after switching windows. The [compatibility matrix](docs/COMPATIBILITY.md) lists exactly what is verified.
+The preview stays free of a persistent capability footer; attempted unverified input is refused with a transient reason. Direct and last-used opening match a saved *app* and choose one of its current windows; they do not yet remember a particular document window. Dropy does not yet launch an app that is closed, pin installed apps, or select a crop region. Esc, the shortcut, click-outside and pointer-leave dismissal are checked with real input by `Scripts/dismissal-checks.sh`. Input is refused whenever the drawn frame cannot be tied to the selected window at its current size, for example during a resize or right after switching windows. The [compatibility matrix](docs/COMPATIBILITY.md) lists exactly what is verified.
+
+## Notch and window-first UI (local changes, 2026-10-03)
+
+The reachable base and both shoulders open Dropy by click or settled hover. A selected window now occupies the preview body, with app/window switching beside the housing and an expand control opposite it. Pinning remains in Settings; the persistent Pin app and Refresh buttons are removed. The window menu refreshes the catalog when opened.
+
+**Fit the window within the selected size** preserves small source windows at native point size below the housing and scales larger windows down to the selected Compact/Medium/Wide budget. Compact is the default. Use Fit to show the whole source; Expand uses more of the display. The source app's title bar remains part of its captured window.
+
+**Experimental → Restrict sideways movement across the notch** is off by default, requires Accessibility, and releases while the overlay is open. Hold Option to bypass it, or move below the notch. It is compiled and covered by policy tests; its effect on native cursor jumps has not yet been checked on hardware. See the [implementation record](docs/design/2026-10-03-implementation.md).
 
 ## Build and run
 

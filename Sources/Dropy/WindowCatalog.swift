@@ -27,6 +27,30 @@ enum WindowResolution {
 }
 
 enum WindowCatalog {
+    struct PresentationFacts {
+        let size: CGSize
+        let visibility: SourceVisibility
+    }
+
+    /// Fresh metadata for this exact owner/window. Reads geometry only: no capture,
+    /// focus changes, permissions prompt or source-window mutation.
+    static func presentationFacts(for window: SCWindow) -> PresentationFacts {
+        let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, window.windowID) as? [[String: Any]])?
+            .first { row in
+                (row[kCGWindowNumber as String] as? UInt32) == window.windowID &&
+                (row[kCGWindowOwnerPID as String] as? Int32) == window.owningApplication?.processID
+            }
+        let bounds = (info?[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
+        let validBounds = bounds.flatMap { rect -> CGSize? in
+            guard rect.width.isFinite, rect.height.isFinite, rect.width > 0, rect.height > 0 else { return nil }
+            return rect.size
+        }
+        let hidden = window.owningApplication.flatMap { NSRunningApplication(processIdentifier: $0.processID) }?.isHidden ?? false
+        return PresentationFacts(size: validBounds ?? window.frame.size,
+            visibility: SourceVisibility.resolve(appHidden: hidden,
+                serverOnScreen: info?[kCGWindowIsOnscreen as String] as? Bool, captureOnScreen: window.isOnScreen))
+    }
+
     /// Resolve against a fresh system snapshot, including untitled and small
     /// windows that are omitted from the picker. Never fall back to a title or
     /// bundle-ID match: either can select the wrong document after relaunch.

@@ -252,6 +252,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     /// A changed viewport must reach the screen before input uses its mapping.
+    func prepareForLayoutChange() { invalidatePresentedMapping() }
+
     private func invalidatePresentedMapping() {
         visibilityGeneration = UUID()
         presentedGeometry = nil

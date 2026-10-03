@@ -2,6 +2,16 @@ import Foundation
 import CoreGraphics
 
 public enum OverlayGeometry {
+    /// Expand to device-pixel boundaries so the window does not round an intended
+    /// screen-edge anchor differently from the layer coordinates inside it.
+    public static func pixelAligned(_ rect: CGRect, scale: CGFloat) -> CGRect {
+        let density = max(1, scale)
+        let x = floor(rect.minX * density) / density
+        let y = floor(rect.minY * density) / density
+        return CGRect(x: x, y: y, width: ceil(rect.maxX * density) / density - x,
+                      height: ceil(rect.maxY * density) / density - y)
+    }
+
     /// AppKit screen coordinates are bottom-origin. The overlay stays flush with the screen top.
     public static func frame(on screen: CGRect, preferredSize: CGSize) -> CGRect {
         let width = min(max(preferredSize.width, 320), screen.width)
@@ -10,18 +20,6 @@ public enum OverlayGeometry {
                       y: screen.maxY - height,
                       width: width,
                       height: height)
-    }
-
-    /// macOS keeps the pointer out of the camera housing: pushed up there, it stops
-    /// just below the notch. The trigger covers that strip, so the notch can be
-    /// reached at all. It does not reach beside the notch: sweeping along the menu
-    /// bar makes the pointer jump across the notch and land there, which opened the
-    /// overlay by accident.
-    public static let notchReachBelow: CGFloat = 6
-
-    public static func notchReach(_ notch: CGRect) -> CGRect {
-        CGRect(x: notch.minX, y: notch.minY - notchReachBelow,
-               width: notch.width, height: notch.height + notchReachBelow)
     }
 
     public static func notchTrigger(on screen: CGRect, notchWidth: CGFloat,

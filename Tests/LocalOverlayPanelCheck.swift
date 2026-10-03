@@ -12,6 +12,9 @@ struct OverlayPanelChecks {
         precondition(panel.canBecomeKey && panel.level == .statusBar)
         precondition(panel.collectionBehavior.contains(.canJoinAllSpaces))
 
+        let topFrame = CGRect(x: 100, y: 900, width: 600, height: 212)
+        precondition(panel.constrainFrameRect(topFrame, to: NSScreen.main) == topFrame,
+                     "the menu-bar overlay must retain its top alignment")
         let root = PointerTrackingView(frame: CGRect(x: 0, y: 0, width: 300, height: 200))
         var entered = 0, exited = 0
         root.onEntered = { entered += 1 }

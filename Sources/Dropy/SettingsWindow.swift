@@ -14,6 +14,7 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var loginItemError: String?
     /// False when another app owns the saved shortcut, so it does nothing.
     @Published var shortcutRegistered = true
+    @Published var cursorRestrictionStatus = "Off"
     @Published private(set) var isRecordingShortcut = false
     @Published private(set) var shortcutProblem: String?
     private var shortcutRecorder: Any?
@@ -192,6 +193,7 @@ struct SettingsView: View {
     @ObservedObject var model: SettingsModel
 
     var body: some View {
+        ScrollView {
         Form {
             Section {
                 HStack(spacing: 12) {
@@ -220,7 +222,7 @@ struct SettingsView: View {
             } header: {
                 Text("App in the notch")
             } footer: {
-                Text("View only for now: clicks and typing in the overlay come later.")
+                Text("Input support depends on the selected app and window.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -265,6 +267,9 @@ struct SettingsView: View {
             }
 
             Section("Overlay") {
+                Toggle("Fit the window within the selected size", isOn: model.binding(\.automaticWindowSize))
+                Text("Small windows keep their native size. Larger windows scale down to Compact, Medium or Wide. Use Expand for more room.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Size", selection: model.binding(\.sizePreset)) {
                     Text("Compact").tag(SizePreset.compact)
                     Text("Medium").tag(SizePreset.medium)
@@ -281,6 +286,15 @@ struct SettingsView: View {
                     Text("Interactive preview (beta)")
                     Text("Sends clicks, scrolling and typing to the source window, only for input verified on that app.")
                 }
+            }
+
+            Section("Experimental") {
+                Toggle("Restrict sideways movement across the notch", isOn: model.binding(\.restrictNotchCrossing))
+                if model.preferences.restrictNotchCrossing {
+                    Text(model.cursorRestrictionStatus).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Stops the pointer at the shoulder while Dropy is closed. Requires Accessibility. Hold Option to bypass; moving below the notch is always allowed. Off by default; device validation pending.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("App") {
@@ -308,7 +322,7 @@ struct SettingsView: View {
             Section("Permissions") {
                 PermissionRow(title: "Screen Recording", detail: "Shows the window you pick.",
                               granted: model.screenRecordingGranted, action: model.openScreenRecordingSettings)
-                PermissionRow(title: "Accessibility", detail: "Needed for interactive preview.",
+                PermissionRow(title: "Accessibility", detail: "Needed for interactive preview and the experimental cursor restriction.",
                               granted: model.accessibilityGranted, action: model.openAccessibilitySettings)
                 if !model.screenRecordingGranted {
                     HStack {
@@ -321,8 +335,9 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: 480, height: 560)
     }
 }
 
@@ -381,6 +396,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("DropySettings")
+        window.setContentSize(CGSize(width: 480, height: 560))
         window.delegate = self
         return window
     }

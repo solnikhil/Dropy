@@ -11,6 +11,15 @@ final class MorphBackdropView: NSView {
     private let hairline = CAShapeLayer()
     /// The outline as last set; a morph sets its end shape here at once.
     private(set) var currentShape: NotchShape?
+    /// The morph in progress, to tell where the outline is on screen right now.
+    private var active: (frames: [NotchShape], duration: TimeInterval, startedAt: CFTimeInterval)?
+
+    /// The outline as drawn at this moment: part way through a morph, or settled.
+    var visibleShape: NotchShape? {
+        guard let active else { return currentShape }
+        let elapsed = (CACurrentMediaTime() - active.startedAt) / OverlayMotion.slowdown
+        return NotchMorph.shape(in: active.frames, duration: active.duration, at: elapsed) ?? currentShape
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -46,6 +55,13 @@ final class MorphBackdropView: NSView {
         CATransaction.commit()
     }
 
+    func settle(_ shape: NotchShape) {
+        active = nil
+        fill.removeAllAnimations()
+        hairline.removeAllAnimations()
+        set(shape)
+    }
+
     /// Moves the outline from `start` to `end` along precomputed spring frames and
     /// returns how long that takes. The model value is the end shape, so the outline
     /// stays there afterwards.
@@ -58,6 +74,7 @@ final class MorphBackdropView: NSView {
                clipping content: NSView? = nil) -> TimeInterval {
         let frames = NotchMorph.frames(from: start, to: end, motion: motion)
         set(end)
+        active = (frames.shapes, frames.duration, CACurrentMediaTime())
         func keyframes(_ path: (NotchShape) -> CGPath?) -> CAKeyframeAnimation {
             let animation = CAKeyframeAnimation(keyPath: "path")
             animation.values = frames.shapes.compactMap(path)
@@ -84,7 +101,7 @@ final class MorphBackdropView: NSView {
         contentLayer.mask = mask
         let duration = frames.duration
         Task { @MainActor [weak contentLayer] in
-            try? await Task.sleep(for: .seconds(duration))
+            try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
             // A later morph may have put its own clip in place; leave that one.
             if contentLayer?.mask === mask { contentLayer?.mask = nil }
         }
@@ -109,8 +126,23 @@ enum OverlayMotion {
     static let settleCurve = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
     static let leaveCurve = CAMediaTimingFunction(controlPoints: 0.3, 0, 0.8, 0.15)
 
+    /// Content lower in the overlay arrives later, up to this much, so it reads as
+    /// falling out of the notch: header first, then the list, then the preview.
+    static let staggerSpan: TimeInterval = 0.1
+    /// Each piece of content drifts down into place from this far above.
+    static let staggerDrift: CGFloat = 10
+
     /// System setting "Reduce motion": cross-fade instead of morphing.
     static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    /// Development: `DROPY_MOTION_SLOWDOWN=<n>` plays the overlay's motion n times
+    /// slower, to judge it frame by frame. The overlay's root layer runs at 1/n speed;
+    /// timers that end the motion wait n times longer (`wall`).
+    static let slowdown: Double = ProcessInfo.processInfo.environment["DROPY_MOTION_SLOWDOWN"]
+        .flatMap(Double.init).map { min(max($0, 1), 20) } ?? 1
+
+    /// A motion duration in wall-clock seconds.
+    static func wall(_ duration: TimeInterval) -> TimeInterval { duration * slowdown }
 
     /// Brings the content in: focus, scale and opacity together, from the top center.
     static func revealContent(_ view: NSView) {
@@ -129,10 +161,35 @@ enum OverlayMotion {
             }
         }
         run(animations, on: layer, begin: begin, duration: duration, key: "reveal")
+        if !reduced { stagger(view.subviews, in: view.bounds, begin: begin, duration: duration) }
         // The filter renders offscreen; it goes as soon as the content is in focus.
+        let remaining = begin - layer.convertTime(CACurrentMediaTime(), from: nil) + duration + staggerSpan
         Task { @MainActor [weak view] in
-            try? await Task.sleep(for: .seconds(begin - layer.convertTime(CACurrentMediaTime(), from: nil) + duration))
+            try? await Task.sleep(for: .seconds(wall(remaining)))
             view?.layer?.filters = nil
+        }
+    }
+
+    /// After a resize: the new layout fades up inside the moving outline, without the
+    /// blur and scale of opening, since the overlay is already open.
+    static func relayoutContent(_ view: NSView) {
+        guard let layer = view.layer else { return }
+        let begin = layer.convertTime(CACurrentMediaTime(), from: nil) + 0.04
+        run([basic("opacity", from: 0, to: 1, duration: 0.26, curve: CAMediaTimingFunction(name: .easeOut))],
+            on: layer, begin: begin, duration: 0.26, key: "relayout")
+    }
+
+    /// Each piece fades in and drifts down into place, later the lower it sits.
+    private static func stagger(_ views: [NSView], in bounds: CGRect, begin: CFTimeInterval, duration: TimeInterval) {
+        for view in views {
+            guard let layer = view.layer, bounds.height > 0 else { continue }
+            let depth = Double(max(0, min(1, (bounds.maxY - view.frame.maxY) / bounds.height)))
+            let animations = [
+                basic("opacity", from: 0, to: 1, duration: duration * 0.7, curve: CAMediaTimingFunction(name: .easeOut)),
+                basic("transform", from: CATransform3DMakeTranslation(0, staggerDrift, 0), to: CATransform3DIdentity,
+                      duration: duration, curve: settleCurve),
+            ]
+            run(animations, on: layer, begin: begin + depth * staggerSpan, duration: duration, key: "reveal")
         }
     }
 
@@ -158,9 +215,9 @@ enum OverlayMotion {
     /// notch (or, without one, into the menu bar) instead of vanishing on a frame.
     static func fadeOut(_ window: NSWindow, after delay: TimeInterval, over duration: TimeInterval) {
         Task { @MainActor [weak window] in
-            try? await Task.sleep(for: .seconds(delay))
+            try? await Task.sleep(for: .seconds(wall(delay)))
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = duration
+                context.duration = wall(duration)
                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 window?.animator().alphaValue = 0
             }, completionHandler: nil)
@@ -195,7 +252,7 @@ enum OverlayMotion {
         group.beginTime = begin
         group.duration = duration
         group.fillMode = .both
-        group.isRemovedOnCompletion = key == "reveal"
+        group.isRemovedOnCompletion = key != "hide"
         layer.add(group, forKey: key)
     }
 

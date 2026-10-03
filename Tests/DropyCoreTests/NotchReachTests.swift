@@ -6,18 +6,18 @@ final class NotchReachTests: XCTestCase {
     private let notch = CGRect(x: 751, y: 1074.5, width: 208, height: 37.5)
 
     func testPointerHeldBelowTheNotchIsInside() {
-        let reach = OverlayGeometry.notchReach(notch)
+        let reach = NotchActivation(housing: notch)
         // Pushed up, the pointer stops at the notch's lower edge, not inside it.
-        XCTAssertTrue(reach.contains(CGPoint(x: 855, y: 1074)))
-        XCTAssertTrue(reach.contains(CGPoint(x: 855, y: 1070)))
-        XCTAssertTrue(reach.contains(CGPoint(x: 855, y: 1100)))
+        XCTAssertEqual(reach.region(at: CGPoint(x: 855, y: 1074)), .base)
+        XCTAssertEqual(reach.region(at: CGPoint(x: 855, y: 1070)), .base)
+        XCTAssertNil(reach.region(at: CGPoint(x: 855, y: 1100)))
     }
 
     func testReachStaysNearTheNotch() {
-        let reach = OverlayGeometry.notchReach(notch)
-        XCTAssertFalse(reach.contains(CGPoint(x: 855, y: 1060)))
-        XCTAssertFalse(reach.contains(CGPoint(x: 700, y: 1100)))
-        XCTAssertFalse(reach.contains(CGPoint(x: 1000, y: 1100)))
+        let reach = NotchActivation(housing: notch)
+        XCTAssertNil(reach.region(at: CGPoint(x: 855, y: 1060)))
+        XCTAssertNil(reach.region(at: CGPoint(x: 700, y: 1100)))
+        XCTAssertNil(reach.region(at: CGPoint(x: 1000, y: 1100)))
     }
 
     func testDefaultShortcutAvoidsDockHidingAndOldSettingsMoveToIt() throws {

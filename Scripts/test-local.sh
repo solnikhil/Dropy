@@ -83,6 +83,12 @@ swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
   "$repo_dir/Tests/LocalOverlayPanelCheck.swift" "$repo_dir/Sources/Dropy/OverlayPanel.swift"
 "$build_dir/OverlayPanelChecks"
 
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/WorkspaceChecks" \
+  "$repo_dir/Tests/LocalWorkspaceCheck.swift" "$repo_dir/Sources/Dropy/OverlayWorkspaceView.swift"
+"$build_dir/WorkspaceChecks"
+
+
 # Compile the fixture-only router checks in CI; execution requires a real device session.
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/DeviceInputRouterChecks" \

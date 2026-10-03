@@ -44,4 +44,19 @@ final class NotchMorphTests: XCTestCase {
         let widthDone = (open.body.width - early.body.width) / (open.body.width - notch.body.width)
         XCTAssertTrue(heightDone > widthDone)
     }
+
+    func testAnInterruptedMorphStartsFromWhereTheOutlineIs() {
+        let frames = NotchMorph.frames(from: notch, to: open, motion: NotchMorph.open)
+        XCTAssertEqual(NotchMorph.shape(in: frames.shapes, duration: frames.duration, at: 0), notch)
+        XCTAssertEqual(NotchMorph.shape(in: frames.shapes, duration: frames.duration, at: frames.duration + 1), open)
+        let middle = NotchMorph.shape(in: frames.shapes, duration: frames.duration, at: frames.duration / 4)
+        XCTAssertNotNil(middle)
+        XCTAssertTrue((middle?.body.width ?? 0) > notch.body.width && (middle?.body.width ?? .infinity) < open.body.width * 1.03)
+    }
+
+    func testResizingBetweenOpenSizesBarelyOvershoots() {
+        let peak = stride(from: 0.0, to: 1.5, by: 0.005).map(NotchMorph.resize.height.value).max() ?? 0
+        XCTAssertTrue(peak < 1.005)
+        XCTAssertEqual(open.offsetBy(dx: 5, dy: -3).body, open.body.offsetBy(dx: 5, dy: -3))
+    }
 }

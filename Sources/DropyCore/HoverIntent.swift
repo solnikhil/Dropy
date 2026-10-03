@@ -3,10 +3,9 @@ import Foundation
 
 /// Tells a deliberate hover at the notch from the pointer passing by.
 ///
-/// A person who wants the overlay pushes the pointer up under the notch and leaves it
-/// there; a pointer on its way somewhere else crosses the zone sideways. The hover
-/// opens only if, after the delay, the pointer is still in the zone and has not
-/// travelled far sideways since it entered.
+/// The base and both shoulders use the same dwell and drift limits.
+/// NotchHoverSession restarts intent when the pointer changes regions or moves
+/// beyond the drift limit, so resting after movement can still open the overlay.
 public enum HoverIntent {
     /// How long the pointer rests before the overlay opens.
     public static let delay: TimeInterval = 0.22
@@ -16,7 +15,4 @@ public enum HoverIntent {
     /// the zone, so a close cannot turn straight into another opening.
     public static let rearmDelay: TimeInterval = 0.4
 
-    public static func confirms(enteredAt entry: CGPoint, now point: CGPoint, zone: CGRect) -> Bool {
-        zone.contains(point) && abs(point.x - entry.x) <= maxDrift
-    }
 }
