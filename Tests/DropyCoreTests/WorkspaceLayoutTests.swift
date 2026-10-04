@@ -50,6 +50,15 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(layout.size.width >= notch.width + 80)
         XCTAssertEqual(layout.preview.height, 300)
     }
+    func testTrueSizeKeepsWindowsLargerThanEveryPreset() throws {
+        let source = CGSize(width: 1300, height: 760)
+        let layout = WorkspaceLayout.make(source: source, screen: screen, notch: notch, expanded: false,
+                                          maximumSize: SizePreset.trueSize.maximumSize)
+        XCTAssertEqual(layout.preview.size, source)
+        XCTAssertEqual(SizePreset.trueSize.title, "True size")
+        let saved = try JSONEncoder().encode(SizePreset.trueSize)
+        XCTAssertEqual(try JSONDecoder().decode(SizePreset.self, from: saved), .trueSize)
+    }
     func testNewSettingsMigrateAndPersist() throws {
         let old = try JSONDecoder().decode(DropyPreferences.self, from: Data(#"{"trigger":"notchClick","contentMode":"fill"}"#.utf8))
         XCTAssertFalse(old.restrictNotchCrossing)

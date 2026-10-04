@@ -481,10 +481,11 @@ final class OverlayController: NSObject, NSMenuDelegate {
         guard let source = selectedWindowSize, let screen = overlayScreen,
               let panel, let workspace, let root = panel.contentView else { return }
         let layout: WorkspaceLayout
-        if preferences.value.automaticWindowSize || expandedPreview {
+        let preset = preferences.value.sizePreset
+        if preferences.value.automaticWindowSize || preset == .trueSize || expandedPreview {
             layout = WorkspaceLayout.make(source: source, screen: screen.frame.size,
                 notch: notchSize ?? CGSize(width: 180, height: 32), expanded: expandedPreview,
-                maximumSize: preferences.value.sizePreset.dimensions)
+                maximumSize: preset.maximumSize)
         } else {
             let size = OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions).size
             layout = WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size,

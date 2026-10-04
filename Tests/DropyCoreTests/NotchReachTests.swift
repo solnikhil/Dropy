@@ -5,12 +5,13 @@ final class NotchReachTests: XCTestCase {
     /// The 14-inch MacBook Pro notch measured on 2026-10-02: x 751–959, 37.5 points tall.
     private let notch = CGRect(x: 751, y: 1074.5, width: 208, height: 37.5)
 
-    func testPointerHeldBelowTheNotchIsInside() {
+    func testPointerPushedUpAtTheNotchIsInside() {
         let reach = NotchActivation(housing: notch)
-        // Pushed up, the pointer stops at the notch's lower edge, not inside it.
+        // Held at the lower edge or slid under the camera, either way it counts.
         XCTAssertEqual(reach.region(at: CGPoint(x: 855, y: 1074)), .base)
         XCTAssertEqual(reach.region(at: CGPoint(x: 855, y: 1070)), .base)
-        XCTAssertNil(reach.region(at: CGPoint(x: 855, y: 1100)))
+        XCTAssertEqual(reach.region(at: CGPoint(x: 855, y: 1100)), .base)
+        XCTAssertEqual(reach.region(at: CGPoint(x: 855, y: 1112)), .base)
     }
 
     func testReachStaysNearTheNotch() {

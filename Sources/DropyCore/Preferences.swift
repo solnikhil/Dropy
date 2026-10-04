@@ -30,14 +30,23 @@ public enum SizePreset: String, Codable, CaseIterable, Sendable {
     case compact
     case medium
     case wide
+    /// The chosen window at its own size, scaled down only if it would not fit the screen.
+    case trueSize
 
+    /// The overlay's size while choosing a window, and for a preset the most a
+    /// chosen window may take.
     public var dimensions: CGSize {
         switch self {
         case .compact: CGSize(width: 600, height: 360)
-        case .medium: CGSize(width: 900, height: 540)
+        case .medium, .trueSize: CGSize(width: 900, height: 540)
         case .wide: CGSize(width: 1200, height: 700)
         }
     }
+
+    /// The most a chosen window may take; nil leaves only the screen as the limit.
+    public var maximumSize: CGSize? { self == .trueSize ? nil : dimensions }
+
+    public var title: String { self == .trueSize ? "True size" : rawValue.capitalized }
 }
 
 /// A system-wide shortcut as Carbon registers it: a virtual key code and a Carbon

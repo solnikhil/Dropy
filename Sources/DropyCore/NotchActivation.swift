@@ -7,7 +7,7 @@ public struct NotchActivation: Equatable, Sendable {
     public let housing: CGRect
     public static let reach: CGFloat = 12
     public init(housing: CGRect) { self.housing = housing }
-    /// AppKit's bottom-origin coordinates. The housing itself is never a target.
+    /// AppKit's bottom-origin coordinates.
     public func frame(for region: Region) -> CGRect {
         let r = Self.reach
         switch region {
@@ -16,18 +16,21 @@ public struct NotchActivation: Equatable, Sendable {
         case .right: return CGRect(x: housing.maxX, y: housing.minY - r, width: r, height: housing.height + r)
         }
     }
-    /// One continuous tracking surface includes the camera's unreachable interior
-    /// so its lower boundary is inside the tracking window, not a window seam.
+    /// The base, the housing and both shoulders as one continuous surface.
     public var trackingFrame: CGRect {
         CGRect(x: housing.minX - Self.reach, y: housing.minY - Self.reach,
                width: housing.width + 2 * Self.reach, height: housing.height + Self.reach)
     }
+    /// The housing counts as the base: whether macOS lets the pointer slide under the
+    /// camera or holds it at the lower edge, pushing straight up must open. Every
+    /// edge is inclusive, so the screen's top row and the housing's lower edge count.
     public func region(at point: CGPoint) -> Region? {
-        // The camera interior stays excluded, but its reachable lower edge belongs
-        // to the base. CGRect.contains alone excludes that maximum-y boundary.
-        if point.x >= housing.minX, point.x < housing.maxX,
-           point.y >= housing.minY - Self.reach, point.y <= housing.minY { return .base }
-        return [.left, .right].first { frame(for: $0).contains(point) }
+        let r = Self.reach
+        guard point.y >= housing.minY - r, point.y <= housing.maxY else { return nil }
+        if point.x >= housing.minX, point.x <= housing.maxX { return .base }
+        if point.x >= housing.minX - r, point.x < housing.minX { return .left }
+        if point.x > housing.maxX, point.x <= housing.maxX + r { return .right }
+        return nil
     }
 }
 
@@ -53,7 +56,9 @@ public struct NotchHoverSession: Sendable {
             region = next; anchor = point; deadline = quietUntil + HoverIntent.delay
             return false
         }
-        if next != region || abs(point.x - anchor.x) > HoverIntent.maxDrift || abs(point.y - anchor.y) > HoverIntent.maxDrift {
+        // Only real travel restarts intent. Moving between base and shoulder near a
+        // corner is still resting; a pass across the notch exceeds the drift limit.
+        if region == nil || abs(point.x - anchor.x) > HoverIntent.maxDrift || abs(point.y - anchor.y) > HoverIntent.maxDrift {
             region = next; anchor = point; deadline = time + HoverIntent.delay
             return false
         }

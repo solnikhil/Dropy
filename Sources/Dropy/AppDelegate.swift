@@ -107,7 +107,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         choiceMenus.append((dismissals, { $0.dismissBehavior.rawValue }))
         let sizes = NSMenu(title: "Overlay size")
         for preset in SizePreset.allCases {
-            let entry = NSMenuItem(title: preset.rawValue.capitalized,
+            let entry = NSMenuItem(title: preset.title,
                                    action: #selector(changeSize(_:)), keyEquivalent: "")
             entry.representedObject = preset.rawValue
             entry.state = preferences.value.sizePreset == preset ? .on : .off

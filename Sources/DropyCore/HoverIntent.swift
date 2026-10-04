@@ -4,7 +4,7 @@ import Foundation
 /// Tells a deliberate hover at the notch from the pointer passing by.
 ///
 /// The base and both shoulders use the same dwell and drift limits.
-/// NotchHoverSession restarts intent when the pointer changes regions or moves
+/// NotchHoverSession restarts intent when the pointer leaves the zone or moves
 /// beyond the drift limit, so resting after movement can still open the overlay.
 public enum HoverIntent {
     /// How long the pointer rests before the overlay opens.

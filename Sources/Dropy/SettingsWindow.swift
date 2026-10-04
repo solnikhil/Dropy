@@ -268,12 +268,13 @@ struct SettingsView: View {
 
             Section("Overlay") {
                 Toggle("Fit the window within the selected size", isOn: model.binding(\.automaticWindowSize))
-                Text("Small windows keep their native size. Larger windows scale down to Compact, Medium or Wide. Use Expand for more room.")
+                Text("Small windows keep their native size. Larger windows scale down to Compact, Medium or Wide. True size always shows the window at its own size, shrinking it only to fit the screen. Use Expand for more room.")
                     .font(.caption).foregroundStyle(.secondary)
                 Picker("Size", selection: model.binding(\.sizePreset)) {
                     Text("Compact").tag(SizePreset.compact)
                     Text("Medium").tag(SizePreset.medium)
                     Text("Wide").tag(SizePreset.wide)
+                    Text("True size").tag(SizePreset.trueSize)
                 }
                 .pickerStyle(.segmented)
                 Picker("Content", selection: model.binding(\.contentMode)) {
