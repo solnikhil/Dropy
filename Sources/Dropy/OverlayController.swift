@@ -35,6 +35,8 @@ final class OverlayController: NSObject, NSMenuDelegate {
     private var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
     private var selectedIdentity: WindowIdentity?
+    /// The window-list row Return opens; the first row until the arrows move it.
+    private var highlightedIdentity: WindowIdentity?
     /// Key composition state (a pending dead key); reset whenever the target window is.
     private var keyInput = PreviewKeyInput()
     private var selectedApplicationName = ""
@@ -136,6 +138,7 @@ final class OverlayController: NSObject, NSMenuDelegate {
         if let selectedIdentity { inputRouter.forget(selectedIdentity) }
         keyInput = PreviewKeyInput()
         selectedIdentity = nil
+        highlightedIdentity = nil
         selectedWindowSize = nil
         identityTask?.cancel()
         identityTask = nil
@@ -482,7 +485,7 @@ final class OverlayController: NSObject, NSMenuDelegate {
               let panel, let workspace, let root = panel.contentView else { return }
         let layout: WorkspaceLayout
         let preset = preferences.value.sizePreset
-        if preferences.value.automaticWindowSize || preset == .trueSize || expandedPreview {
+        if preferences.value.automaticWindowSize || preset == .nativeSize || expandedPreview {
             layout = WorkspaceLayout.make(source: source, screen: screen.frame.size,
                 notch: notchSize ?? CGSize(width: 180, height: 32), expanded: expandedPreview,
                 maximumSize: preset.maximumSize)
@@ -598,6 +601,7 @@ final class OverlayController: NSObject, NSMenuDelegate {
         menu.addItem(close)
         workspace.apps.menu = menu
         workspace.needsLayout = true
+        applyHighlight()
     }
 
     /// Development-only exact-window switching driver; does not send input.
@@ -934,6 +938,9 @@ final class OverlayController: NSObject, NSMenuDelegate {
     /// Typing in the preview: committed characters only. Shortcuts, editing keys and
     /// input methods are refused and labelled rather than approximated.
     private func handleKey(_ event: NSEvent) -> Bool {
+        if state == .selecting {
+            return handlePickerKey(event)
+        }
         guard preferences.value.interactivePreview, WindowPlacer.isTrusted, state.isCapturing,
               let identity = selectedIdentity else { return false }
         switch keyInput.classify(characters: event.characters,
@@ -945,6 +952,39 @@ final class OverlayController: NSObject, NSMenuDelegate {
         case .unsupportedKey: flash("This key is not supported in the preview yet")
         }
         return true
+    }
+
+    /// The window list from the keyboard: arrows, Return, 1–9.
+    private func handlePickerKey(_ event: NSEvent) -> Bool {
+        guard !available.isEmpty,
+              let key = PickerKey(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers,
+                                  commandControlOrOption: !event.modifierFlags.intersection([.command, .control, .option]).isEmpty)
+        else { return false }
+        let current = available.firstIndex { $0.identity == highlightedIdentity }
+        switch key {
+        case .move(let step):
+            guard let next = PickerKey.highlight(current, moving: step, count: available.count) else { return true }
+            highlightedIdentity = available[next].identity
+            applyHighlight(scrolling: true)
+        case .choose:
+            selectWindow(at: current ?? 0)
+        case .row(let index):
+            guard available.indices.contains(index) else { return true }
+            selectWindow(at: index)
+        }
+        return true
+    }
+
+    /// Tints the highlighted row (the first when none is) and keeps it in view.
+    private func applyHighlight(scrolling: Bool = false) {
+        guard let list else { return }
+        let rows = list.arrangedSubviews.compactMap { $0 as? WindowChoiceButton }
+        if !rows.contains(where: { $0.identity == highlightedIdentity }) { highlightedIdentity = rows.first?.identity }
+        for row in rows {
+            let highlighted = row.identity == highlightedIdentity
+            row.bezelColor = highlighted ? .controlAccentColor : nil
+            if highlighted, scrolling { row.scrollToVisible(row.bounds) }
+        }
     }
 
     /// True when the current keyboard input source composes text (e.g. Japanese, Chinese).

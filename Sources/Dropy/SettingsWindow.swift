@@ -17,7 +17,17 @@ final class SettingsModel: ObservableObject {
     @Published var cursorRestrictionStatus = "Off"
     @Published private(set) var isRecordingShortcut = false
     @Published private(set) var shortcutProblem: String?
+    @Published var isChoosingApp = false
+    @Published private(set) var catalog: [CatalogApp] = []
+    @Published private(set) var isLoadingApps = false
+    @Published private(set) var supportSummaryCopied = false
+    /// Search in the settings sidebar. Held here because the local swiftc build
+    /// does not load SwiftUI's State macro.
+    @Published var settingsQuery = ""
+    @Published var chooserQuery = ""
+    @Published var chooserSelection: String?
     private var shortcutRecorder: Any?
+    private var catalogGeneration = 0
     private let change: (_ edit: (inout DropyPreferences) -> Void) -> Void
 
     init(preferences: DropyPreferences,
@@ -151,11 +161,142 @@ final class SettingsModel: ObservableObject {
     /// was removed keeps its identifier as the name, so the person sees what is pinned.
     var pinnedApp: (name: String, icon: NSImage?)? {
         guard let bundleID = preferences.pinnedBundleIdentifier else { return nil }
+        return (appName(bundleID), icon(for: bundleID))
+    }
+
+    /// Finder's name for an app, or its identifier when it is gone.
+    func appName(_ bundleID: String) -> String {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            return ("\(bundleID) (not installed)", nil)
+            return "\(bundleID) (not installed)"
         }
         let name = FileManager.default.displayName(atPath: url.path)
-        return (name.hasSuffix(".app") ? String(name.dropLast(4)) : name, NSWorkspace.shared.icon(forFile: url.path))
+        return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
+    }
+
+    func icon(for bundleID: String) -> NSImage? {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
+
+    var versionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        return "Version \(version) (\(build))"
+    }
+
+    /// Opens the installed-app list. Scanning stays off the first drawing turn so the
+    /// sheet can appear before hundreds of bundles are read.
+    func prepareAppList() {
+        stopRecordingShortcut()
+        chooserQuery = ""
+        chooserSelection = nil
+        isChoosingApp = true
+        isLoadingApps = true
+        catalog = []
+        catalogGeneration += 1
+        let generation = catalogGeneration
+        let running: [KnownApp] = NSWorkspace.shared.runningApplications.compactMap { app in
+            guard app.activationPolicy == .regular,
+                  let bundleIdentifier = app.bundleIdentifier,
+                  let path = app.bundleURL?.path else { return nil }
+            return KnownApp(bundleIdentifier: bundleIdentifier, path: path)
+        }
+        Task { @MainActor in
+            let apps = await Task.detached { AppCatalog.load(running: running) }.value
+            guard generation == self.catalogGeneration else { return }
+            self.catalog = apps
+            self.isLoadingApps = false
+        }
+    }
+
+    /// The sheet's Other… button. The open panel waits until the sheet is gone.
+    func chooseOtherApp() {
+        isChoosingApp = false
+        Task { @MainActor in self.choosePinnedApp() }
+    }
+
+    func pin(_ bundleIdentifier: String) {
+        isChoosingApp = false
+        change { $0.pinnedBundleIdentifier = bundleIdentifier }
+    }
+
+    func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: NSAttributedString(string: "Your apps, near the notch.\nFree and MIT-licensed."),
+        ])
+    }
+
+    func openProjectPage() {
+        if let url = URL(string: "https://github.com/solnikhil/Dropy") { NSWorkspace.shared.open(url) }
+    }
+
+    func revealInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: Bundle.main.bundlePath)])
+    }
+
+    /// Restores every saved choice. Open at login is a system registration, not one of
+    /// those choices, so it is left alone.
+    func confirmReset() {
+        guard let window = NSApp.keyWindow
+            ?? NSApp.windows.first(where: { $0.title == "Settings" && $0.isVisible }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Reset settings to defaults?"
+        alert.informativeText = "Opening, the overlay, interaction, the Dock and the shortcut go back to their defaults, and the pinned app is removed. Open at login stays as it is."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            Task { @MainActor in
+                self?.shortcutProblem = nil
+                self?.supportSummaryCopied = false
+                self?.change { $0 = DropyPreferences() }
+            }
+        }
+    }
+
+    /// Version, permissions and choices. No window titles and no preview contents.
+    var supportSummary: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let pin = preferences.pinnedBundleIdentifier.map(appName) ?? "none"
+        return """
+        Dropy \(version) (\(build))
+        macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)
+        Screen Recording: \(screenRecordingGranted ? "allowed" : "not allowed")
+        Accessibility: \(accessibilityGranted ? "allowed" : "not allowed")
+        Open at login: \(loginItemPhrase)
+        Show in Dock: \(preferences.showInDock ? "on" : "off")
+        Pinned app: \(pin)
+        Open behavior: \(preferences.openBehavior.rawValue)
+        Dismiss: \(preferences.dismissBehavior.rawValue)
+        Size: \(preferences.sizePreset.rawValue)
+        Content: \(preferences.contentMode.rawValue)
+        Fit within size: \(preferences.automaticWindowSize ? "on" : "off")
+        Interactive preview: \(preferences.interactivePreview ? "on" : "off")
+        Notch crossing restriction: \(preferences.restrictNotchCrossing ? "on" : "off")
+        Notch trigger saved: \(preferences.trigger.rawValue)
+        Notch trigger in effect: \(preferences.trigger.effective.rawValue)
+        Shortcut: \(preferences.shortcut.display)\(shortcutRegistered ? "" : " (not registered)")
+        Installed in Applications: \(isInstalled ? "yes" : "no")
+        """
+    }
+
+    func copySupportSummary() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(supportSummary, forType: .string)
+        supportSummaryCopied = true
+    }
+
+    private var loginItemPhrase: String {
+        switch loginItemStatus {
+        case .enabled: "on"
+        case .requiresApproval: "waiting for approval"
+        case .notFound: "registered copy missing"
+        case .notRegistered: "off"
+        @unknown default: "unknown"
+        }
     }
 
     func choosePinnedApp() {
@@ -189,180 +330,66 @@ final class SettingsModel: ObservableObject {
     }
 }
 
-struct SettingsView: View {
-    @ObservedObject var model: SettingsModel
-
-    var body: some View {
-        ScrollView {
-        Form {
-            Section {
-                HStack(spacing: 12) {
-                    if let pinned = model.pinnedApp {
-                        if let icon = pinned.icon {
-                            Image(nsImage: icon).resizable().frame(width: 36, height: 36)
-                        }
-                        VStack(alignment: .leading) {
-                            Text(pinned.name)
-                            Text("Opens in the overlay every time, launched if needed.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Change…", action: model.choosePinnedApp)
-                        Button("Remove", action: model.unpin)
-                    } else {
-                        VStack(alignment: .leading) {
-                            Text("No app pinned")
-                            Text("Pin an app to see it whenever the overlay opens.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Choose App…", action: model.choosePinnedApp)
-                    }
-                }
-            } header: {
-                Text("App in the notch")
-            } footer: {
-                Text("Input support depends on the selected app and window.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section("Opening") {
-                Picker("Open from the notch", selection: model.binding(\.trigger)) {
-                    Text("On hover").tag(Trigger.notchHover)
-                    Text("On click").tag(Trigger.notchClick)
-                    Text("Never (shortcut only)").tag(Trigger.shortcut)
-                }
-                LabeledContent("Keyboard shortcut") {
-                    HStack {
-                        if model.isRecordingShortcut {
-                            Text("Press the new shortcut…").foregroundStyle(.secondary)
-                            Button("Cancel", action: model.stopRecordingShortcut)
-                        } else {
-                            Text(model.preferences.shortcut.display)
-                                .foregroundStyle(model.shortcutRegistered ? .primary : .secondary)
-                            if model.preferences.shortcut != .default {
-                                Button("Reset", action: model.resetShortcut)
-                            }
-                            Button("Change…", action: model.recordShortcut)
-                        }
-                    }
-                }
-                if let problem = model.shortcutProblem {
-                    Text(problem).font(.caption).foregroundStyle(.red)
-                } else if !model.shortcutRegistered {
-                    Text("Another app uses \(model.preferences.shortcut.display), so it does nothing. Choose a different one.")
-                        .font(.caption).foregroundStyle(.red)
-                }
-                Picker("Without a pinned app, show", selection: model.binding(\.openBehavior)) {
-                    Text("The window picker").tag(OpenBehavior.picker)
-                    Text("The saved app").tag(OpenBehavior.direct)
-                    Text("The last used app").tag(OpenBehavior.lastUsed)
-                }
-                .disabled(model.preferences.pinnedBundleIdentifier != nil)
-                Picker("Close the overlay", selection: model.binding(\.dismissBehavior)) {
-                    Text("With Esc or the Close button").tag(DismissBehavior.manual)
-                    Text("When I click outside it").tag(DismissBehavior.clickOutside)
-                    Text("When the pointer leaves it").tag(DismissBehavior.pointerLeave)
-                }
-            }
-
-            Section("Overlay") {
-                Toggle("Fit the window within the selected size", isOn: model.binding(\.automaticWindowSize))
-                Text("Small windows keep their native size. Larger windows scale down to Compact, Medium or Wide. True size always shows the window at its own size, shrinking it only to fit the screen. Use Expand for more room.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker("Size", selection: model.binding(\.sizePreset)) {
-                    Text("Compact").tag(SizePreset.compact)
-                    Text("Medium").tag(SizePreset.medium)
-                    Text("Wide").tag(SizePreset.wide)
-                    Text("True size").tag(SizePreset.trueSize)
-                }
-                .pickerStyle(.segmented)
-                Picker("Content", selection: model.binding(\.contentMode)) {
-                    Text("Fit").tag(DropyCore.ContentMode.fit)
-                    Text("Fill").tag(DropyCore.ContentMode.fill)
-                    Text("Native scale").tag(DropyCore.ContentMode.nativeScale)
-                }
-                .pickerStyle(.segmented)
-                Toggle(isOn: model.binding(\.interactivePreview)) {
-                    Text("Interactive preview (beta)")
-                    Text("Sends clicks, scrolling and typing to the source window, only for input verified on that app.")
-                }
-            }
-
-            Section("Experimental") {
-                Toggle("Restrict sideways movement across the notch", isOn: model.binding(\.restrictNotchCrossing))
-                if model.preferences.restrictNotchCrossing {
-                    Text(model.cursorRestrictionStatus).font(.caption).foregroundStyle(.secondary)
-                }
-                Text("Stops the pointer at the shoulder while Dropy is closed. Requires Accessibility. Hold Option to bypass; moving below the notch is always allowed. Off by default; device validation pending.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section("App") {
-                Toggle(isOn: model.binding(\.showInDock)) {
-                    Text("Show in Dock")
-                    Text("When off, Dropy lives only in the menu bar.")
-                }
-                Toggle("Open at login", isOn: model.opensAtLogin)
-                if model.loginItemStatus == .requiresApproval {
-                    HStack {
-                        Text("Allow Dropy in Login Items to finish.").foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
-                    }
-                }
-                if !model.isInstalled {
-                    Text("This copy runs from a build folder. Run Scripts/install.sh to put Dropy in Applications before turning on Open at login.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if let error = model.loginItemError {
-                    Text(error).font(.caption).foregroundStyle(.red)
-                }
-            }
-
-            Section("Permissions") {
-                PermissionRow(title: "Screen Recording", detail: "Shows the window you pick.",
-                              granted: model.screenRecordingGranted, action: model.openScreenRecordingSettings)
-                PermissionRow(title: "Accessibility", detail: "Needed for interactive preview and the experimental cursor restriction.",
-                              granted: model.accessibilityGranted, action: model.openAccessibilitySettings)
-                if !model.screenRecordingGranted {
-                    HStack {
-                        Text("Switched Dropy on already? macOS applies it after Dropy reopens.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Relaunch Dropy", action: model.relaunch)
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(width: 480, height: 560)
-    }
+/// An app Dropy can pin. `running` is filled in from the apps that were open when the list was built.
+struct KnownApp: Sendable, Hashable {
+    var bundleIdentifier: String
+    var path: String
 }
 
-private struct PermissionRow: View {
-    let title: String
-    let detail: String
-    let granted: Bool
-    let action: () -> Void
+struct CatalogApp: Identifiable, Hashable, Sendable {
+    var bundleIdentifier: String
+    var name: String
+    var path: String
+    var running: Bool
+    var id: String { bundleIdentifier }
+}
 
-    var body: some View {
-        HStack {
-            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle")
-                .foregroundStyle(granted ? .green : .orange)
-            VStack(alignment: .leading) {
-                Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if granted {
-                Text("Allowed").foregroundStyle(.secondary)
+enum AppCatalog {
+    /// Applications, the home Applications folder, and system apps, one folder deeper
+    /// so Utilities and similar groups are included. Dropy itself is left out.
+    nonisolated static func load(running: [KnownApp]) -> [CatalogApp] {
+        var urls: [URL] = []
+        for root in roots { scan(root, into: &urls, depth: 0) }
+        var byID: [String: CatalogApp] = [:]
+        for url in urls { insert(url, running: false, into: &byID) }
+        for app in running {
+            if var existing = byID[app.bundleIdentifier] {
+                existing.running = true
+                existing.path = app.path
+                byID[app.bundleIdentifier] = existing
             } else {
-                Button("Allow…", action: action)
+                insert(URL(fileURLWithPath: app.path), running: true, into: &byID, overrideID: app.bundleIdentifier)
             }
         }
+        return byID.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private nonisolated static var roots: [URL] {
+        [
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true),
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications", isDirectory: true),
+        ]
+    }
+
+    private nonisolated static func scan(_ directory: URL, into found: inout [URL], depth: Int) {
+        guard depth < 2,
+              let items = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
+        for item in items {
+            if item.pathExtension.caseInsensitiveCompare("app") == .orderedSame { found.append(item) }
+            else if depth == 0 { scan(item, into: &found, depth: 1) }
+        }
+    }
+
+    private nonisolated static func insert(_ url: URL, running: Bool, into byID: inout [String: CatalogApp],
+                                           overrideID: String? = nil) {
+        let identifier = overrideID ?? Bundle(url: url)?.bundleIdentifier
+        guard let identifier, identifier != "org.dropy.app", byID[identifier] == nil else { return }
+        let raw = FileManager.default.displayName(atPath: url.path)
+        let name = raw.hasSuffix(".app") ? String(raw.dropLast(4)) : raw
+        guard !name.isEmpty else { return }
+        byID[identifier] = CatalogApp(bundleIdentifier: identifier, name: name, path: url.path, running: running)
     }
 }
 
@@ -382,10 +409,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     var isVisible: Bool { window?.isVisible ?? false }
 
     func show() {
+        let saved = UserDefaults.standard.string(forKey: "NSWindow Frame DropySettings2") != nil
+        let created = window == nil
         let window = self.window ?? makeWindow()
         self.window = window
         model.refresh()
-        if !window.isVisible { window.center() }
+        if created, !saved { window.center() }
         window.makeKeyAndOrderFront(nil)
         onVisibilityChange?()
         NSApp.activate(ignoringOtherApps: true)
@@ -393,11 +422,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
-        window.title = "Dropy Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.title = "Settings"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("DropySettings")
-        window.setContentSize(CGSize(width: 480, height: 560))
+        window.toolbarStyle = .unified
+        window.setContentSize(CGSize(width: 860, height: 600))
+        window.contentMinSize = CGSize(width: 760, height: 520)
+        // A new name so a window saved at the old fixed size does not come back cramped.
+        window.setFrameAutosaveName("DropySettings2")
         window.delegate = self
         return window
     }

@@ -78,13 +78,15 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .notchClick: "Click"
             case .shortcut: "Shortcut only"
             }
-            let entry = NSMenuItem(title: title,
-                                   action: #selector(changeTrigger(_:)), keyEquivalent: "")
+            // Without an action the menu shows the choice greyed out while paused.
+            let entry = NSMenuItem(title: title, action: Trigger.notchPaused ? nil : #selector(changeTrigger(_:)),
+                                   keyEquivalent: "")
             entry.representedObject = trigger.rawValue
             entry.state = preferences.value.trigger == trigger ? .on : .off
             triggers.addItem(entry)
         }
-        let triggerItem = NSMenuItem(title: "Notch trigger", action: nil, keyEquivalent: "")
+        let triggerItem = NSMenuItem(title: Trigger.notchPaused ? "Notch trigger (paused)" : "Notch trigger",
+                                     action: nil, keyEquivalent: "")
         triggerItem.submenu = triggers
         menu.addItem(triggerItem)
         choiceMenus.append((triggers, { $0.trigger.rawValue }))
@@ -159,7 +161,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = item
         registerShortcut()
 
-        let trigger = NotchTrigger(mode: { [weak self] in self?.preferences.value.trigger ?? .notchHover },
+        let trigger = NotchTrigger(mode: { [weak self] in self?.preferences.value.trigger.effective ?? .shortcut },
                                    isArmed: { [weak self] in self?.overlay.state == .closed },
                                    restrictCrossing: { [weak self] in self?.preferences.value.restrictNotchCrossing ?? false },
                                    open: { [weak self] in

@@ -50,14 +50,16 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(layout.size.width >= notch.width + 80)
         XCTAssertEqual(layout.preview.height, 300)
     }
-    func testTrueSizeKeepsWindowsLargerThanEveryPreset() throws {
+    func testNativeSizeKeepsWindowsLargerThanEveryPreset() throws {
         let source = CGSize(width: 1300, height: 760)
         let layout = WorkspaceLayout.make(source: source, screen: screen, notch: notch, expanded: false,
-                                          maximumSize: SizePreset.trueSize.maximumSize)
+                                          maximumSize: SizePreset.nativeSize.maximumSize)
         XCTAssertEqual(layout.preview.size, source)
-        XCTAssertEqual(SizePreset.trueSize.title, "True size")
-        let saved = try JSONEncoder().encode(SizePreset.trueSize)
-        XCTAssertEqual(try JSONDecoder().decode(SizePreset.self, from: saved), .trueSize)
+        XCTAssertEqual(SizePreset.nativeSize.title, "Native size")
+        let saved = try JSONEncoder().encode(SizePreset.nativeSize)
+        XCTAssertEqual(try JSONDecoder().decode(SizePreset.self, from: saved), .nativeSize)
+        let renamed = Data(#"{"sizePreset":"trueSize"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(DropyPreferences.self, from: renamed).sizePreset, .nativeSize)
     }
     func testNewSettingsMigrateAndPersist() throws {
         let old = try JSONDecoder().decode(DropyPreferences.self, from: Data(#"{"trigger":"notchClick","contentMode":"fill"}"#.utf8))
