@@ -30,6 +30,17 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         }
     }
 
+    var subtitle: String {
+        switch self {
+        case .general: "A little closer to everything you do."
+        case .opening: "Your favorite windows, one shortcut away."
+        case .overlay: "Make room for the way you work."
+        case .interaction: "Choose how you work inside a preview."
+        case .permissions: "You’re in control of what Dropy can access."
+        case .advanced: "Support, diagnostics, and a fresh start."
+        }
+    }
+
     var tint: Color {
         switch self {
         case .general: Color(nsColor: .systemGray)
@@ -56,19 +67,19 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "login", pane: .general, title: "Open at login",
                       detail: "Start Dropy when you log in.",
                       keywords: "login items startup launch"),
-        SettingsTopic(id: "about", pane: .general, title: "About and location",
+        SettingsTopic(id: "about", pane: .general, title: "About Dropy",
                       detail: "Version, the project page, and this copy in Finder.",
                       keywords: "version mit license finder applications install"),
-        SettingsTopic(id: "pin", pane: .opening, title: "App in the notch",
+        SettingsTopic(id: "pin", pane: .opening, title: "Pinned app",
                       detail: "The app every opening shows, launched if it is not running.",
                       keywords: "pin pinned choose application favorite"),
         SettingsTopic(id: "trigger", pane: .opening, title: "Open from the notch",
                       detail: "Hover, click, or the shortcut only. Notch opening is paused.",
                       keywords: "hover click notch trigger"),
-        SettingsTopic(id: "shortcut", pane: .opening, title: "Keyboard shortcut",
+        SettingsTopic(id: "shortcut", pane: .opening, title: "Open Dropy shortcut",
                       detail: "Opens and closes the overlay from anywhere.",
                       keywords: "hotkey shortcut keys option space"),
-        SettingsTopic(id: "behavior", pane: .opening, title: "What opens",
+        SettingsTopic(id: "behavior", pane: .opening, title: "Show on opening",
                       detail: "The window picker, the saved app, or the last used app.",
                       keywords: "picker direct last used window"),
         SettingsTopic(id: "dismiss", pane: .opening, title: "Close the overlay",
@@ -77,10 +88,10 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "size", pane: .overlay, title: "Size",
                       detail: "Compact, Medium, Wide, or the window's own size.",
                       keywords: "compact medium wide true size dimensions expand"),
-        SettingsTopic(id: "fit", pane: .overlay, title: "Fit within the selected size",
+        SettingsTopic(id: "fit", pane: .overlay, title: "Adapt to the window",
                       detail: "Small windows keep their size. Larger ones scale down.",
                       keywords: "automatic scale native shrink"),
-        SettingsTopic(id: "content", pane: .overlay, title: "Content",
+        SettingsTopic(id: "content", pane: .overlay, title: "Content scaling",
                       detail: "Fit, Fill, or native size.",
                       keywords: "fit fill crop scale letterbox"),
         SettingsTopic(id: "interactive", pane: .interaction, title: "Interactive preview",
@@ -123,42 +134,34 @@ struct SettingsView: View {
         }
     }
 
-    private var paneSelection: Binding<SettingsPane?> {
-        Binding(get: { pane }, set: { new in
-            // Setting the same pane again would wipe a search that only refreshed the list.
-            guard let new, new.rawValue != paneRaw else { return }
-            paneRaw = new.rawValue
-        })
+    private var paneSelection: Binding<SettingsPane> {
+        Binding(get: { pane }, set: { paneRaw = $0.rawValue })
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: paneSelection) {
-                ForEach(SettingsPane.allCases) { item in
-                    HStack(spacing: 8) {
-                        SettingsIcon(symbol: item.symbol, tint: item.tint)
-                        Text(item.title)
-                    }
-                    .tag(item)
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 188, ideal: 208, max: 240)
-        } detail: {
+        HStack(spacing: 0) {
+            SettingsSidebar(selection: paneSelection, model: model)
+                .frame(width: 220)
+
             Group {
                 if trimmedQuery.isEmpty {
-                    paneBody
+                    paneBody.id(pane)
                 } else {
                     searchResults
                 }
             }
-            .navigationTitle(trimmedQuery.isEmpty ? pane.title : "Search")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .modifier(SettingsGlassSurface())
+            .padding(.trailing, 10)
+            .padding(.vertical, 8)
         }
-        .searchable(text: Binding(get: { model.settingsQuery }, set: { model.settingsQuery = $0 }),
-                    placement: .sidebar, prompt: "Search")
+        .ignoresSafeArea(.container, edges: .top)
         .onAppear {
             if SettingsPane(rawValue: paneRaw) == nil { paneRaw = SettingsPane.general.rawValue }
+        }
+        .onChange(of: model.settingsQuery) { _, query in
+            if !query.isEmpty { model.stopRecordingShortcut() }
         }
         .onChange(of: paneRaw) { _, new in
             model.settingsQuery = ""
@@ -186,21 +189,34 @@ struct SettingsView: View {
             if matches.isEmpty {
                 ContentUnavailableView.search(text: trimmedQuery)
             } else {
-                List(matches) { topic in
-                    Button {
-                        if paneRaw == topic.pane.rawValue { model.settingsQuery = "" }
-                        else { paneRaw = topic.pane.rawValue }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(topic.title)
-                            Text(topic.detail).font(.caption).foregroundStyle(.secondary)
-                            Text(topic.pane.title).font(.caption).foregroundStyle(.tertiary)
+                Form {
+                    ForEach(SettingsPane.allCases) { resultPane in
+                        let topics = matches.filter { $0.pane == resultPane }
+                        if !topics.isEmpty {
+                            Section(resultPane.title) {
+                                ForEach(topics) { topic in
+                                    Button {
+                                        paneRaw = topic.pane.rawValue
+                                        model.settingsQuery = ""
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            SettingsIcon(symbol: topic.pane.symbol, tint: topic.pane.tint)
+                                            SettingsLabel(topic.title, detail: topic.detail)
+                                            Spacer(minLength: 12)
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                                        }
+                                        .padding(.vertical, 4)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                 }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
             }
         }
     }
@@ -208,52 +224,46 @@ struct SettingsView: View {
     // MARK: General
 
     private var general: some View {
-        Form {
+        SettingsPage(pane: .general) {
             Section {
-                HStack(spacing: 14) {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable()
-                        .frame(width: 64, height: 64)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Dropy").font(.title2.bold())
-                        Text(model.versionText).foregroundStyle(.secondary)
-                        Text("Free and MIT-licensed.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 12)
-                    VStack(alignment: .trailing, spacing: 6) {
-                        Button("About", action: model.showAbout)
-                        Button("Project Page", action: model.openProjectPage)
-                    }
-                }
-            } footer: {
-                Text("The diamond stays in the menu bar. Settings is under that menu, and under ⌘,.")
-            }
-
-            Section("Startup") {
                 Toggle(isOn: model.binding(\.showInDock)) {
-                    Text("Show in Dock")
-                    Text("Off leaves Dropy in the menu bar only. This window still shows a Dock icon while it is open, so Command-Tab can find it.")
+                    SettingsLabel("Show in Dock", detail: "Keep Dropy in the Dock and the app switcher.")
                 }
-                Toggle("Open at login", isOn: model.opensAtLogin)
+                .accessibilityLabel("Show in Dock")
+                .accessibilityHint("Keep Dropy in the Dock and the app switcher.")
+                Toggle(isOn: model.opensAtLogin) {
+                    SettingsLabel("Open at login", detail: "Have Dropy ready when you start your Mac.")
+                }
+                .accessibilityLabel("Open at login")
                 loginStatus
+            } header: {
+                Text("Startup & visibility")
+            } footer: {
+                Text("Dropy is always available in the menu bar. While Settings is open, it also appears in the Dock.")
             }
 
-            Section("This copy") {
+            Section("About Dropy") {
+                LabeledContent("Version", value: model.versionText.replacingOccurrences(of: "Version ", with: ""))
                 LabeledContent("Location") {
-                    HStack {
-                        Text(model.isInstalled ? "Applications" : "Build folder")
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Text(model.isInstalled ? "Applications" : "Development build").foregroundStyle(.secondary)
                         Button("Show in Finder", action: model.revealInFinder)
                     }
                 }
-                if !model.isInstalled {
-                    Text("This copy runs from a build folder and is replaced on the next build. Run Scripts/install.sh before turning on Open at login.")
-                        .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    SettingsLabel("Made for your Mac", detail: "Free, open source, and MIT-licensed.")
+                    Spacer()
+                    Button("Project Page", action: model.openProjectPage)
+                    Button("About Dropy", action: model.showAbout)
+                }
+            }
+            if !model.isInstalled {
+                Section {
+                    SettingsNotice(symbol: "app.badge", title: "Running a development copy",
+                                   detail: "Move Dropy to Applications before enabling Open at login.")
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
     @ViewBuilder private var loginStatus: some View {
@@ -275,16 +285,54 @@ struct SettingsView: View {
     // MARK: Opening
 
     private var opening: some View {
-        Form {
+        SettingsPage(pane: .opening) {
+            Section {
+                shortcutRow
+            } header: {
+                Text("Keyboard shortcut")
+            } footer: {
+                Text("Open or close Dropy from any app. Use a combination that includes ⌘, ⌃, or ⌥.")
+            }
+
             Section {
                 pinnedRow
             } header: {
-                Text("App in the notch")
+                Text("Pinned app")
             } footer: {
-                Text("Every opening shows this app, and launches it when it is not running. Input still depends on the app and its version.")
+                Text("A pinned app opens every time. Dropy launches it for you when needed.")
             }
 
-            Section("How it opens") {
+            Section {
+                Picker("Show on opening", selection: model.binding(\.openBehavior)) {
+                    Text("Window picker").tag(OpenBehavior.picker)
+                    Text("Saved app").tag(OpenBehavior.direct)
+                    Text("Last used app").tag(OpenBehavior.lastUsed)
+                }
+                .disabled(model.preferences.pinnedBundleIdentifier != nil)
+                if model.preferences.openBehavior == .direct {
+                    LabeledContent("Saved app", value: model.preferences.selectedBundleIdentifier.map(model.appName) ?? "Choose a window to save an app")
+                } else if model.preferences.openBehavior == .lastUsed {
+                    LabeledContent("Last used app", value: model.preferences.lastUsedBundleIdentifier.map(model.appName) ?? "None yet")
+                }
+            } header: {
+                Text("Window selection")
+            } footer: {
+                Text(openDetail)
+            }
+
+            Section {
+                Picker("Close the overlay", selection: model.binding(\.dismissBehavior)) {
+                    Text("Manually").tag(DismissBehavior.manual)
+                    Text("On click outside").tag(DismissBehavior.clickOutside)
+                    Text("When the pointer leaves").tag(DismissBehavior.pointerLeave)
+                }
+            } header: {
+                Text("Closing")
+            } footer: {
+                Text(dismissDetail)
+            }
+
+            Section {
                 Picker("Open from the notch", selection: model.binding(\.trigger)) {
                     Text("On hover").tag(Trigger.notchHover)
                     Text("On click").tag(Trigger.notchClick)
@@ -292,34 +340,13 @@ struct SettingsView: View {
                 }
                 .disabled(Trigger.notchPaused)
                 if Trigger.notchPaused {
-                    Text("Opening from the notch is paused. Use the shortcut. Your saved choice, \(triggerName), is kept for when this pause ends.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    SettingsNotice(symbol: "pause.circle", title: "Notch opening is temporarily unavailable",
+                                   detail: "Use your keyboard shortcut. Your preference, “\(triggerName),” is saved.")
                 }
-                shortcutRow
-                Picker("Without a pinned app, show", selection: model.binding(\.openBehavior)) {
-                    Text("The window picker").tag(OpenBehavior.picker)
-                    Text("The saved app").tag(OpenBehavior.direct)
-                    Text("The last used app").tag(OpenBehavior.lastUsed)
-                }
-                .disabled(model.preferences.pinnedBundleIdentifier != nil)
-                Text(openDetail).font(.caption).foregroundStyle(.secondary)
-                LabeledContent("Saved app") {
-                    Text(model.preferences.selectedBundleIdentifier.map(model.appName) ?? "None yet")
-                        .foregroundStyle(.secondary)
-                }
-                LabeledContent("Last used") {
-                    Text(model.preferences.lastUsedBundleIdentifier.map(model.appName) ?? "None yet")
-                        .foregroundStyle(.secondary)
-                }
-                Picker("Close the overlay", selection: model.binding(\.dismissBehavior)) {
-                    Text("With Esc or the Close button").tag(DismissBehavior.manual)
-                    Text("When I click outside it").tag(DismissBehavior.clickOutside)
-                    Text("When the pointer leaves it").tag(DismissBehavior.pointerLeave)
-                }
-                Text(dismissDetail).font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Notch activation")
             }
         }
-        .formStyle(.grouped)
     }
 
     private var pinnedRow: some View {
@@ -330,7 +357,7 @@ struct SettingsView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(pinned.name).font(.headline)
-                    Text("Opens in the overlay every time.").font(.caption).foregroundStyle(.secondary)
+                    Text("Your go-to app, always within reach.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
                 Button("Change…", action: model.prepareAppList)
@@ -342,8 +369,8 @@ struct SettingsView: View {
                     .frame(width: 48, height: 48)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("No app pinned").font(.headline)
-                    Text("Pin one to skip the window picker.").font(.caption).foregroundStyle(.secondary)
+                    Text("Choose your go-to app").font(.headline)
+                    Text("Open straight into an app you use often.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
                 Button("Choose App…", action: model.prepareAppList)
@@ -353,7 +380,7 @@ struct SettingsView: View {
 
     private var shortcutRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            LabeledContent("Keyboard shortcut") {
+            LabeledContent("Open Dropy") {
                 HStack(spacing: 8) {
                     if model.isRecordingShortcut {
                         Text("Press the new shortcut…").foregroundStyle(.secondary)
@@ -368,8 +395,6 @@ struct SettingsView: View {
                     }
                 }
             }
-            Text("Needs ⌘, ⌃ or ⌥, so a key you type is not taken over. Esc cancels a change.")
-                .font(.caption).foregroundStyle(.secondary)
             if let problem = model.shortcutProblem {
                 Text(problem).font(.caption).foregroundStyle(.red)
             } else if !model.shortcutRegistered {
@@ -412,84 +437,61 @@ struct SettingsView: View {
     // MARK: Overlay
 
     private var overlay: some View {
-        Form {
+        SettingsPage(pane: .overlay) {
             Section {
-                Toggle("Fit the window within the selected size", isOn: model.binding(\.automaticWindowSize))
-                Text("Small windows keep their native size. Larger windows scale down to Compact, Medium or Wide. Native size always shows the window at its own size, shrinking it only to fit the screen. Use Expand for more room.")
-                    .font(.caption).foregroundStyle(.secondary)
-                ForEach(SizePreset.allCases, id: \.self) { preset in
-                    sizeRow(preset)
+                OverlaySizePreview(preset: model.preferences.sizePreset)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                Picker("Overlay size", selection: model.binding(\.sizePreset)) {
+                    ForEach(SizePreset.allCases, id: \.self) { preset in
+                        Text(preset.title).tag(preset)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Overlay size")
+                .padding(.bottom, 6)
             } header: {
                 Text("Size")
+            } footer: {
+                Text(sizeDetail(model.preferences.sizePreset))
             }
 
             Section {
-                Picker("Content", selection: model.binding(\.contentMode)) {
-                    Text("Fit").tag(DropyCore.ContentMode.fit)
-                    Text("Fill").tag(DropyCore.ContentMode.fill)
-                    Text("Native scale").tag(DropyCore.ContentMode.nativeScale)
+                Toggle(isOn: model.binding(\.automaticWindowSize)) {
+                    SettingsLabel("Adapt to the window", detail: "Keep smaller windows at their original size.")
                 }
-                .pickerStyle(.radioGroup)
-                Text(contentDetail).font(.caption).foregroundStyle(.secondary)
-                if model.preferences.contentMode == .selectedRegion {
-                    Text("The saved choice was a crop. This version does not offer one. Pick Fit, Fill or Native scale.")
-                        .font(.caption).foregroundStyle(.secondary)
+                .accessibilityLabel("Adapt to the window")
+                .disabled(model.preferences.sizePreset == .nativeSize)
+            } footer: {
+                Text(model.preferences.sizePreset == .nativeSize
+                     ? "Native size follows the original window, shrinking only to fit your screen."
+                     : "Larger windows scale down to the selected size. Expand the overlay whenever you need more room.")
+            }
+
+            Section {
+                Picker("Content scaling", selection: model.binding(\.contentMode)) {
+                    Text("Fit entire window").tag(DropyCore.ContentMode.fit)
+                    Text("Fill overlay").tag(DropyCore.ContentMode.fill)
+                    Text("Native scale").tag(DropyCore.ContentMode.nativeScale)
+                    if model.preferences.contentMode == .selectedRegion {
+                        Text("Selected region (unavailable)").tag(DropyCore.ContentMode.selectedRegion)
+                    }
                 }
             } header: {
-                Text("Picture")
+                Text("Appearance")
+            } footer: {
+                Text(contentDetail)
             }
-        }
-        .formStyle(.grouped)
-    }
-
-    private func sizeRow(_ preset: SizePreset) -> some View {
-        let selected = model.preferences.sizePreset == preset
-        return Button {
-            model.binding(\.sizePreset).wrappedValue = preset
-        } label: {
-            HStack(spacing: 10) {
-                sizeMark(preset, selected: selected)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(preset.title)
-                    Text(sizeDetail(preset)).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                if selected {
-                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func sizeMark(_ preset: SizePreset, selected: Bool) -> some View {
-        ZStack(alignment: .leading) {
-            Capsule().fill(Color.secondary.opacity(0.18))
-            Capsule()
-                .fill(selected ? Color.accentColor : Color.secondary.opacity(0.55))
-                .frame(width: 64 * sizeFraction(preset))
-        }
-        .frame(width: 64, height: 6)
-        .accessibilityHidden(true)
-    }
-
-    private func sizeFraction(_ preset: SizePreset) -> CGFloat {
-        switch preset {
-        case .compact: 0.5
-        case .medium: 0.75
-        case .wide, .nativeSize: 1
         }
     }
 
     private func sizeDetail(_ preset: SizePreset) -> String {
         switch preset {
-        case .nativeSize: return "The window's own size, shrunk only to fit the screen"
+        case .nativeSize: return "Use the window’s original size, up to the available screen space."
         default:
             let size = preset.dimensions
-            return "\(Int(size.width)) × \(Int(size.height)) points, at most"
+            return "Up to \(Int(size.width)) × \(Int(size.height)) points. The preview above illustrates the relative size."
         }
     }
 
@@ -509,39 +511,66 @@ struct SettingsView: View {
     // MARK: Interaction
 
     private var interaction: some View {
-        Form {
+        SettingsPage(pane: .interaction) {
             Section {
                 Toggle(isOn: model.binding(\.interactivePreview)) {
-                    Text("Interactive preview (beta)")
-                    Text("Sends a click, a scroll or typed text only when that action was verified for the running app and version.")
-                }
-                if model.preferences.interactivePreview, !model.accessibilityGranted {
-                    HStack {
-                        Text("This needs Accessibility.").foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Allow…", action: model.openAccessibilitySettings)
+                    HStack(spacing: 8) {
+                        SettingsLabel("Interactive preview", detail: "Click, scroll, and type in supported apps.")
+                        SettingsBadge("Beta")
                     }
                 }
-                Text("The evidence shipped with this build covers TextEdit 1.21 (a click in text, scrolling and typing) and Safari 27.0 (a click on a page button, and scrolling). Typing in Safari is refused. Any other app, or another version, stays view-only. The preview says why a gesture was refused.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("Never sent: shortcuts, editing keys, right-click, drag, and input methods.")
-                    .font(.caption).foregroundStyle(.secondary)
+                .accessibilityLabel("Interactive preview, beta")
+                if model.preferences.interactivePreview, !model.accessibilityGranted {
+                    HStack(spacing: 12) {
+                        SettingsNotice(symbol: "hand.raised", title: "Accessibility access required",
+                                       detail: "Allow Dropy to send input to the source window.")
+                        Spacer()
+                        Button("Open Settings…", action: model.openAccessibilitySettings)
+                    }
+                }
             } header: {
-                Text("Preview")
+                Text("Preview controls")
+            } footer: {
+                Text("Input is enabled only for actions verified with the running app and version. Other apps remain view-only.")
             }
 
             Section {
-                Toggle("Restrict sideways movement across the notch", isOn: model.binding(\.restrictNotchCrossing))
-                if model.preferences.restrictNotchCrossing {
-                    Text(crossingStatus).font(.caption).foregroundStyle(.secondary)
-                }
-                Text("Stops the pointer at the shoulder while Dropy is closed. Requires Accessibility. Hold Option to bypass. Moving below the notch is always allowed. Off by default, and not yet checked on hardware.")
-                    .font(.caption).foregroundStyle(.secondary)
+                compatibilityRow("TextEdit", version: "1.21", symbol: "doc.text", detail: "Click in text, scroll, and type")
+                compatibilityRow("Safari", version: "27.0", symbol: "safari", detail: "Click page buttons and scroll")
             } header: {
-                Text("Experimental")
+                Text("Supported in this build")
+            } footer: {
+                Text("Safari typing, keyboard shortcuts, editing keys, right-click, dragging, and input methods are not supported.")
+            }
+
+            Section {
+                Toggle(isOn: model.binding(\.restrictNotchCrossing)) {
+                    SettingsLabel("Keep the pointer beside the notch", detail: "Restrict sideways movement while Dropy is closed.")
+                }
+                .accessibilityLabel("Keep the pointer beside the notch")
+                if model.preferences.restrictNotchCrossing {
+                    SettingsNotice(symbol: "info.circle", title: "Notch restriction", detail: crossingStatus)
+                }
+            } header: {
+                HStack(spacing: 8) {
+                    Text("Notch crossing")
+                    SettingsBadge("Experimental")
+                }
+            } footer: {
+                Text("Requires Accessibility. Hold Option to cross, or move below the notch. This feature has not yet been verified on hardware.")
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private func compatibilityRow(_ name: String, version: String, symbol: String, detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).font(.title2).foregroundStyle(.secondary)
+                .frame(width: 32).accessibilityHidden(true)
+            SettingsLabel(name, detail: detail)
+            Spacer()
+            Text(version).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 3)
     }
 
     private var crossingStatus: String {
@@ -554,122 +583,73 @@ struct SettingsView: View {
     // MARK: Permissions
 
     private var permissions: some View {
-        Form {
+        SettingsPage(pane: .permissions) {
             Section {
-                PermissionCard(title: "Screen Recording",
-                               detail: "Shows the window you pick inside the overlay. Dropy does not keep a recording.",
+                PermissionCard(title: "Screen Recording", symbol: "rectangle.inset.filled.on.rectangle",
+                               detail: "Display the window you choose in the overlay. Dropy does not save a recording.",
+                               requirement: "Required for window previews",
                                granted: model.screenRecordingGranted,
                                action: model.openScreenRecordingSettings)
-                PermissionCard(title: "Accessibility",
-                               detail: "Lets interactive preview reach the source window, and lets the experimental cursor restriction run.",
+            }
+            Section {
+                PermissionCard(title: "Accessibility", symbol: "accessibility",
+                               detail: "Send input to supported apps and enable the optional notch pointer restriction.",
+                               requirement: "Optional • Used for interaction",
                                granted: model.accessibilityGranted,
                                action: model.openAccessibilitySettings)
             } footer: {
-                Text("Dropy asks for a permission when you turn on the feature that needs it. Grants are checked again whenever this window becomes active.")
+                Text("Permissions are managed in macOS System Settings and checked again when you return to this window.")
             }
-
             if !model.screenRecordingGranted {
                 Section {
-                    HStack {
-                        Text("A Screen Recording grant applies only after Dropy opens again.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
+                    HStack(spacing: 12) {
+                        SettingsNotice(symbol: "arrow.clockwise", title: "Relaunch after allowing access",
+                                       detail: "A new Screen Recording grant takes effect when Dropy opens again.")
+                        Spacer(minLength: 8)
                         Button("Relaunch Dropy", action: model.relaunch)
                     }
                 }
             }
-
             Section {
-                Button("Check Again", action: model.refresh)
+                HStack {
+                    Label("Access stays in your control", systemImage: "hand.raised")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check Again", action: model.refresh)
+                }
             }
         }
-        .formStyle(.grouped)
     }
 
     // MARK: Advanced
 
     private var advanced: some View {
-        Form {
+        SettingsPage(pane: .advanced) {
             Section {
-                LabeledContent("Settings") {
+                HStack(spacing: 16) {
+                    SettingsLabel("Support summary", detail: "Useful details for a bug report or support request.")
+                    Spacer(minLength: 8)
+                    Button(action: model.copySupportSummary) {
+                        Label(model.supportSummaryCopied ? "Copied" : "Copy Summary",
+                              systemImage: model.supportSummaryCopied ? "checkmark" : "doc.on.doc")
+                    }
+                }
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("Includes the app version, permissions, and preferences. Window titles and preview contents are never included.")
+            }
+
+            Section {
+                HStack(spacing: 16) {
+                    SettingsLabel("Reset all settings", detail: "Return Dropy to its original preferences.")
+                    Spacer(minLength: 8)
                     Button("Reset to Defaults…", action: model.confirmReset)
                 }
+            } header: {
+                Text("Reset")
             } footer: {
-                Text("Opening, the overlay, interaction, the Dock and the shortcut return to their defaults, and the pinned app is removed. Open at login is not changed.")
-            }
-
-            Section {
-                LabeledContent("Support summary") {
-                    Button("Copy", action: model.copySupportSummary)
-                }
-                if model.supportSummaryCopied {
-                    Text("Copied to the clipboard.").font(.caption).foregroundStyle(.secondary)
-                }
-            } footer: {
-                Text("The summary has the version, the permission state and your choices. It has no window titles and nothing from the preview.")
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-private struct SettingsIcon: View {
-    let symbol: String
-    let tint: Color
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: 20, height: 20)
-            .background(tint, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-            .accessibilityHidden(true)
-    }
-}
-
-private struct Keycaps: View {
-    let shortcut: KeyShortcut
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(Array(shortcut.keycaps.enumerated()), id: \.offset) { _, cap in
-                Text(cap)
-                    .font(.system(size: 12, weight: .medium))
-                    .padding(.horizontal, cap.count > 1 ? 7 : 6)
-                    .frame(minWidth: 22)
-                    .padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor)))
-                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(Color(nsColor: .separatorColor)))
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(shortcut.display)
-    }
-}
-
-private struct PermissionCard: View {
-    let title: String
-    let detail: String
-    let granted: Bool
-    let action: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle")
-                .font(.title3)
-                .foregroundStyle(granted ? .green : .orange)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            if granted {
-                Text("Allowed").foregroundStyle(.secondary)
-            } else {
-                Button("Allow…", action: action)
+                Text("Resets opening, overlay, interaction, Dock visibility, and the shortcut, and removes your pinned app. Open at login and macOS permissions are kept.")
             }
         }
     }
@@ -699,25 +679,18 @@ private struct AppChooserSheet: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Choose an app").font(.headline)
-                    Text(model.isLoadingApps ? "Looking through Applications…" : "\(model.catalog.count) apps")
+                    Text("Choose a pinned app").font(.title2.bold())
+                    Text(model.isLoadingApps ? "Finding your apps…" : "Open directly into an app you use often.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Other…", action: model.chooseOtherApp)
-                Button("Cancel") { model.isChoosingApp = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("Choose") { if let selected = model.chooserSelection { model.pin(selected) } }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canChoose)
             }
-            .padding([.horizontal, .top])
-            .padding(.bottom, 8)
+            .padding(20)
 
             TextField("Search apps", text: Binding(get: { model.chooserQuery }, set: { model.chooserQuery = $0 }))
                 .textFieldStyle(.roundedBorder)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
 
             Group {
                 if model.isLoadingApps {
@@ -740,8 +713,19 @@ private struct AppChooserSheet: View {
                     }
                 }
             }
+            Divider()
+            HStack {
+                Button("Other App…", action: model.chooseOtherApp)
+                Spacer()
+                Button("Cancel") { model.isChoosingApp = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Pin App") { if let selected = model.chooserSelection { model.pin(selected) } }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canChoose)
+            }
+            .padding(16)
         }
-        .frame(width: 460, height: 540)
+        .frame(width: 500, height: 560)
     }
 
     private func appRows(_ rows: [CatalogApp], markRunning: Bool) -> some View {
@@ -758,6 +742,7 @@ private struct AppChooserSheet: View {
                     }
                 }
             }
+            .padding(.vertical, 4)
             .tag(app.bundleIdentifier)
         }
     }

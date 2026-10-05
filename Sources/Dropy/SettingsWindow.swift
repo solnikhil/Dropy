@@ -423,15 +423,37 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
         window.title = "Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        window.toolbarStyle = .unified
-        window.setContentSize(CGSize(width: 860, height: 600))
-        window.contentMinSize = CGSize(width: 760, height: 520)
+        window.setContentSize(CGSize(width: 920, height: 720))
+        window.contentMinSize = CGSize(width: 820, height: 600)
         // A new name so a window saved at the old fixed size does not come back cramped.
         window.setFrameAutosaveName("DropySettings2")
         window.delegate = self
+        positionWindowControls(in: window)
         return window
+    }
+
+    /// Keep the system controls inside the full-height glass sidebar. Their
+    /// AppKit superview remains in charge of tracking, tooltips, and full screen.
+    private func positionWindowControls(in window: NSWindow) {
+        for (index, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+            guard let button = window.standardWindowButton(kind) else { continue }
+            let origin = NSPoint(x: 22 + CGFloat(index) * 20, y: button.frame.origin.y)
+            if button.frame.origin != origin { button.setFrameOrigin(origin) }
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { positionWindowControls(in: window) }
+    }
+
+    func windowDidUpdate(_ notification: Notification) {
+        // AppKit may lay out the titlebar again when activation or appearance changes.
+        if let window = notification.object as? NSWindow { positionWindowControls(in: window) }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -441,4 +463,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) { model.refresh() }
+
+    func windowDidResignKey(_ notification: Notification) {
+        model.stopRecordingShortcut()
+    }
 }
