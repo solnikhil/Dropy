@@ -13,7 +13,11 @@ Milestones are **evidence gates**, not calendar promises. Work may move between 
 | M4 · Product experience and performance | Direct/last/picker opening, app pinning, size and region controls, dismissal, shortcut and notchless entry, accessibility, multi-display/full-screen behavior, benchmark suite | End-to-end journeys pass on target hardware; latency and resource budgets are measured and met for supported workflows |
 | M5 · Release candidate | Compatibility matrix, signed/notarized packaging, update and rollback policy, documentation, privacy review, regression testing | Reproducible release with honest app/workflow support and no unresolved data-loss, security or source-window restoration failure |
 
-## Now: M3 compatibility and reliability gates
+## Interaction decision (2026-10-07)
+
+The M3 input bridge is replaced by docking the real window in the overlay (see [ARCHITECTURE](ARCHITECTURE.md#interaction-the-real-window-in-the-overlay-decision-2026-10-07)). The gates below are history: typing, shortcuts, menus, IME and drag now work because the person uses the real window. The new gates are per app: the window accepts the docked size, returns from home intact, restores exactly after quit and crash, and the overlay closes when another app comes forward. Not yet covered: multiple displays, Stage Manager, and apps whose windows refuse resizing (shown at their own size).
+
+## Earlier: M3 compatibility and reliability gates
 
 Status after the 2026-09-30 session, judged against the written [M3 workflow contract](docs/COMPATIBILITY.md#m3-workflow-contract). **M3 is not complete** (see the exit evaluation there). New keyboard features stay deferred; parking stays experimental.
 

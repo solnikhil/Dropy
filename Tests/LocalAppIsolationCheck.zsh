@@ -75,7 +75,4 @@ DROPY_MIN_FREE_GB=0 "$maker" "$installed" "$ISOLATION_APPLICATIONS/Copies" >/dev
 DROPY_MIN_FREE_GB=100000 "$maker" "$installed" "$work/full" >/dev/null 2>&1 && fail "a copy was made without enough free space"
 [[ ! -e "$work/full/Editor.app" ]] || fail "a refused copy left files"
 
-# The VS Code probe drives only a disposable copy: it never names the installed CLI.
-grep -q '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' "$repo_dir/Scripts/input-probe-apps.sh" \
-  && fail "input-probe-apps.sh still launches the installed VS Code"
 print "App isolation checks passed"

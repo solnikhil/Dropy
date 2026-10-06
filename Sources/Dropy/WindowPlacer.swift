@@ -84,7 +84,7 @@ enum WindowPlacer {
         guard let original = try observe() else { throw PlacementError.processGone }
         var expected = original
         switch mode {
-        case .offscreen, .parked:
+        case .offscreen, .parked, .docked:
             expected.frame = PlacementGeometry.offscreenFrame(for: original.frame, displays: displayBounds())
         case .minimize: expected.isMinimized = true
         case .hideApp: expected.isAppHidden = true
@@ -93,7 +93,7 @@ enum WindowPlacer {
                                    applied: expected, createdAt: Date(), applicationConfirmed: false)
         try journal.upsert(entry)
         switch mode {
-        case .offscreen, .parked:
+        case .offscreen, .parked, .docked:
             guard let window else { throw PlacementError.accessibilityNotTrusted }
             try setPosition(expected.frame.origin, of: window)
         case .minimize:
@@ -103,7 +103,7 @@ enum WindowPlacer {
             NSRunningApplication(processIdentifier: identity.processID)?.hide()
         }
         switch mode {
-        case .offscreen, .parked:
+        case .offscreen, .parked, .docked:
             // AppKit may clamp the position; record where the window really went so
             // a restore compares against reality rather than the request.
             if let observed = try? observe() {
@@ -138,6 +138,20 @@ enum WindowPlacer {
     @discardableResult
     static func restore(_ entry: PlacementEntry, journal: PlacementJournal) -> RestoreOutcome {
         if entry.mode != .hideApp, !isTrusted { return .deferred(.accessibilityNotTrusted) }
+        var entry = entry
+        // A docked window waiting with its app hidden can be missing from Accessibility
+        // until the app is shown. Dropy hid it, so Dropy shows it, then judges the
+        // window as if it had never been hidden: a move the person made still wins.
+        if entry.mode == .docked, entry.applied.isAppHidden,
+           let application = NSRunningApplication(processIdentifier: entry.identity.processID),
+           application.isHidden, WindowCatalog.isRunning(entry.identity) {
+            application.unhide()
+            for _ in 0..<20 {
+                if case .found = (try? find(entry.identity)) ?? .missing(.processGone) { break }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            entry.applied.isAppHidden = false
+        }
         let (read, window) = readForRestore(entry)
         let plan = RestorePlan.make(for: entry, read: read, displays: displayBounds())
         let decision: RestoreDecision
@@ -214,7 +228,7 @@ enum WindowPlacer {
         return try readState(window, identity: identity)
     }
 
-    private static func readState(_ window: AXUIElement, identity: WindowIdentity) throws -> WindowPlacementState {
+    static func readState(_ window: AXUIElement, identity: WindowIdentity) throws -> WindowPlacementState {
         let position = try pointValue(window, kAXPositionAttribute)
         let size = try sizeValue(window, kAXSizeAttribute)
         var minimized: CFTypeRef?
@@ -314,7 +328,7 @@ enum WindowPlacer {
 
     // MARK: Accessibility values
 
-    private static func pointValue(_ element: AXUIElement, _ attribute: String) throws -> CGPoint {
+    static func pointValue(_ element: AXUIElement, _ attribute: String) throws -> CGPoint {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         var point = CGPoint.zero
@@ -325,7 +339,7 @@ enum WindowPlacer {
         return point
     }
 
-    private static func sizeValue(_ element: AXUIElement, _ attribute: String) throws -> CGSize {
+    static func sizeValue(_ element: AXUIElement, _ attribute: String) throws -> CGSize {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         var size = CGSize.zero
@@ -336,14 +350,14 @@ enum WindowPlacer {
         return size
     }
 
-    private static func setPosition(_ point: CGPoint, of window: AXUIElement) throws {
+    static func setPosition(_ point: CGPoint, of window: AXUIElement) throws {
         var point = point
         guard let value = AXValueCreate(.cgPoint, &point) else { return }
         let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
         guard result == .success else { throw PlacementError.attribute(kAXPositionAttribute, result) }
     }
 
-    private static func setFrame(_ frame: CGRect, of window: AXUIElement, resize: Bool) throws {
+    static func setFrame(_ frame: CGRect, of window: AXUIElement, resize: Bool) throws {
         try setPosition(frame.origin, of: window)
         guard resize else { return }
         var size = frame.size
@@ -352,7 +366,7 @@ enum WindowPlacer {
         guard result == .success else { throw PlacementError.attribute(kAXSizeAttribute, result) }
     }
 
-    private static func setMinimized(_ minimized: Bool, window: AXUIElement) throws {
+    static func setMinimized(_ minimized: Bool, window: AXUIElement) throws {
         let result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString,
                                                   minimized as CFBoolean)
         guard result == .success else { throw PlacementError.attribute(kAXMinimizedAttribute, result) }

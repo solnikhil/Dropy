@@ -345,7 +345,7 @@ final class SettingsModel: ObservableObject {
         Size: \(preferences.sizePreset.rawValue)
         Content: \(preferences.contentMode.rawValue)
         Fit within size: \(preferences.automaticWindowSize ? "on" : "off")
-        Interactive preview: \(preferences.interactivePreview ? "on" : "off")
+        Use the app: \(preferences.interaction == .fullApp ? "full app" : "preview only")
         Notch crossing restriction: \(preferences.restrictNotchCrossing ? "on" : "off")
         Notch trigger saved: \(preferences.trigger.rawValue)
         Notch trigger in effect: \(preferences.trigger.effective.rawValue)
@@ -491,10 +491,18 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    static let contentSize = CGSize(width: 780, height: 640)
+
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
+        let host = NSHostingController(rootView: SettingsView(model: model))
+        // The window keeps one size; SwiftUI content does not resize it.
+        host.sizingOptions = []
+        let window = NSWindow(contentViewController: host)
         window.title = "Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        // Not resizable: one fixed size, like System Settings. Zoom and full screen
+        // are unavailable as a result.
+        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.collectionBehavior.insert(.fullScreenNone)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
@@ -503,8 +511,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // content column paints its own opaque gray.
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.setContentSize(CGSize(width: 800, height: 790))
-        window.contentMinSize = CGSize(width: 720, height: 520)
         // An empty unified toolbar gives the taller title area, which centers the
         // traffic lights beside the Back and Forward capsule drawn by SwiftUI.
         let toolbar = NSToolbar(identifier: "DropySettings")
@@ -512,8 +518,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.titlebarSeparatorStyle = .none
-        // A new name so a window saved at an earlier size does not come back cramped.
+        // Only the position is remembered: the fixed size is applied after the saved
+        // frame is restored, so a frame saved while the window was resizable is ignored.
         window.setFrameAutosaveName("DropySettings3")
+        window.setContentSize(Self.contentSize)
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.delegate = self
         return window
     }

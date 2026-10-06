@@ -15,7 +15,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settings: SettingsWindowController!
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
     private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
-    private var interactiveItems: [NSMenuItem] = []
+    private var fullAppItems: [NSMenuItem] = []
     /// "Open Dropy" items whose titles show the current shortcut.
     private var openItems: [NSMenuItem] = []
     /// Check scripts launch the binary with debug variables or --show; they keep the
@@ -41,10 +41,14 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        overlay = OverlayController(preferences: preferences, inputRouter: InputRouter(journal: placementJournal))
+        overlay = OverlayController(preferences: preferences, journal: placementJournal, parkingTabs: parkingTabs)
+        overlay.onDeferredRestore = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
-        recovery.onSettled = { [weak self] identity in self?.parkingTabs.remove(identity) }
+        recovery.onSettled = { [weak self] identity in
+            self?.parkingTabs.remove(identity)
+            self?.overlay.journalChanged()
+        }
         recovery.start()
         parkingTabs.onRestoreRequest = { [weak self] identity in
             guard let self,
@@ -54,6 +58,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.parkingTabs.remove(identity)
             }
             if outcome.retriesAutomatically { self.recovery.requestRecovery(for: identity) }
+            self.overlay.journalChanged()
             NSLog("Dropy placement: tab clicked restore=%@", PlacementJournal.name(outcome))
         }
         for entry in placementJournal.entries where entry.mode == .parked && entry.applicationConfirmed != false {
@@ -143,12 +148,12 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contentItem.submenu = contentModes
         menu.addItem(contentItem)
         choiceMenus.append((contentModes, { $0.contentMode.rawValue }))
-        let interactive = NSMenuItem(title: "Interactive preview (beta)", action: #selector(toggleInteractivePreview(_:)),
-                                     keyEquivalent: "")
-        interactive.state = preferences.value.interactivePreview ? .on : .off
-        interactive.toolTip = "Send clicks, scrolling and typing in the preview to the source window, only where verified for that app."
-        menu.addItem(interactive)
-        interactiveItems.append(interactive)
+        let fullApp = NSMenuItem(title: "Use Apps in the Overlay", action: #selector(toggleFullApp(_:)),
+                                 keyEquivalent: "")
+        fullApp.state = preferences.value.interaction == .fullApp ? .on : .off
+        fullApp.toolTip = "Bring the app's real window into the overlay. Off shows a live preview only."
+        menu.addItem(fullApp)
+        fullAppItems.append(fullApp)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Quit Dropy", action: #selector(quit), keyEquivalent: "q"))
@@ -198,7 +203,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     guard let self else { return }
                     if self.overlay.state == .closed { self.overlay.open() }
                     var waited = 0
-                    while self.overlay.state != .viewing, self.overlay.state.failure == nil, waited < 10_000 {
+                    while self.overlay.state != .viewing, self.overlay.state != .docked,
+                          self.overlay.state.failure == nil, waited < 10_000 {
                         try? await Task.sleep(for: .milliseconds(50))
                         waited += 50
                     }
@@ -222,6 +228,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        overlay.shutdown()
         trigger?.stop()
         hotKey?.unregister()
         recovery.stop()
@@ -333,6 +340,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         recovery.recoverAll()
+        overlay.journalChanged()
         let waiting = recovery.deferred
         if !waiting.isEmpty {
             let alert = NSAlert()
@@ -350,7 +358,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleOverlay() { overlay.toggle() }
     @objc private func refresh() { if overlay.state == .closed { overlay.open() } else { overlay.refreshWindows() } }
-    @objc private func quit() { overlay.close(); NSApp.terminate(nil) }
+    @objc private func quit() { overlay.shutdown(); NSApp.terminate(nil) }
     @objc private func showSettings() { settings.show() }
 
     @objc private func showAbout() {
@@ -388,8 +396,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         change { $0.contentMode = mode }
     }
 
-    @objc private func toggleInteractivePreview(_ sender: NSMenuItem) {
-        change { $0.interactivePreview.toggle() }
+    @objc private func toggleFullApp(_ sender: NSMenuItem) {
+        change { $0.interaction = $0.interaction == .fullApp ? .previewOnly : .fullApp }
     }
 
     @objc private func changeOpenBehavior(_ sender: NSMenuItem) {
@@ -410,12 +418,14 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             trigger?.preferencesChanged()
         }
-        if new.interactivePreview != old.interactivePreview {
-            // Input to another app needs Accessibility; ask macOS to show its prompt once.
-            if new.interactivePreview, !WindowPlacer.isTrusted {
+        if new.interaction != old.interaction {
+            // Moving another app's window needs Accessibility; ask macOS to show its prompt once.
+            if new.interaction == .fullApp, !WindowPlacer.isTrusted {
                 _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
             }
-            overlay.configureInteraction()
+        }
+        if new.interaction != old.interaction || new.openTargetBundleIdentifier != old.openTargetBundleIdentifier {
+            overlay.dockingPreferencesChanged()
         }
         if new.sizePreset != old.sizePreset || new.contentMode != old.contentMode || new.automaticWindowSize != old.automaticWindowSize, overlay.state != .closed {
             overlay.close()
@@ -459,7 +469,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let raw = selected(preferences.value)
             for item in menu.items { item.state = item.representedObject as? String == raw ? .on : .off }
         }
-        for item in interactiveItems { item.state = preferences.value.interactivePreview ? .on : .off }
+        for item in fullAppItems { item.state = preferences.value.interaction == .fullApp ? .on : .off }
     }
 
     // MARK: Ordinary-app behavior
@@ -536,9 +546,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let overlayMenu = NSMenu(title: "Overlay")
         openItems.append(addOverlayItems(to: overlayMenu))
         overlayMenu.addItem(.separator())
-        let interactive = item("Interactive Preview (Beta)", #selector(toggleInteractivePreview(_:)), target: self)
-        overlayMenu.addItem(interactive)
-        interactiveItems.append(interactive)
+        let fullApp = item("Use Apps in the Overlay", #selector(toggleFullApp(_:)), target: self)
+        overlayMenu.addItem(fullApp)
+        fullAppItems.append(fullApp)
         let overlayHolder = NSMenuItem(title: "Overlay", action: nil, keyEquivalent: "")
         overlayHolder.submenu = overlayMenu
         main.addItem(overlayHolder)

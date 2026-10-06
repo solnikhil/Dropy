@@ -81,12 +81,27 @@ public enum CapturePhase: Equatable, Sendable {
     /// ScreenCaptureKit is not delivering new frames.
     case paused(applicationName: String)
     case sourceVisibility(applicationName: String, visibility: SourceVisibility)
+    /// Moving the real window into the overlay; a snapshot covers it until it is in place.
+    case docking(applicationName: String)
+    /// The real window is in the overlay and its app is in front.
+    case docked
+    /// The window is on another desktop or in full screen, where Dropy cannot bring
+    /// it; its snapshot is shown with a way to go there.
+    case dockedElsewhere(applicationName: String)
     case failed(CaptureFailure)
 
     /// A stream is starting or running for the current selection.
     public var isCapturing: Bool {
         switch self {
         case .starting, .viewing, .paused, .sourceVisibility: true
+        default: false
+        }
+    }
+
+    /// The real window is being docked, or is docked, instead of captured.
+    public var isDocking: Bool {
+        switch self {
+        case .docking, .docked, .dockedElsewhere: true
         default: false
         }
     }
@@ -105,6 +120,9 @@ public enum CapturePhase: Equatable, Sendable {
         case .viewing: "viewing"
         case .paused: "paused"
         case .sourceVisibility: "sourceVisibility"
+        case .docking: "docking"
+        case .docked: "docked"
+        case .dockedElsewhere: "dockedElsewhere"
         case .failed(let failure): "failed.\(failure.diagnosticName)"
         }
     }
@@ -113,11 +131,14 @@ public enum CapturePhase: Equatable, Sendable {
         switch self {
         case .closed, .selecting: nil
         case .starting(let app): "Starting preview: \(app)…"
-        case .viewing: "Live preview · interaction bridge not enabled yet"
+        case .viewing: "Live preview"
         case .paused(let app):
             "Waiting for captured frames from \(app)"
         case .sourceVisibility(let app, let visibility):
             visibility.message(applicationName: app)
+        case .docking(let app): "Opening \(app)…"
+        case .docked: nil
+        case .dockedElsewhere(let app): "\(app) is on another desktop or in full screen."
         case .failed(let failure): failure.message
         }
     }

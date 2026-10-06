@@ -27,6 +27,15 @@ public enum DismissBehavior: String, Codable, CaseIterable, Sendable {
     case manual
 }
 
+/// How the person uses the app shown in the overlay.
+public enum InteractionMode: String, Codable, CaseIterable, Sendable {
+    /// The app's real window moves into the overlay and its app comes to the front,
+    /// so every click, key, shortcut and input method works as usual. Needs Accessibility.
+    case fullApp
+    /// A live picture of the window; nothing is sent to it.
+    case previewOnly
+}
+
 public enum ContentMode: String, Codable, CaseIterable, Sendable {
     case fit
     case fill
@@ -115,11 +124,10 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var sizePreset: SizePreset
     public var selectedBundleIdentifier: String?
     public var lastUsedBundleIdentifier: String?
-    /// Send clicks, scrolling and typing in the preview to the source window, where
-    /// verified. Off by default: interaction is a beta that needs Accessibility.
+    /// Hold the pointer beside the notch while Dropy is closed (experimental).
     public var restrictNotchCrossing: Bool
     public var automaticWindowSize: Bool
-    public var interactivePreview: Bool
+    public var interaction: InteractionMode
     /// Show a Dock icon and Dropy's own menu bar like an ordinary app. Off leaves only
     /// the menu-bar item (the Settings window still brings the Dock icon while open).
     public var showInDock: Bool
@@ -139,7 +147,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         lastUsedBundleIdentifier: String? = nil,
         restrictNotchCrossing: Bool = false,
         automaticWindowSize: Bool = true,
-        interactivePreview: Bool = false,
+        interaction: InteractionMode = .fullApp,
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
         shortcut: KeyShortcut = .default
@@ -153,7 +161,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.lastUsedBundleIdentifier = lastUsedBundleIdentifier
         self.restrictNotchCrossing = restrictNotchCrossing
         self.automaticWindowSize = automaticWindowSize
-        self.interactivePreview = interactivePreview
+        self.interaction = interaction
         self.showInDock = showInDock
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
         self.shortcut = shortcut
@@ -172,7 +180,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
-        case selectedBundleIdentifier, lastUsedBundleIdentifier, interactivePreview, showInDock
+        case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, showInDock
         case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize
     }
 
@@ -192,7 +200,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         lastUsedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .lastUsedBundleIdentifier)
         restrictNotchCrossing = try container.decodeIfPresent(Bool.self, forKey: .restrictNotchCrossing) ?? defaults.restrictNotchCrossing
         automaticWindowSize = try container.decodeIfPresent(Bool.self, forKey: .automaticWindowSize) ?? defaults.automaticWindowSize
-        interactivePreview = try container.decodeIfPresent(Bool.self, forKey: .interactivePreview) ?? defaults.interactivePreview
+        // The old "interactivePreview" switch belonged to the removed input bridge and is ignored.
+        interaction = try container.decodeIfPresent(InteractionMode.self, forKey: .interaction) ?? defaults.interaction
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)

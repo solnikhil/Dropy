@@ -1,5 +1,7 @@
 # Compatibility observations
 
+> **2026-10-07:** the input bridge described below was removed. Dropy now docks the app's real window in the overlay (Full App), so interaction is the app's own and no per-app input evidence is shipped. The M3 sections are kept as the record that led to that decision. Docking itself still needs a per-app record: whether the window accepts the size, comes back from hiding, and restores exactly.
+
 This is a **development observation log**, not a supported-app list. A green capture image does not mean the app is interactive inside Dropy. Results need a Dropy revision, macOS version, target app version, display configuration and tested workflow before they can become release support claims.
 
 ## M3 workflow contract

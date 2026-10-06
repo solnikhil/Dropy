@@ -22,7 +22,7 @@ final class SourceRecoveryTests: XCTestCase {
         switch mode {
         case .minimize: applied.isMinimized = true
         case .hideApp: applied.isAppHidden = true
-        case .offscreen, .parked: applied.frame.origin = CGPoint(x: 1670, y: 994)
+        case .offscreen, .parked, .docked: applied.frame.origin = CGPoint(x: 1670, y: 994)
         }
         return PlacementEntry(identity: identity, mode: mode, original: original, applied: applied,
                               createdAt: Date(timeIntervalSince1970: 2), applicationConfirmed: confirmed)

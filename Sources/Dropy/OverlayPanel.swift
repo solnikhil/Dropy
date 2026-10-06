@@ -11,7 +11,10 @@ final class PointerTrackingView: NSView {
 final class OverlayPanel: NSPanel {
     /// The overlay panel as Dropy shows it.
     static func make(contentRect: CGRect) -> OverlayPanel {
-        let panel = OverlayPanel(contentRect: contentRect, styleMask: [.borderless], backing: .buffered, defer: false)
+        // Non-activating: clicking the overlay's controls while a docked app is in front
+        // leaves that app in front, so its keyboard focus is not taken away.
+        let panel = OverlayPanel(contentRect: contentRect, styleMask: [.borderless, .nonactivatingPanel],
+                                 backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         // Clear: the overlay's outline (MorphBackdropView) draws the shape, with
@@ -36,7 +39,7 @@ final class OverlayPanel: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
     var onEscape: (() -> Void)?
-    /// Interactive preview: returns true when it consumed the key.
+    /// Window-list keys; returns true when it consumed the key.
     var onKey: ((NSEvent) -> Bool)?
     override var canBecomeKey: Bool { true }
 
@@ -44,13 +47,6 @@ final class OverlayPanel: NSPanel {
     /// Command-W from the menu bar closes the overlay like Esc (a borderless panel
     /// would only beep).
     override func performClose(_ sender: Any?) { onEscape?() }
-
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .scrollWheel, ProcessInfo.processInfo.environment["DROPY_DEBUG_INPUT_EVENTS"] == "1" {
-            NSLog("Dropy input event: scroll point=%.0f,%.0f", event.locationInWindow.x, event.locationInWindow.y)
-        }
-        super.sendEvent(event)
-    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { onEscape?(); return }

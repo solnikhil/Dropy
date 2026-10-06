@@ -33,7 +33,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     }
 
     /// Shown beside the page name in the sidebar.
-    var badge: String? { self == .interaction ? "Beta" : nil }
+    var badge: String? { nil }
 }
 
 private struct SettingsTopic: Identifiable {
@@ -77,9 +77,9 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "content", pane: .overlay, title: "Content Scaling",
                       detail: "Fit, Fill, or native size.",
                       keywords: "fit fill crop scale letterbox"),
-        SettingsTopic(id: "interactive", pane: .interaction, title: "Interactive Preview",
-                      detail: "Sends only input verified for that app and version.",
-                      keywords: "beta click scroll typing textedit safari"),
+        SettingsTopic(id: "interactive", pane: .interaction, title: "Use the App",
+                      detail: "The real app in the overlay, or a live preview only.",
+                      keywords: "full app interactive click scroll typing keyboard shortcuts preview window"),
         SettingsTopic(id: "crossing", pane: .interaction, title: "Keep the Pointer Beside the Notch",
                       detail: "Experimental hold on sideways movement across the notch.",
                       keywords: "cursor pointer experimental accessibility option"),
@@ -87,7 +87,7 @@ private struct SettingsTopic: Identifiable {
                       detail: "Shows the window you pick. A new grant needs a relaunch.",
                       keywords: "permission privacy capture screen recording"),
         SettingsTopic(id: "access", pane: .permissions, title: "Accessibility",
-                      detail: "Needed for interactive preview and the cursor restriction.",
+                      detail: "Brings the app's real window into the overlay.",
                       keywords: "permission privacy accessibility"),
         SettingsTopic(id: "reset", pane: .advanced, title: "Reset All Settings",
                       detail: "Restores the defaults. Open at login is left as it is.",
@@ -120,7 +120,10 @@ struct SettingsView: View {
                 .frame(width: model.sidebarWidth)
                 .frame(maxHeight: .infinity)
                 .background(SettingsSidebarGlass())
-            SettingsSidebarDivider(model: model)
+                // Drawn over the glass's edge rather than as its own column: the window
+                // is transparent there, so a separate column showed the desktop.
+                .overlay(alignment: .trailing) { SettingsSidebarDivider(model: model) }
+                .zIndex(1)
 
             VStack(alignment: .leading, spacing: 0) {
                 SettingsHistoryButtons(model: model)
@@ -346,11 +349,11 @@ struct SettingsView: View {
     private var dismissDetail: String {
         switch model.preferences.dismissBehavior {
         case .manual:
-            "Esc, ⌘W and the Close button close it. A click outside leaves it open."
+            "The shortcut and Esc close it. A click outside leaves it open. Switching to another app always closes it."
         case .clickOutside:
-            "A click outside the overlay closes it. Esc, ⌘W and the Close button still work."
+            "A click outside the overlay or the app in it closes it. The shortcut and Esc still work."
         case .pointerLeave:
-            "The overlay closes after the pointer leaves it. Esc, ⌘W and the Close button still work."
+            "The window list and the preview close after the pointer leaves them. An app in the overlay closes on a click outside."
         }
     }
 
@@ -410,22 +413,20 @@ struct SettingsView: View {
 
     private var interaction: some View {
         SettingsPage {
-            SettingsCard(footer: "Input is enabled only for actions verified with the running app and version. Other apps remain view-only.") {
-                SettingsToggleRow("Interactive Preview", detail: "Click, scroll, and type in supported apps.",
-                                  badge: "Beta", isOn: model.binding(\.interactivePreview))
-                if model.preferences.interactivePreview, !model.accessibilityGranted {
+            SettingsCard(footer: interactionFooter) {
+                SettingsRow("Use the App", detail: interactionDetail) {
+                    SettingsChoiceTiles(label: "Use the app", selection: model.binding(\.interaction), options: [
+                        ("Full App", .fullApp, "Use the real app in the overlay"),
+                        ("Preview", .previewOnly, "Show a live preview only"),
+                    ])
+                }
+                if model.preferences.interaction == .fullApp, !model.accessibilityGranted {
                     SettingsNotice(symbol: "hand.raised", title: "Accessibility access required",
-                                   detail: "Allow Dropy to send input to the source window.") {
+                                   detail: "Allow Dropy to move the app's window into the overlay. Until then it is a preview.") {
                         Button("Open Settings…", action: model.openAccessibilitySettings)
                             .buttonStyle(SettingsButtonStyle(outlined: true))
                     }
                 }
-            }
-
-            SettingsCard("Supported in This Build",
-                         footer: "Safari typing, keyboard shortcuts, editing keys, right-click, dragging, and input methods are not supported.") {
-                compatibilityRow("TextEdit", version: "1.21", symbol: "doc.text", detail: "Click in text, scroll, and type")
-                compatibilityRow("Safari", version: "27.0", symbol: "safari", detail: "Click page buttons and scroll")
             }
 
             SettingsCard("Notch Crossing", badge: "Experimental",
@@ -440,14 +441,15 @@ struct SettingsView: View {
         }
     }
 
-    private func compatibilityRow(_ name: String, version: String, symbol: String, detail: String) -> some View {
-        HStack(spacing: SettingsMetrics.rowInset) {
-            SettingsGlyph(symbol: symbol)
-            SettingsLabel(name, detail: detail)
-            Spacer(minLength: SettingsMetrics.rowInset)
-            SettingsValue(version)
+    private var interactionDetail: String {
+        switch model.preferences.interaction {
+        case .fullApp: "Typing, shortcuts, menus and dragging work as they do anywhere else."
+        case .previewOnly: "A live picture of the window. Clicks and keys are not sent to it."
         }
-        .settingsRow()
+    }
+
+    private var interactionFooter: String {
+        "With Full App, the app's own window moves into the overlay and its app comes to the front. When the overlay closes, the window waits out of sight until next time. Quitting Dropy puts it back where it was."
     }
 
     private var crossingStatus: String {
@@ -467,7 +469,7 @@ struct SettingsView: View {
                               granted: model.screenRecordingGranted,
                               action: model.openScreenRecordingSettings)
                 permissionRow("Accessibility",
-                              detail: "Optional. Sends input to supported apps and enables the notch pointer restriction.",
+                              detail: "Needed to use apps in the overlay: Dropy moves the app's own window. Also used by the notch pointer restriction.",
                               granted: model.accessibilityGranted,
                               action: model.openAccessibilitySettings)
                 if !model.screenRecordingGranted {

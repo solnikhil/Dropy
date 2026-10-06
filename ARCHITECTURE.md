@@ -4,7 +4,7 @@
 
 Dropy should expand from the MacBook notch across the top menu-bar band into a temporary, Dropy-owned container. A selected existing application keeps its session. The goal is to use that app's UI inside the container and dismiss Dropy without closing or corrupting the source app.
 
-That full contract is **not yet implemented**. The first native slice is a live, view-only window mirror. The selected app's own window remains visible on the desktop. The repository intentionally does not fake general interactivity with a single Accessibility button action.
+That full contract is **not yet implemented**. The first native slice is a live, view-only window mirror. With Full App interaction the app's real window is moved into the overlay; see the interaction section below.
 
 ## Current modules
 
@@ -34,22 +34,20 @@ Use the public `SCContentFilter(desktopIndependentWindow:)` and `SCStream` APIs.
 
 The initial live visual check exposed a real format mismatch: ScreenCaptureKit supplied `420v` by default while the first Metal importer treated the surface as BGRA. The image tiled. Explicitly requesting `kCVPixelFormatType_32BGRA` corrected the preview. No claim of zero-copy or low latency follows from a correct image; profiling must measure the complete loop and all processes involved. [Apple's capture sample](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos), [Metal IOSurface import](https://developer.apple.com/documentation/metal/mtldevice/maketexture%28descriptor%3Aiosurface%3Aplane%3A), [advanced capture session](https://developer.apple.com/videos/play/wwdc2022/10155/).
 
-## Interaction boundary
+## Interaction: the real window in the overlay (decision, 2026-10-07)
 
-The selected `SCWindow.windowID` identifies capture content; it does not provide a documented public event endpoint for a complete foreign-window pointer/keyboard stream. Process-targeted mouse events failed in the initial controlled test. A panel click plus `AXPress` did activate one exposed button, including when a specially configured test source was moved entirely off-screen. That does not imply text input, IME composition, menu routing, custom canvas hit testing or drag-and-drop support. [Apple's `postToPid`](https://developer.apple.com/documentation/coregraphics/cgevent/posttopid(_:)), [Accessibility actions](https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction).
+Dropy does not forward input. Measured on macOS 27 (see [feasibility](docs/FEASIBILITY.md)), keyboard events always follow an app's key window, menus, popovers, sheets and input-method windows open beside the real window wherever it is, and apps throttle a hidden window. A bridge from a picture to a hidden window therefore cannot give normal interaction, and every app and version would need its own evidence. The earlier input bridge (`InputRouter`, verified-evidence routing, in-preview typing) was removed on 2026-10-07; its probe reports remain in `docs/input-probe` as history.
 
-Before enabling an input adapter in the product, test same-app windows A and B under different focus states; left/right click, hover, wheel, keyboard shortcuts, selection, text/IME, menus, sheets, dialogs and drag/drop; then repeat with AppKit, browser/WebKit, Electron and music apps. Record the exact window receiving the action and any focus or visible-window transition. Declare support per app and workflow, not by one successful click.
+Instead, **Full App** interaction docks the real window:
 
-### Typing design (decision record, 2026-09-30; not implemented)
+1. **Opening.** The outline grows from the notch showing a snapshot of the window (`SCScreenshotManager`). Once it covers the window's place, `WindowDock` moves and sizes the real window into the hole below the notch band through Accessibility (journaled first as `PlacementMode.docked`), makes it main and raises it, and sets its app frontmost (Accessibility `AXFrontmost`, falling back to cooperative activation with `yieldActivation`). The outline is then cut open over the window (`MorphBackdropView.hole`) and the snapshot fades over the identical real window.
+2. **In use.** The overlay panel is non-activating and ignores the pointer except over its own outline (the band with the controls, and the border). Nothing streams. Clicks inside the app, its menus, the menu bar and system panels it opens keep the overlay (`DockPolicy.clickIsInside`); another app coming to the front closes it (`DockPolicy.activationCloses`). Esc belongs to the app; the shortcut toggles. Resizing the window moves the outline with it; dragging it away, full screen or minimizing hands it to the person.
+3. **Closing.** A fresh snapshot covers the window, which goes home: its app is hidden when the docked window is its only visible one, otherwise the window is parked beyond the displays behind a Dropy tab. Focus returns to the previous app if the person was still in the docked one. Bringing the hidden app forward (Command-Tab, the Dock) reopens the overlay around it.
+4. **Letting go.** Quitting Dropy, choosing another window, switching to Preview only or changing the pinned app restores the window's original frame from the journal. A crash is recovered at the next launch like any placement.
 
-Measured on macOS 27: keyboard events always follow the source app's key window, and only AppKit text views report a usable caret for a window that is not key. Chromium reports the selection as 0; WebKit applied a value to another element. So Dropy has two typing modes, and only the first exists:
+A window on another desktop or behind a full-screen app cannot be moved here with public API, so the overlay shows its snapshot and offers to go there. Without Accessibility, or with **Preview only**, the overlay shows the live view-only capture.
 
-1. **In-preview typing** (shipped, AppKit only): committed text through `AXSelectedText` into the text element last clicked in the exact window, verified per app, field class and condition. Never for an app without that evidence.
-2. **Hand-off typing** (proposed): on an explicit request, Dropy undoes any placement, raises the source window, makes its app frontmost, and says so. The person then types in the real window with every key, IME and shortcut working natively. Returning to the preview re-parks the window. This gives up containment while typing, by design. Its gates: the placement journal must record the hand-off; "your move wins" applies to moves made during it; focus returns to where it was; and it must never trigger without a person's action.
-
-Status (2026-09-30, local only): the hand-off decisions are modelled and unit-tested in `DropyCore/HandOff.swift` (`HandOffTests`), not wired into the app and never run on a device. It refuses any trigger except a person's request, a window that is gone, and a crash-interrupted placement. It restores a parked or minimized window to where the journal says it was, or onto the main display if that display is gone, and a minimized or hidden window the person placed is shown where it is. At the end it re-parks only if the window is where Dropy left it, and returns focus only if the person is still in the source app.
-
-Rejected, with evidence: whole-value rewrite (wrong position, broken undo, no `inputType`); posting keys to the process or window (decoy window receives them); typing only while the source happens to be key (a demo, not exact-window routing).
+Pure decisions are in `DropyCore/DockGeometry.swift` and `DropyCore/DockPolicy.swift` (`DockTests`); the AppKit side is `Dropy/WindowDock.swift` and the docking section of `OverlayController`.
 
 ## Source-window placement boundary
 

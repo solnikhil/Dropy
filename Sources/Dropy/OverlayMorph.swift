@@ -11,6 +11,11 @@ final class MorphBackdropView: NSView {
     private let hairline = CAShapeLayer()
     /// The outline as last set; a morph sets its end shape here at once.
     private(set) var currentShape: NotchShape?
+    /// A see-through cut-out for a docked window, with that window's corner radius.
+    /// The outline is drawn around it, so the real window beneath shows through.
+    var hole: (rect: CGRect, radius: CGFloat)? {
+        didSet { if let currentShape { set(currentShape) } }
+    }
     /// The morph in progress, to tell where the outline is on screen right now.
     private var active: (frames: [NotchShape], duration: TimeInterval, startedAt: CFTimeInterval)?
 
@@ -50,7 +55,16 @@ final class MorphBackdropView: NSView {
         currentShape = shape
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        fill.path = shape.fillPath
+        if let hole {
+            let path = CGMutablePath()
+            path.addPath(shape.fillPath)
+            path.addRoundedRect(in: hole.rect, cornerWidth: hole.radius, cornerHeight: hole.radius)
+            fill.fillRule = .evenOdd
+            fill.path = path
+        } else {
+            fill.fillRule = .nonZero
+            fill.path = shape.fillPath
+        }
         hairline.path = shape.strokePath
         CATransaction.commit()
     }
