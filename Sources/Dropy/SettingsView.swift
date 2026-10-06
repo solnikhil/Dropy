@@ -4,7 +4,7 @@ import SwiftUI
 import DropyCore
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, opening, overlay, interaction, permissions, advanced
+    case general, opening, overlay, interaction, permissions, advanced, about
 
     var id: String { rawValue }
 
@@ -16,6 +16,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .interaction: "Interaction"
         case .permissions: "Permissions"
         case .advanced: "Advanced"
+        case .about: "About"
         }
     }
 
@@ -27,6 +28,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .interaction: "hand.point.up.left.fill"
         case .permissions: "lock.shield.fill"
         case .advanced: "wrench.and.screwdriver.fill"
+        case .about: "info.circle.fill"
         }
     }
 
@@ -51,7 +53,7 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "shortcut", pane: .general, title: "Dropy Hotkey",
                       detail: "Opens and closes the overlay from anywhere.",
                       keywords: "hotkey shortcut keys option space"),
-        SettingsTopic(id: "about", pane: .general, title: "About",
+        SettingsTopic(id: "about", pane: .about, title: "About Dropy",
                       detail: "Version, the project page, and this copy in Finder.",
                       keywords: "version mit license finder applications install"),
         SettingsTopic(id: "pin", pane: .opening, title: "Pinned App",
@@ -152,6 +154,7 @@ struct SettingsView: View {
         case .interaction: interaction
         case .permissions: permissions
         case .advanced: advanced
+        case .about: about
         }
     }
 
@@ -193,31 +196,15 @@ struct SettingsView: View {
 
     private var general: some View {
         SettingsPage {
-            SettingsCard {
+            SettingsCard(footer: "Dropy is always available in the menu bar. While Settings is open, it also appears in the Dock.") {
                 SettingsToggleRow("Open at Login", isOn: model.opensAtLogin)
                 loginStatus
-                SettingsToggleRow("Show in Dock", isOn: model.binding(\.showInDock))
-                shortcutRow
-            }
-
-            SettingsCard("About", footer: "Dropy is always available in the menu bar. While Settings is open, it also appears in the Dock.") {
-                SettingsRow("Version") {
-                    SettingsValue(model.versionText.replacingOccurrences(of: "Version ", with: ""))
-                }
-                SettingsRow("Location", detail: model.isInstalled ? "Applications" : "Development build") {
-                    Button("Show in Finder", action: model.revealInFinder)
-                        .buttonStyle(SettingsButtonStyle())
-                }
-                SettingsRow("Made for Your Mac", detail: "Free, open source, and MIT-licensed.") {
-                    Button("Project Page", action: model.openProjectPage)
-                        .buttonStyle(SettingsButtonStyle())
-                    Button("About Dropy", action: model.showAbout)
-                        .buttonStyle(SettingsButtonStyle(outlined: true))
-                }
                 if !model.isInstalled {
                     SettingsNotice(symbol: "app.badge", title: "Running a development copy",
                                    detail: "Move Dropy to Applications before enabling Open at Login.")
                 }
+                SettingsToggleRow("Show in Dock", isOn: model.binding(\.showInDock))
+                shortcutRow
             }
         }
     }
@@ -508,6 +495,47 @@ struct SettingsView: View {
             } else {
                 Button("Open System Settings…", action: action)
                     .buttonStyle(SettingsButtonStyle(outlined: true))
+            }
+        }
+    }
+
+    // MARK: About
+
+    private var about: some View {
+        SettingsPage {
+            SettingsCard {
+                HStack(spacing: SettingsMetrics.rowInset) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable().frame(width: 56, height: 56)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Dropy").font(.system(size: 17, weight: .semibold))
+                            .accessibilityAddTraits(.isHeader)
+                        Text("Your apps, near the notch.")
+                            .font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: SettingsMetrics.rowInset)
+                    Button("About Dropy", action: model.showAbout)
+                        .buttonStyle(SettingsButtonStyle(outlined: true))
+                }
+                .padding(SettingsMetrics.rowInset)
+            }
+
+            SettingsCard("Details") {
+                SettingsRow("Version") {
+                    SettingsValue(model.versionText.replacingOccurrences(of: "Version ", with: ""))
+                }
+                SettingsRow("Location", detail: model.isInstalled ? "Applications" : "Development build") {
+                    Button("Show in Finder", action: model.revealInFinder)
+                        .buttonStyle(SettingsButtonStyle())
+                }
+                SettingsRow("License", detail: "Free and open source.") {
+                    SettingsValue("MIT")
+                }
+                SettingsRow("Project Page", detail: "Source code, issues, and releases on GitHub.") {
+                    Button("Open", action: model.openProjectPage)
+                        .buttonStyle(SettingsButtonStyle())
+                }
             }
         }
     }
