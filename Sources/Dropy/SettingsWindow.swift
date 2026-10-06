@@ -25,6 +25,16 @@ final class SettingsModel: ObservableObject {
     /// does not load SwiftUI's State macro.
     @Published var settingsQuery = ""
     @Published var chooserQuery = ""
+    /// The page on show, kept across launches, and the pages visited before and after
+    /// it for the Back and Forward buttons.
+    @Published private(set) var pane: SettingsPane
+    @Published private var backStack: [SettingsPane] = []
+    @Published private var forwardStack: [SettingsPane] = []
+    private static let paneKey = "org.dropy.settings.pane"
+    /// The sidebar's width, kept across launches, and its width when a drag began.
+    @Published private(set) var sidebarWidth: CGFloat
+    private var sidebarDragOrigin: CGFloat?
+    private static let sidebarWidthKey = "org.dropy.settings.sidebarWidth"
     @Published var chooserSelection: String?
     private var shortcutRecorder: Any?
     private var catalogGeneration = 0
@@ -34,7 +44,68 @@ final class SettingsModel: ObservableObject {
          change: @escaping (_ edit: (inout DropyPreferences) -> Void) -> Void) {
         self.preferences = preferences
         self.change = change
+        pane = UserDefaults.standard.string(forKey: Self.paneKey).flatMap(SettingsPane.init) ?? .general
+        let savedWidth = UserDefaults.standard.double(forKey: Self.sidebarWidthKey)
+        sidebarWidth = savedWidth > 0
+            ? min(max(savedWidth, SettingsMetrics.sidebarWidth.lowerBound), SettingsMetrics.sidebarWidth.upperBound)
+            : SettingsMetrics.sidebarDefaultWidth
         refresh()
+    }
+
+    // MARK: Sidebar width
+
+    /// Follows a drag on the sidebar's edge; `translation` is measured from the drag's start.
+    func resizeSidebar(by translation: CGFloat) {
+        let origin = sidebarDragOrigin ?? sidebarWidth
+        sidebarDragOrigin = origin
+        let range = SettingsMetrics.sidebarWidth
+        sidebarWidth = min(max(origin + translation, range.lowerBound), range.upperBound)
+    }
+
+    func endSidebarResize() {
+        sidebarDragOrigin = nil
+        UserDefaults.standard.set(Double(sidebarWidth), forKey: Self.sidebarWidthKey)
+    }
+
+    func setSidebarWidth(_ width: CGFloat) {
+        let range = SettingsMetrics.sidebarWidth
+        sidebarWidth = min(max(width, range.lowerBound), range.upperBound)
+        UserDefaults.standard.set(Double(sidebarWidth), forKey: Self.sidebarWidthKey)
+    }
+
+    func resetSidebarWidth() { setSidebarWidth(SettingsMetrics.sidebarDefaultWidth) }
+
+    // MARK: Navigation
+
+    var canGoBack: Bool { !backStack.isEmpty }
+    var canGoForward: Bool { !forwardStack.isEmpty }
+
+    func navigate(to destination: SettingsPane) {
+        settingsQuery = ""
+        guard destination != pane else { return }
+        backStack.append(pane)
+        forwardStack.removeAll()
+        show(destination)
+    }
+
+    func goBack() {
+        guard let destination = backStack.popLast() else { return }
+        forwardStack.append(pane)
+        show(destination)
+    }
+
+    func goForward() {
+        guard let destination = forwardStack.popLast() else { return }
+        backStack.append(pane)
+        show(destination)
+    }
+
+    private func show(_ destination: SettingsPane) {
+        settingsQuery = ""
+        stopRecordingShortcut()
+        pane = destination
+        UserDefaults.standard.set(destination.rawValue, forKey: Self.paneKey)
+        if destination == .permissions { refresh() }
     }
 
     /// Called by the app delegate after any change, wherever it came from.
@@ -409,7 +480,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     var isVisible: Bool { window?.isVisible ?? false }
 
     func show() {
-        let saved = UserDefaults.standard.string(forKey: "NSWindow Frame DropySettings2") != nil
+        let saved = UserDefaults.standard.string(forKey: "NSWindow Frame DropySettings3") != nil
         let created = window == nil
         let window = self.window ?? makeWindow()
         self.window = window
@@ -428,32 +499,23 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        window.setContentSize(CGSize(width: 920, height: 720))
-        window.contentMinSize = CGSize(width: 820, height: 600)
-        // A new name so a window saved at the old fixed size does not come back cramped.
-        window.setFrameAutosaveName("DropySettings2")
+        // Transparent so the sidebar's glass shows what is behind the window. The
+        // content column paints its own opaque gray.
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.setContentSize(CGSize(width: 800, height: 790))
+        window.contentMinSize = CGSize(width: 720, height: 520)
+        // An empty unified toolbar gives the taller title area, which centers the
+        // traffic lights beside the Back and Forward capsule drawn by SwiftUI.
+        let toolbar = NSToolbar(identifier: "DropySettings")
+        toolbar.showsBaselineSeparator = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .none
+        // A new name so a window saved at an earlier size does not come back cramped.
+        window.setFrameAutosaveName("DropySettings3")
         window.delegate = self
-        positionWindowControls(in: window)
         return window
-    }
-
-    /// Keep the system controls inside the full-height glass sidebar. Their
-    /// AppKit superview remains in charge of tracking, tooltips, and full screen.
-    private func positionWindowControls(in window: NSWindow) {
-        for (index, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
-            guard let button = window.standardWindowButton(kind) else { continue }
-            let origin = NSPoint(x: 22 + CGFloat(index) * 20, y: button.frame.origin.y)
-            if button.frame.origin != origin { button.setFrameOrigin(origin) }
-        }
-    }
-
-    func windowDidResize(_ notification: Notification) {
-        if let window = notification.object as? NSWindow { positionWindowControls(in: window) }
-    }
-
-    func windowDidUpdate(_ notification: Notification) {
-        // AppKit may lay out the titlebar again when activation or appearance changes.
-        if let window = notification.object as? NSWindow { positionWindowControls(in: window) }
     }
 
     func windowWillClose(_ notification: Notification) {

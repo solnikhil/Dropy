@@ -1,119 +1,87 @@
 import AppKit
 import SwiftUI
 
-/// The persistent navigation rail shares a glass material with the detail surface.
-/// A single matched selection shape moves between rows instead of six independent
-/// highlights flashing on and off. Native buttons preserve focus and keyboard use.
+/// The navigation column: search, then one row per page, on a glass surface. Only the
+/// selected row has a fill, and that fill moves between rows as one matched shape.
+/// Native buttons keep focus and keyboard use.
 struct SettingsSidebar: View {
-    @Binding var selection: SettingsPane
     @ObservedObject var model: SettingsModel
     @Namespace private var selectionAnimation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
 
-    private var selectionColor: Color {
-        contrast == .increased ? Color.accentColor.opacity(0.32) : Color.accentColor.opacity(0.16)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // The window's real AppKit traffic lights sit above this reserved area.
-            // Keeping them native preserves zoom, full screen, and accessibility.
-            Color.clear.frame(height: 38).accessibilityHidden(true)
-            HStack(spacing: 10) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable().frame(width: 36, height: 36)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Dropy").font(.system(size: 15, weight: .semibold))
-                    Text("Settings").font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 14).padding(.top, 6).padding(.bottom, 18)
+            // The window's real AppKit traffic lights sit in the title bar area above.
+            Color.clear.frame(height: SettingsMetrics.titleBarHeight).accessibilityHidden(true)
 
             searchField
-                .padding(.horizontal, 12)
-                .padding(.bottom, 18)
+                .padding(.horizontal, SettingsMetrics.sidebarInset)
+                .padding(.bottom, 12)
 
-            VStack(spacing: 4) {
-                ForEach(SettingsPane.allCases) { pane in
-                    Button {
-                        select(pane)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: pane.symbol)
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(selection == pane ? Color.accentColor : Color.secondary)
-                                .frame(width: 23, height: 24)
-                                .accessibilityHidden(true)
-                            Text(pane.title)
-                                .font(.system(size: 13, weight: selection == pane ? .semibold : .regular))
-                                .foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 11)
-                        .frame(height: 40)
-                        .contentShape(RoundedRectangle(cornerRadius: 11))
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(SettingsPane.allCases) { pane in
+                        row(pane)
                     }
-                    .buttonStyle(.plain)
-                    .background {
-                        if selection == pane {
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .fill(selectionColor)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                        .strokeBorder(Color.accentColor.opacity(contrast == .increased ? 0.8 : 0.14), lineWidth: 1)
-                                }
-                                .matchedGeometryEffect(id: "selected-pane", in: selectionAnimation)
-                        }
-                    }
-                    .accessibilityAddTraits(selection == pane ? .isSelected : [])
-                    .accessibilityIdentifier("settings.pane.\(pane.rawValue)")
                 }
+                .padding(.horizontal, SettingsMetrics.sidebarInset)
+                .padding(.bottom, SettingsMetrics.sidebarInset)
             }
-            .padding(.horizontal, 8)
+            .scrollIndicators(.never)
             .onMoveCommand { direction in
-                guard let index = SettingsPane.allCases.firstIndex(of: selection) else { return }
+                guard let index = SettingsPane.allCases.firstIndex(of: model.pane) else { return }
                 switch direction {
                 case .up: select(SettingsPane.allCases[max(0, index - 1)])
                 case .down: select(SettingsPane.allCases[min(SettingsPane.allCases.count - 1, index + 1)])
                 default: break
                 }
             }
-
-            Spacer(minLength: 24)
-
-            VStack(alignment: .leading, spacing: 12) {
-                Divider().opacity(0.5)
-                HStack(spacing: 6) {
-                    Text("Open Dropy").font(.caption).foregroundStyle(.secondary)
-                    Spacer(minLength: 4)
-                    Text(model.preferences.shortcut.display)
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
-                Text(model.versionText).font(.system(size: 10)).foregroundStyle(.tertiary)
-            }
-            .padding(14)
         }
-        .modifier(SettingsGlassSurface())
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Settings categories")
     }
 
+    private func row(_ pane: SettingsPane) -> some View {
+        let selected = model.pane == pane
+        return Button {
+            select(pane)
+        } label: {
+            HStack(spacing: SettingsMetrics.controlSpacing) {
+                SettingsIcon(symbol: pane.symbol)
+                Text(pane.title)
+                    .font(SettingsMetrics.body)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if let badge = pane.badge { SettingsBadge(badge) }
+            }
+            .padding(.horizontal, 6)
+            .frame(height: SettingsMetrics.sidebarRowHeight)
+            .contentShape(RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius))
+        }
+        .buttonStyle(.plain)
+        .background {
+            if selected {
+                RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 2, style: .continuous)
+                    .fill(contrast == .increased ? Color.primary.opacity(0.18) : SettingsTheme.selection)
+                    .matchedGeometryEffect(id: "selected-pane", in: selectionAnimation)
+            }
+        }
+        .accessibilityLabel(pane.badge.map { "\(pane.title), \($0)" } ?? pane.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("settings.pane.\(pane.rawValue)")
+    }
+
     private var searchField: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            TextField("Search settings", text: $model.settingsQuery)
+            TextField("Search", text: $model.settingsQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(SettingsMetrics.body)
                 .accessibilityLabel("Search settings")
                 .accessibilityIdentifier("settings.search")
             if !model.settingsQuery.isEmpty {
@@ -127,20 +95,107 @@ struct SettingsSidebar: View {
                 .help("Clear search")
             }
         }
-        .padding(.horizontal, 9)
-        .frame(height: 32)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+        .padding(.horizontal, 8)
+        .frame(height: SettingsMetrics.sidebarRowHeight)
+        .background(SettingsTheme.control, in: RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 2,
+                                                                 style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 0.5)
+            if contrast == .increased {
+                RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 2, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.4), lineWidth: 1)
+            }
         }
     }
 
     private func select(_ pane: SettingsPane) {
         withAnimation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.86)) {
-            selection = pane
+            model.navigate(to: pane)
         }
-        model.settingsQuery = ""
     }
+}
 
+/// The sidebar's trailing edge: a hairline with a wider invisible grip that resizes
+/// the sidebar by dragging. Double-click restores the default width.
+struct SettingsSidebarDivider: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Rectangle()
+            .fill(SettingsTheme.separator)
+            .frame(width: 1)
+            .frame(maxHeight: .infinity)
+            .overlay {
+                Color.clear
+                    .frame(width: 8)
+                    .contentShape(Rectangle())
+                    .pointerStyle(.columnResize)
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { model.resizeSidebar(by: $0.translation.width) }
+                            .onEnded { _ in model.endSidebarResize() }
+                    )
+                    .onTapGesture(count: 2) { model.resetSidebarWidth() }
+            }
+            .accessibilityElement()
+            .accessibilityLabel("Sidebar width")
+            .accessibilityValue("\(Int(model.sidebarWidth)) points")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: model.setSidebarWidth(model.sidebarWidth + 20)
+                case .decrement: model.setSidebarWidth(model.sidebarWidth - 20)
+                @unknown default: break
+                }
+            }
+    }
+}
+
+/// Back and forward through visited pages, drawn as one capsule in the title bar.
+struct SettingsHistoryButtons: View {
+    @ObservedObject var model: SettingsModel
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: model.goBack) {
+                Image(systemName: "chevron.left").frame(width: 28, height: 28).contentShape(Rectangle())
+            }
+            .disabled(!model.canGoBack)
+            .help("Back")
+            .accessibilityLabel("Back")
+            .keyboardShortcut("[", modifiers: .command)
+            Rectangle().fill(SettingsTheme.separator).frame(width: 1, height: 14)
+            Button(action: model.goForward) {
+                Image(systemName: "chevron.right").frame(width: 28, height: 28).contentShape(Rectangle())
+            }
+            .disabled(!model.canGoForward)
+            .help("Forward")
+            .accessibilityLabel("Forward")
+            .keyboardShortcut("]", modifiers: .command)
+        }
+        .buttonStyle(HistoryButtonStyle())
+        .font(.system(size: 13, weight: .medium))
+        .background(SettingsTheme.control, in: Capsule())
+        .overlay {
+            if contrast == .increased {
+                Capsule().strokeBorder(Color.primary.opacity(0.4), lineWidth: 1)
+            }
+        }
+    }
+}
+
+private struct HistoryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HistoryButtonBody(configuration: configuration)
+    }
+}
+
+private struct HistoryButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        configuration.label
+            .foregroundStyle(isEnabled ? .primary : .tertiary)
+            .opacity(configuration.isPressed ? 0.6 : 1)
+    }
 }
