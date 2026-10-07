@@ -10,7 +10,8 @@ import DropyCore
 @MainActor
 final class NativeSession: NSObject {
     private unowned let host: OverlaySessionHost
-    private let dock: WindowDock
+    /// The window Dropy manages; Live mode shares it.
+    let dock: WindowDock
     private let stage: Stage?
     /// Where the docked window and the overlay's body are, in screen coordinates.
     private var dockLayout: DockLayout?
@@ -35,14 +36,14 @@ final class NativeSession: NSObject {
 
     private var mainDisplayHeight: CGFloat { CGDisplayBounds(CGMainDisplayID()).height }
 
-    private var minimumDockWidth: CGFloat {
+    var minimumDockWidth: CGFloat {
         DockGeometry.minimumBodyWidth(notch: host.notchSize ?? CGSize(width: 180, height: 32))
     }
 
     private func isCurrent(_ request: UUID) -> Bool { request == host.generation && host.state.isDocking }
 
     /// Where the docked window should go for the current size preference.
-    private func targetLayout(for docked: WindowDock.Docked, on screen: NSScreen) -> DockLayout {
+    func targetLayout(for docked: WindowDock.Docked, on screen: NSScreen) -> DockLayout {
         let clearance = DockGeometry.clearance(notch: host.notchSize,
                                                menuBarHeight: screen.frame.maxY - screen.visibleFrame.maxY)
         let preferences = host.preferences.value
@@ -230,7 +231,8 @@ final class NativeSession: NSObject {
     /// Whether closing sends the window to the Stage: only the pinned app's window
     /// waits there; anything else goes back where the person had it.
     private var waitsOnStage: Bool {
-        guard stage?.isReady == true, let pinned = host.preferences.value.pinnedBundleIdentifier else { return false }
+        guard stage?.isReady == true, host.preferences.value.keepsPinnedAppReady,
+              let pinned = host.preferences.value.pinnedBundleIdentifier else { return false }
         return dock.current?.identity.bundleIdentifier == pinned
     }
 
@@ -239,10 +241,13 @@ final class NativeSession: NSObject {
         dock.releaseNow()
     }
 
-    /// The pinned app changed: a staged window of another app goes back where it was.
+    /// The pinned app or the keep-ready choice changed: a staged window that should no
+    /// longer wait goes back where it was.
     func pinnedAppChanged() {
-        guard dock.isStaged, dock.current?.identity.bundleIdentifier != host.preferences.value.pinnedBundleIdentifier,
-              !host.state.isDocking else { return }
+        let preferences = host.preferences.value
+        guard dock.isStaged, !host.state.isDocking,
+              !preferences.keepsPinnedAppReady || dock.current?.identity.bundleIdentifier != preferences.pinnedBundleIdentifier
+        else { return }
         Task { await dock.release() }
     }
 

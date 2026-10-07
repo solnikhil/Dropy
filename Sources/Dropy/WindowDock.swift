@@ -344,6 +344,31 @@ final class WindowDock {
         NSLog("Dropy dock: staged window=%u at %.0f,%.0f", identity.windowID, observed.frame.minX, observed.frame.minY)
     }
 
+    /// Live mode: the window waits on the Stage at `size` and the Stage is uncovered,
+    /// so the window draws at full rate for streaming. Returns its frame there.
+    func prepareLive(size: CGSize) async throws -> CGRect {
+        try await serially { [self] in
+            if current?.isStaged != true { try await moveToStageNow() }
+            guard var docked = current, let stage, let slot = stage.slot(for: size) else {
+                throw DockError.windowUnreachable("noStage")
+            }
+            try? WindowPlacer.setFrame(CGRect(origin: slot, size: size), of: docked.element, resize: true)
+            try? await Task.sleep(for: .milliseconds(40))
+            let observed = try WindowPlacer.readState(docked.element, identity: docked.identity)
+            if var entry = existingEntry(docked.identity) {
+                entry.applied = observed
+                entry.applicationConfirmed = true
+                try? journal.upsert(entry)
+            }
+            docked.frame = observed.frame
+            current = docked
+            stage.setCovered(false)
+            NSLog("Dropy dock: live on the Stage window=%u %.0fx%.0f", docked.identity.windowID,
+                  observed.frame.width, observed.frame.height)
+            return observed.frame
+        }
+    }
+
     // MARK: Letting it go
 
     /// Puts the window back where the person had it and forgets it. This is what

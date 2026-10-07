@@ -346,6 +346,7 @@ final class SettingsModel: ObservableObject {
         Content: \(preferences.contentMode.rawValue)
         Fit within size: \(preferences.automaticWindowSize ? "on" : "off")
         Use the app: \(preferences.interaction == .fullApp ? "full app" : "preview only")
+        Keep pinned app ready: \(preferences.keepsPinnedAppReady ? "on" : "off")
         Notch crossing restriction: \(preferences.restrictNotchCrossing ? "on" : "off")
         Notch trigger saved: \(preferences.trigger.rawValue)
         Notch trigger in effect: \(preferences.trigger.effective.rawValue)

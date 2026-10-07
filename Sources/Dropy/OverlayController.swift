@@ -12,6 +12,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private let stage: Stage?
     private var preview: PreviewSession!
     private var native: NativeSession!
+    /// Over a full-screen app: the window stays on the Stage and is streamed.
+    private var live: LiveSession?
     private var workspaceObservers: [NSObjectProtocol] = []
     /// Size in points of the window being shown.
     var selectedWindowSize: CGSize?
@@ -66,6 +68,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         super.init()
         preview = PreviewSession(host: self)
         native = NativeSession(host: self, journal: journal, stage: stage)
+        if let stage { live = LiveSession(host: self, native: native, stage: stage) }
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(self, selector: #selector(applicationTerminated(_:)),
                            name: NSWorkspace.didTerminateApplicationNotification, object: nil)
@@ -168,6 +171,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         preview.cancelMonitoring()
         removeSessionWatchers()
         native.end()
+        live?.end()
         let closingPanel = panel, closingBackdrop = backdrop, closingContent = content, closingWorkspace = workspace
         onClose?()
         panel = nil
@@ -462,11 +466,13 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         // Closing keeps the layout it had: switching to the window list here flashed
         // the list inside the outline as it collapsed.
         if next != .closed {
-            workspace?.showsPreview = next.isCapturing
-            workspace?.docked = next.isDocking
+            // Live streams into the preview area; the other docking states show the real window.
+            workspace?.showsPreview = next.isCapturing || next == .live
+            workspace?.docked = next.isDocking && next != .live
             workspace?.elsewhere.isHidden = { if case .dockedElsewhere = next { false } else { true } }()
-            renderer?.isHidden = next.isDocking
-            status?.isHidden = next == .viewing || next == .docked || { if case .docking = next { true } else { false } }()
+            renderer?.isHidden = next.isDocking && next != .live
+            status?.isHidden = next == .viewing || next == .docked || next == .live
+                || { if case .docking = next { true } else { false } }()
         }
         workspace?.needsLayout = true
     }
@@ -714,27 +720,40 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         switch SessionModePolicy.mode(for: conditions) {
         case .native:
             preview.stop(reason: "docking")
+            live?.end()
             native.start(selected, request: request)
-        case .live, .preview:
-            // Live needs the Stage, which is not built yet; the policy only chooses it
-            // when the Stage is available, so it is never chosen today.
+        case .live:
+            preview.stop(reason: "live")
             native.end()
-            if let note = SessionModePolicy.previewNote(for: conditions) { showNote(note) }
-            preview.start(selected.identity, request: request, renderer: renderer)
+            if let live { live.start(selected, request: request) } else { fallThroughToPreview(selected, request, conditions) }
+        case .preview:
+            fallThroughToPreview(selected, request, conditions)
         }
     }
 
-    /// What decides how a chosen window is shown. The Stage and full-screen detection
-    /// arrive with Live mode (docs/design/2026-10-07-interaction-engine-plan.md).
+    private func fallThroughToPreview(_ selected: CapturableWindow, _ request: UUID, _ conditions: SessionConditions) {
+        guard let renderer else { return }
+        native.end()
+        live?.end()
+        if let note = SessionModePolicy.previewNote(for: conditions) { showNote(note) }
+        preview.start(selected.identity, request: request, renderer: renderer)
+    }
+
+    /// What decides how a chosen window is shown: Live over another app's full-screen
+    /// space (with the Stage), the real window otherwise.
     private var sessionConditions: SessionConditions {
-        SessionConditions(interaction: preferences.value.interaction, accessibilityTrusted: WindowPlacer.isTrusted,
-                          stageAvailable: stage?.isReady == true)
+        let display = (overlayScreen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+            .uint32Value ?? CGMainDisplayID()
+        return SessionConditions(interaction: preferences.value.interaction, accessibilityTrusted: WindowPlacer.isTrusted,
+                                 fullScreenInFront: Spaces.currentIsFullScreen(on: display),
+                                 stageAvailable: stage != nil && !Spaces.displaysShareSpaces)
     }
 
     /// Docking is not possible for this window; show the live preview instead.
     func showPreviewInstead(of identity: WindowIdentity, request: UUID, note: String) {
         guard let renderer else { return }
         native.end()
+        live?.end()
         workspace?.previewShell.layer?.cornerRadius = 12
         preview.start(identity, request: request, renderer: renderer)
         showNote(note)

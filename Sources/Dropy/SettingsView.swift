@@ -80,6 +80,9 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "interactive", pane: .interaction, title: "Use the App",
                       detail: "The real app in the overlay, or a live preview only.",
                       keywords: "full app interactive click scroll typing keyboard shortcuts preview window"),
+        SettingsTopic(id: "ready", pane: .interaction, title: "Keep Pinned App Ready",
+                      detail: "The pinned app waits on a hidden display and opens on any desktop.",
+                      keywords: "stage hidden display virtual desktop spaces full screen instant"),
         SettingsTopic(id: "crossing", pane: .interaction, title: "Keep the Pointer Beside the Notch",
                       detail: "Experimental hold on sideways movement across the notch.",
                       keywords: "cursor pointer experimental accessibility option"),
@@ -420,6 +423,10 @@ struct SettingsView: View {
                         ("Preview", .previewOnly, "Show a live preview only"),
                     ])
                 }
+                SettingsToggleRow("Keep Pinned App Ready",
+                                  detail: "Its window waits on a hidden display between openings, so it opens on any desktop.",
+                                  isOn: model.binding(\.keepsPinnedAppReady))
+                    .disabled(model.preferences.interaction != .fullApp)
                 if model.preferences.interaction == .fullApp, !model.accessibilityGranted {
                     SettingsNotice(symbol: "hand.raised", title: "Accessibility access required",
                                    detail: "Allow Dropy to move the app's window into the overlay. Until then it is a preview.") {
@@ -449,7 +456,7 @@ struct SettingsView: View {
     }
 
     private var interactionFooter: String {
-        "With Full App, the app's own window moves into the overlay and its app comes to the front. When the overlay closes, the window goes back where it was."
+        "With Full App, the app's own window moves into the overlay and its app comes to the front. Over a full-screen app, Dropy streams the window instead, so macOS shows its screen-recording indicator while it is open. A window you pick that isn't pinned goes back where it was."
     }
 
     private var crossingStatus: String {

@@ -44,9 +44,17 @@ Instead, **Full App** interaction docks the real window:
 2. **In use.** The overlay panel is non-activating and ignores the pointer except over its own outline (the band with the controls, and the border). Nothing streams. Clicks inside the app, its menus, the menu bar and system panels it opens keep the overlay (`DockPolicy.clickIsInside`); another app coming to the front closes it (`DockPolicy.activationCloses`). Esc belongs to the app; the shortcut toggles. Resizing the window moves the outline with it; dragging it away, full screen or minimizing hands it to the person.
 3. **Closing.** A fresh snapshot covers the window's place while the window goes back to the frame the journal recorded, then the outline closes. Focus returns to the previous app if the person was still in the docked one. A window the person minimized or hid while docked is put back to its frame and stays minimized or hidden. Quitting Dropy or a crash restores it the same way.
 
-A window on another desktop or behind a full-screen app cannot be moved here with public API, so the overlay shows its snapshot and offers to go there. Without Accessibility, or with **Preview only**, the overlay shows the live view-only capture.
+### The Stage and Live mode (2026-10-08)
 
-Pure decisions are in `DropyCore/DockGeometry.swift` and `DropyCore/DockPolicy.swift` (`DockTests`); the AppKit side is `Dropy/WindowDock.swift` and the docking section of `OverlayController`.
+A window cannot be moved between desktops with public API, but it can be moved between displays, and it lands on the destination display's current desktop. Dropy therefore owns a hidden virtual display, the **Stage** (`Stage`, through the `DropyStageShim` wrapper of CoreGraphics' private `CGVirtualDisplay`). It is created at launch for Full App with "Keep Pinned App Ready" on, sized like the notch display, placed past the bottom-right corner of every display so it touches them at one point, guarded by an event tap against a stray pointer, and covered by an opaque curtain while nothing on it is shown so its apps idle. Measurements: [stage spike results](docs/design/2026-10-07-stage-spike-results.md).
+
+- **Pinned app, Native.** Closing moves the pinned app's window to its slot on the Stage (`PlacementMode.staged`) instead of its original place; the next opening moves it from the Stage into the notch on whatever desktop the person is on. A window found on another desktop is pulled over through the Stage. Quitting puts it back to its original frame.
+- **Live, over a full-screen app** (`LiveSession`). An ordinary window cannot join another app's full-screen space, so the window stays on the Stage, uncovered, and `LiveCaster` streams the Stage region it occupies (a display region, so its menus and popovers show). `PointerHandoff` moves the real pointer onto the Stage while it is over the cast and back when it leaves; `SoftCursor` draws the app's cursor in the overlay; the app is brought to the front, so the keyboard needs no forwarding. macOS shows its screen-recording indicator while Live is open.
+- **Mode choice** is `SessionModePolicy` (Preview without Accessibility or by choice; Live when the notch display shows a full-screen space and the Stage is usable; Native otherwise). "Displays have separate Spaces" off disables the Stage.
+
+Without the Stage (unsupported macOS, the switch off, shared Spaces), a window on another desktop cannot be brought over: the overlay shows its snapshot and offers to go there, and a full-screen space gets the view-only preview.
+
+Pure decisions are in `DropyCore/DockGeometry.swift`, `DockPolicy.swift`, `StageGeometry.swift`, `PointerHandoff.swift` and `SessionModePolicy.swift`, each unit-tested; the AppKit side is `WindowDock`, `NativeSession`, `LiveSession`, `LiveCaster`, `Stage` and `PreviewSession`, hosted by `OverlayController`.
 
 ## Source-window placement boundary
 

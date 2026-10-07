@@ -17,9 +17,10 @@ import DropyStageShim
 @MainActor
 final class Stage {
     enum Failure: Error, CustomStringConvertible {
-        case unsupported, refused, notReported, accessibilityNotTrusted
+        case unsupported, refused, notReported, accessibilityNotTrusted, displaysShareSpaces
         var description: String {
             switch self {
+            case .displaysShareSpaces: "displaysShareSpaces"
             case .unsupported: "unsupported"
             case .refused: "refused"
             case .notReported: "notReported"
@@ -93,6 +94,9 @@ final class Stage {
     private func create() async throws {
         guard Self.isSupported else { throw Failure.unsupported }
         guard AXIsProcessTrusted() else { throw Failure.accessibilityNotTrusted }
+        // With one set of desktops across displays, the Stage would switch desktops along
+        // with the main display, and windows on it would come and go with them.
+        guard !Spaces.displaysShareSpaces else { throw Failure.displaysShareSpaces }
         let notch = NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
         let size = StageGeometry.size(for: notch?.frame.size ?? CGSize(width: 1512, height: 982))
         let refresh = Double(notch?.maximumFramesPerSecond ?? 60)

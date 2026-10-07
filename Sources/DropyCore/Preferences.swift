@@ -128,6 +128,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var restrictNotchCrossing: Bool
     public var automaticWindowSize: Bool
     public var interaction: InteractionMode
+    /// Keep the pinned app's window on Dropy's hidden Stage display between openings,
+    /// so it opens on any desktop and over full-screen apps.
+    public var keepsPinnedAppReady: Bool
     /// Show a Dock icon and Dropy's own menu bar like an ordinary app. Off leaves only
     /// the menu-bar item (the Settings window still brings the Dock icon while open).
     public var showInDock: Bool
@@ -148,6 +151,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         restrictNotchCrossing: Bool = false,
         automaticWindowSize: Bool = true,
         interaction: InteractionMode = .fullApp,
+        keepsPinnedAppReady: Bool = true,
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
         shortcut: KeyShortcut = .default
@@ -162,6 +166,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.restrictNotchCrossing = restrictNotchCrossing
         self.automaticWindowSize = automaticWindowSize
         self.interaction = interaction
+        self.keepsPinnedAppReady = keepsPinnedAppReady
         self.showInDock = showInDock
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
         self.shortcut = shortcut
@@ -180,7 +185,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
-        case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, showInDock
+        case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, showInDock
         case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize
     }
 
@@ -202,6 +207,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         automaticWindowSize = try container.decodeIfPresent(Bool.self, forKey: .automaticWindowSize) ?? defaults.automaticWindowSize
         // The old "interactivePreview" switch belonged to the removed input bridge and is ignored.
         interaction = try container.decodeIfPresent(InteractionMode.self, forKey: .interaction) ?? defaults.interaction
+        keepsPinnedAppReady = try container.decodeIfPresent(Bool.self, forKey: .keepsPinnedAppReady)
+            ?? defaults.keepsPinnedAppReady
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)

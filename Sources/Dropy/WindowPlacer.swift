@@ -394,6 +394,26 @@ enum Spaces {
         return spaces.map(\.uint64Value)
     }
 
+    /// Whether the display's current Space is another app's full screen, which an
+    /// ordinary window cannot join. False when unknown.
+    static func currentIsFullScreen(on display: CGDirectDisplayID) -> Bool {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopyManagedDisplaySpaces", as: CopyDisplaySpaces.self),
+              let displays = copy(connection)?.takeRetainedValue() as? [[String: Any]] else { return false }
+        let uuid = CGDisplayCreateUUIDFromDisplayID(display)
+            .map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String }
+        let entry = displays.first { $0["Display Identifier"] as? String == uuid }
+            ?? (CGDisplayIsMain(display) != 0 ? displays.first { $0["Display Identifier"] as? String == "Main" } : nil)
+        // Space type 4 is a full-screen app (0 is an ordinary desktop).
+        return (entry?["Current Space"] as? [String: Any])?["type"] as? Int == 4
+    }
+
+    /// Whether every display shares one set of desktops ("Displays have separate Spaces"
+    /// off). The Stage then has no desktop of its own and cannot help.
+    static var displaysShareSpaces: Bool {
+        UserDefaults(suiteName: "com.apple.spaces")?.bool(forKey: "spans-displays") ?? false
+    }
+
     /// The current Space of each display.
     static func current() -> [UInt64]? {
         guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),

@@ -194,7 +194,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The Stage is created ahead of the first opening, so pinned apps open at once. It
     /// needs Full App interaction and Accessibility; it is never created otherwise.
     private func startStageIfUseful() {
-        guard let stage, preferences.value.interaction == .fullApp, WindowPlacer.isTrusted else { return }
+        guard let stage, preferences.value.interaction == .fullApp, preferences.value.keepsPinnedAppReady,
+              WindowPlacer.isTrusted else { return }
         Task { await stage.start() }
     }
 
@@ -214,7 +215,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     guard let self else { return }
                     if self.overlay.state == .closed { self.overlay.open() }
                     var waited = 0
-                    while self.overlay.state != .viewing, self.overlay.state != .docked,
+                    while self.overlay.state != .viewing, self.overlay.state != .docked, self.overlay.state != .live,
                           self.overlay.state.failure == nil, waited < 10_000 {
                         try? await Task.sleep(for: .milliseconds(50))
                         waited += 50
@@ -451,6 +452,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             preferences.update { $0.shortcut = old.shortcut }
             registerShortcut()
             settings.model.shortcutRejected("Another app already uses \(new.shortcut.display). Choose a different one.")
+        }
+        if new.keepsPinnedAppReady != old.keepsPinnedAppReady {
+            overlay.pinnedAppChanged()
+            startStageIfUseful()
         }
         if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier {
             overlay.pinnedAppChanged()

@@ -13,9 +13,14 @@ Milestones are **evidence gates**, not calendar promises. Work may move between 
 | M4 · Product experience and performance | Direct/last/picker opening, app pinning, size and region controls, dismissal, shortcut and notchless entry, accessibility, multi-display/full-screen behavior, benchmark suite | End-to-end journeys pass on target hardware; latency and resource budgets are measured and met for supported workflows |
 | M5 · Release candidate | Compatibility matrix, signed/notarized packaging, update and rollback policy, documentation, privacy review, regression testing | Reproducible release with honest app/workflow support and no unresolved data-loss, security or source-window restoration failure |
 
-## Interaction decision (2026-10-07)
+## Interaction decision (2026-10-07) and status (2026-10-08)
 
-The M3 input bridge is replaced by docking the real window in the overlay (see [ARCHITECTURE](ARCHITECTURE.md#interaction-the-real-window-in-the-overlay-decision-2026-10-07)). The gates below are history: typing, shortcuts, menus, IME and drag now work because the person uses the real window. The new gates are per app: the window accepts the docked size, returns from home intact, restores exactly after quit and crash, and the overlay closes when another app comes forward. Not yet covered: multiple displays, Stage Manager, and apps whose windows refuse resizing (shown at their own size).
+The M3 input bridge is replaced by using the real window (see [ARCHITECTURE](ARCHITECTURE.md#interaction-the-real-window-in-the-overlay-decision-2026-10-07) and the [interaction plan](docs/design/2026-10-07-interaction-engine-plan.md)). Built: docking (Native), the hidden Stage display for pinned apps, and Live mode over full-screen apps, each smoke-tested once on device with TextEdit and Safari. Open:
+
+- **Manual testing by a person:** how the Live pointer hand-off feels, dragging from a Live window to another app, menus that extend past the window (the stream is clipped to the window's region), resizing or moving a window while Live.
+- **Measurements:** extend `benchmark-phases.sh` with the Stage states (closed with a staged app, Native, Live) and make the plan's budgets release gates.
+- **Not handled yet:** Stage Manager, several displays, more than one pinned app, a crash that leaves a staged window on desktop 1 (macOS rescues it there; the journal restores its frame but not its desktop).
+- **Distribution:** `CGVirtualDisplay` is private; Dropy is Developer ID only (it cannot be sandboxed anyway).
 
 ## Earlier: M3 compatibility and reliability gates
 

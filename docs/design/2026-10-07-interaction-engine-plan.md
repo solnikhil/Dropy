@@ -1,5 +1,7 @@
 # Interaction engine: research and plan
 
+> **Status (8 October 2026):** Phases 1–5 are built: sessions and policy, the Stage, pinned apps waiting on the Stage, Live mode over full-screen apps, and the settings. Each was smoke-tested once on device. Phase 6's benchmark extension and manual testing of the Live hand-off remain; see ROADMAP.
+>
 > **Phase 0 done (7 October 2026):** every spike passed (S4 on mechanics; its feel has not been tried by a person yet). Decisions taken: pinned apps live on the Stage, `CGVirtualDisplay` is accepted with fallback, and Live mode is used only when needed. See [stage spike results](2026-10-07-stage-spike-results.md).
 
 Research and plan, 7 October 2026. Nothing here is built yet. It builds on what ships on `notch-app-shell`: docking the real window, which puts the window back where it was on close, plus the view-only preview. The local measurements cited come from `docs/BENCHMARK.md` and `docs/FEASIBILITY.md`.
