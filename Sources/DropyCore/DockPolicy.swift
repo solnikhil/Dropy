@@ -71,22 +71,6 @@ public enum DockPolicy {
         processID != sourceProcessID && processID != ownProcessID && !isSystemHelper(bundleIdentifier)
     }
 
-    // MARK: Where the window waits
-
-    /// Where the window goes while the overlay is closed.
-    public enum Home: String, Codable, Equatable, Sendable {
-        /// Hide the app: nothing on screen, Command-Tab still lists it.
-        case hideApp
-        /// Move only this window beyond the displays, so the app's other windows stay.
-        case park
-    }
-
-    /// Hiding the app would also hide its other windows, so only an app whose one
-    /// visible window is the docked one is hidden.
-    public static func home(otherVisibleWindows: Int) -> Home {
-        otherVisibleWindows == 0 ? .hideApp : .park
-    }
-
     // MARK: Changes the person makes
 
     public enum WindowChange: Equatable, Sendable {

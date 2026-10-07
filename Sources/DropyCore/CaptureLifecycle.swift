@@ -47,6 +47,23 @@ public enum CaptureFailure: Equatable, Sendable {
 
     /// Only a permission failure can be fixed in System Settings.
     public var opensPrivacySettings: Bool { self == .permissionDenied }
+
+    /// The failure for an error from starting or running a stream.
+    public static func stream(domain: String, code: Int) -> CaptureFailure {
+        switch CaptureErrorKind.classify(domain: domain, code: code) {
+        case .permissionDenied: .permissionDenied
+        case .stoppedFromSystemControls: .stoppedFromSystemControls
+        case .windowListUnavailable: .windowListUnavailable(code: code)
+        case .sourceMissing, .interrupted: .streamInterrupted(code: code)
+        }
+    }
+
+    /// The failure for an error reading the window list: only a revoked permission is
+    /// told apart from the list being unavailable.
+    public static func catalog(domain: String, code: Int) -> CaptureFailure {
+        CaptureErrorKind.classify(domain: domain, code: code) == .permissionDenied
+            ? .permissionDenied : .windowListUnavailable(code: code)
+    }
 }
 
 /// Visibility facts must not conflate another display with a hidden/minimized app.

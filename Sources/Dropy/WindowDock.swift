@@ -4,13 +4,14 @@ import DropyCore
 import ScreenCaptureKit
 
 /// Puts an app's real window inside the overlay, brings its app to the front, and
-/// sends it home when the overlay closes. Nothing is forwarded: the person uses the
-/// real window, so every key, shortcut, input method, menu and drag works as usual.
+/// puts it back where it was when the overlay closes. Nothing is forwarded: the
+/// person uses the real window, so every key, shortcut, input method, menu and drag
+/// works as usual.
 ///
 /// Every move is journaled first (`PlacementMode.docked`, with the window's original
 /// frame), so a crash or quit puts the window back where the person had it.
 /// Operations run one at a time in the order asked, so a close during an opening
-/// sends the window home only after it has been placed.
+/// puts the window back only after it has been placed.
 @MainActor
 final class WindowDock {
     enum DockError: Error, CustomStringConvertible {
@@ -37,7 +38,7 @@ final class WindowDock {
         case detached
         case closed
         case minimized
-        /// Hidden with Command-H: it waits hidden, as if sent home.
+        /// Hidden with Command-H.
         case appHidden
     }
 
@@ -50,12 +51,9 @@ final class WindowDock {
         /// The window as it last looked, for the opening and closing animations.
         var snapshot: CGImage?
         var cornerRadius: CGFloat
-        /// Where it waits while the overlay is closed; nil while it is shown.
-        var home: DockPolicy.Home?
     }
 
     private let journal: PlacementJournal
-    private let parkingTabs: ParkingTabs
     private(set) var current: Docked?
     var onEvent: ((Event) -> Void)?
     /// Called when a release could not finish yet, so recovery can retry it.
@@ -63,9 +61,8 @@ final class WindowDock {
     private var observer: AXObserver?
     private var queue: Task<Void, Never>?
 
-    init(journal: PlacementJournal, parkingTabs: ParkingTabs) {
+    init(journal: PlacementJournal) {
         self.journal = journal
-        self.parkingTabs = parkingTabs
     }
 
     /// Runs `body` after every operation asked for before it.
@@ -104,7 +101,7 @@ final class WindowDock {
             }
             let state = try WindowPlacer.readState(element, identity: identity)
             current = Docked(identity: identity, window: window, element: element, frame: state.frame,
-                             snapshot: nil, cornerRadius: DockGeometry.defaultCornerRadius, home: nil)
+                             snapshot: nil, cornerRadius: DockGeometry.defaultCornerRadius)
             if onActiveSpace { await refreshSnapshot() }
         }
     }
@@ -145,20 +142,12 @@ final class WindowDock {
         try await serially { [self] in
             guard var docked = current else { throw DockError.nothingDocked }
             let identity = docked.identity
-            let wasHome = docked.home
             let original = try existingEntry(identity)?.original
                 ?? WindowPlacer.readState(docked.element, identity: identity)
             var entry = PlacementEntry(identity: identity, mode: .docked, original: original,
                                        applied: WindowPlacementState(frame: frame, isMinimized: false, isAppHidden: false),
                                        createdAt: existingEntry(identity)?.createdAt ?? Date(), applicationConfirmed: false)
             do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
-            if wasHome == .hideApp, let application = NSRunningApplication(processIdentifier: identity.processID),
-               application.isHidden {
-                application.unhide()
-                // A hidden app's window can leave Accessibility; wait for it to come back.
-                docked.element = try await findElement(identity)
-            }
-            if wasHome == .park { parkingTabs.remove(identity) }
             setFrame(frame, of: docked.element)
             // Some apps apply a new size a moment later (a layout pass of their own).
             try? await Task.sleep(for: .milliseconds(40))
@@ -171,7 +160,6 @@ final class WindowDock {
             entry.applicationConfirmed = true
             do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
             docked.frame = observed.frame
-            docked.home = nil
             current = docked
             startObserving(docked)
             // The capture catalog's copy of the window still has its old size; refresh it
@@ -300,79 +288,10 @@ final class WindowDock {
         return DockGeometry.cornerRadius(diagonalAlpha: diagonal, scale: scale)
     }
 
-    // MARK: Sending it home
-
-    /// Hides the app, or parks the window when the app has other windows open, and
-    /// returns which. The window keeps its docked size, so the next opening only has
-    /// to show it.
-    @discardableResult
-    func sendHome() async -> DockPolicy.Home? {
-        try? await serially { [self] in
-            guard var docked = current, docked.home == nil, var entry = existingEntry(docked.identity) else {
-                return nil
-            }
-            let identity = docked.identity
-            let home = DockPolicy.home(otherVisibleWindows: Self.otherVisibleWindows(of: identity))
-            // Set first: the observer ignores Dropy's own homing moves.
-            docked.home = home
-            current = docked
-            switch home {
-            case .hideApp:
-                entry.applied.isAppHidden = true
-                entry.applicationConfirmed = false
-                try? journal.upsert(entry)
-                NSRunningApplication(processIdentifier: identity.processID)?.hide()
-                for _ in 0..<20 {
-                    if NSRunningApplication(processIdentifier: identity.processID)?.isHidden == true { break }
-                    try? await Task.sleep(for: .milliseconds(25))
-                }
-                entry.applied.isAppHidden = NSRunningApplication(processIdentifier: identity.processID)?.isHidden ?? true
-                entry.applicationConfirmed = true
-                try? journal.upsert(entry)
-            case .park:
-                let parked = PlacementGeometry.offscreenFrame(for: docked.frame, displays: WindowPlacer.displayBounds())
-                entry.applied.frame = parked
-                entry.applicationConfirmed = false
-                try? journal.upsert(entry)
-                try? WindowPlacer.setPosition(parked.origin, of: docked.element)
-                if let observed = try? WindowPlacer.readState(docked.element, identity: identity) {
-                    entry.applied = observed
-                }
-                entry.applicationConfirmed = true
-                try? journal.upsert(entry)
-                parkingTabs.show(for: entry)
-            }
-            NSLog("Dropy dock: home=%@ window=%u", home.rawValue, identity.windowID)
-            return home
-        }
-    }
-
-    /// The person hid the app themselves: the window is home already.
-    func markHiddenByPerson() {
-        guard var docked = current, var entry = existingEntry(docked.identity) else { return }
-        docked.home = .hideApp
-        current = docked
-        entry.applied.isAppHidden = true
-        try? journal.upsert(entry)
-    }
-
-    private static func otherVisibleWindows(of identity: WindowIdentity) -> Int {
-        let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
-            as? [[String: Any]] ?? []
-        return rows.filter { row in
-            guard (row[kCGWindowOwnerPID as String] as? Int32) == identity.processID,
-                  (row[kCGWindowNumber as String] as? UInt32) != identity.windowID,
-                  (row[kCGWindowLayer as String] as? Int) == 0,
-                  ((row[kCGWindowAlpha as String] as? Double) ?? 1) > 0,
-                  let bounds = (row[kCGWindowBounds as String] as? NSDictionary).flatMap(CGRect.init(dictionaryRepresentation:))
-            else { return false }
-            return bounds.width > 60 && bounds.height > 60
-        }.count
-    }
-
     // MARK: Letting it go
 
-    /// Puts the window back where the person had it and forgets it.
+    /// Puts the window back where the person had it and forgets it. This is what
+    /// closing the overlay does.
     func release() async {
         _ = try? await serially { [self] in releaseNow() }
     }
@@ -382,29 +301,42 @@ final class WindowDock {
         guard let docked = current else { return }
         stopObserving()
         current = nil
-        parkingTabs.remove(docked.identity)
         guard let entry = existingEntry(docked.identity) else { return }
         let outcome = WindowPlacer.restore(entry, journal: journal)
         NSLog("Dropy dock: released window=%u outcome=%@", docked.identity.windowID, PlacementJournal.name(outcome))
         if outcome.retriesAutomatically { onDeferredRestore?(docked.identity) }
     }
 
-    /// The person took the window (moved it away, made it full screen, minimized it),
-    /// or it closed: stop tracking it and leave it where it is.
+    /// The person took the window (moved it away, made it full screen), or it closed:
+    /// stop tracking it and leave it where it is.
     func detach() {
         guard let docked = current else { return }
         stopObserving()
         current = nil
-        parkingTabs.remove(docked.identity)
         try? journal.remove(docked.identity)
         NSLog("Dropy dock: detached window=%u", docked.identity.windowID)
     }
 
-    /// The journal entry was settled elsewhere (recovery or a parking tab).
-    func journalChanged() {
-        guard let docked = current, existingEntry(docked.identity) == nil, docked.home != nil else { return }
+    /// The person minimized or hid the docked window: it goes back to its original
+    /// frame and stays minimized or hidden, so it reappears where they had it.
+    func putBackKeepingState() {
+        guard let docked = current else { return }
         stopObserving()
         current = nil
+        if let entry = existingEntry(docked.identity) {
+            try? WindowPlacer.setFrame(entry.original.frame, of: docked.element, resize: true)
+        }
+        try? journal.remove(docked.identity)
+        NSLog("Dropy dock: put back (minimized or hidden) window=%u", docked.identity.windowID)
+    }
+
+    /// Whether the docked window's journal entry was settled elsewhere (recovery
+    /// restored it); the window is then no longer Dropy's.
+    func journalChanged() -> Bool {
+        guard let docked = current, existingEntry(docked.identity) == nil, observer != nil else { return false }
+        stopObserving()
+        current = nil
+        return true
     }
 
     /// The docked window's size before Dropy first moved it.
@@ -446,8 +378,6 @@ final class WindowDock {
             onEvent?(.closed)
             return
         }
-        // Moves while waiting at home are Dropy's own.
-        guard docked.home == nil else { return }
         switch notification {
         case kAXWindowMiniaturizedNotification:
             onEvent?(.minimized)

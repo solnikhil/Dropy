@@ -128,13 +128,6 @@ final class DockTests: XCTestCase {
                                                    sourceProcessID: source, ownProcessID: own))
     }
 
-    // MARK: Home
-
-    func testOnlyAnAppWithOneWindowIsHidden() {
-        XCTAssertEqual(DockPolicy.home(otherVisibleWindows: 0), .hideApp)
-        XCTAssertEqual(DockPolicy.home(otherVisibleWindows: 2), .park)
-    }
-
     // MARK: Changes by the person
 
     private let docked = CGRect(x: 306, y: 33, width: 900, height: 600)

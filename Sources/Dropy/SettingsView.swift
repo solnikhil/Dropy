@@ -449,7 +449,7 @@ struct SettingsView: View {
     }
 
     private var interactionFooter: String {
-        "With Full App, the app's own window moves into the overlay and its app comes to the front. When the overlay closes, the window waits out of sight until next time. Quitting Dropy puts it back where it was."
+        "With Full App, the app's own window moves into the overlay and its app comes to the front. When the overlay closes, the window goes back where it was."
     }
 
     private var crossingStatus: String {

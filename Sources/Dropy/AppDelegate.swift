@@ -41,7 +41,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        overlay = OverlayController(preferences: preferences, journal: placementJournal, parkingTabs: parkingTabs)
+        overlay = OverlayController(preferences: preferences, journal: placementJournal)
         overlay.onDeferredRestore = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
@@ -424,9 +424,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
             }
         }
-        if new.interaction != old.interaction || new.openTargetBundleIdentifier != old.openTargetBundleIdentifier {
-            overlay.dockingPreferencesChanged()
-        }
+        if new.interaction != old.interaction { overlay.dockingPreferencesChanged() }
         if new.sizePreset != old.sizePreset || new.contentMode != old.contentMode || new.automaticWindowSize != old.automaticWindowSize, overlay.state != .closed {
             overlay.close()
             overlay.open()
