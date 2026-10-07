@@ -147,7 +147,9 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         installSessionWatchers(on: panel, finalFrame: canvas)
         morphOpen(panel)
         panel.orderFrontRegardless()
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        // Key without activating Dropy: the panel is non-activating, so the window list
+        // still gets the keyboard, but Dropy never becomes the active app and its menu
+        // bar never flashes over the app the person was in (or the one being docked).
         panel.makeKeyAndOrderFront(nil)
         setState(.selecting)
         onOpen?()
