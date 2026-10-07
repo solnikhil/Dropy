@@ -9,6 +9,7 @@ import ScreenCaptureKit
 @MainActor
 final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     let preferences: PreferenceStore
+    private let stage: Stage?
     private var preview: PreviewSession!
     private var native: NativeSession!
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -59,11 +60,12 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     var currentSelection: WindowIdentity? { selectedIdentity }
     func captureCounts() -> CaptureCounts? { preview.captureCounts() }
 
-    init(preferences: PreferenceStore, journal: PlacementJournal) {
+    init(preferences: PreferenceStore, journal: PlacementJournal, stage: Stage?) {
         self.preferences = preferences
+        self.stage = stage
         super.init()
         preview = PreviewSession(host: self)
-        native = NativeSession(host: self, journal: journal)
+        native = NativeSession(host: self, journal: journal, stage: stage)
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(self, selector: #selector(applicationTerminated(_:)),
                            name: NSWorkspace.didTerminateApplicationNotification, object: nil)
@@ -725,7 +727,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// What decides how a chosen window is shown. The Stage and full-screen detection
     /// arrive with Live mode (docs/design/2026-10-07-interaction-engine-plan.md).
     private var sessionConditions: SessionConditions {
-        SessionConditions(interaction: preferences.value.interaction, accessibilityTrusted: WindowPlacer.isTrusted)
+        SessionConditions(interaction: preferences.value.interaction, accessibilityTrusted: WindowPlacer.isTrusted,
+                          stageAvailable: stage?.isReady == true)
     }
 
     /// Docking is not possible for this window; show the live preview instead.
@@ -823,4 +826,10 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// The placement journal was settled elsewhere (recovery restored the window).
     func journalChanged() { native.journalChanged() }
+
+    /// The pinned app changed.
+    func pinnedAppChanged() { native.pinnedAppChanged() }
+
+    /// The Stage ended unexpectedly.
+    func stageLost() { native.stageLost() }
 }

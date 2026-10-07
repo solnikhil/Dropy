@@ -10,7 +10,9 @@ let package = Package(
     ],
     targets: [
         .target(name: "DropyCore"),
-        .executableTarget(name: "Dropy", dependencies: ["DropyCore"]),
+        // CoreGraphics' private virtual-display classes, for the Stage.
+        .target(name: "DropyStageShim", linkerSettings: [.linkedFramework("CoreGraphics")]),
+        .executableTarget(name: "Dropy", dependencies: ["DropyCore", "DropyStageShim"]),
         .testTarget(name: "DropyCoreTests", dependencies: ["DropyCore"]),
     ]
 )

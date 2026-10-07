@@ -12,7 +12,12 @@ swiftc -swift-version 6 -parse-as-library -emit-library -emit-module \
   -o "$build_dir/libDropyCore.dylib" \
   "$repo_dir"/Sources/DropyCore/*.swift
 
+# The Stage's Objective-C shim (CoreGraphics' private virtual-display classes).
+clang -fobjc-arc -fmodules -O2 -c "$repo_dir/Sources/DropyStageShim/DropyStageShim.m" \
+  -I "$repo_dir/Sources/DropyStageShim/include" -o "$build_dir/DropyStageShim.o"
+
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -I "$repo_dir/Sources/DropyStageShim/include" "$build_dir/DropyStageShim.o" -framework CoreGraphics \
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' \
   -o "$app_dir/Contents/MacOS/Dropy" \
   "$repo_dir"/Sources/Dropy/*.swift

@@ -11,6 +11,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: GlobalHotKey?
     private let placementJournal = PlacementJournal()
     private let parkingTabs = ParkingTabs()
+    /// The hidden display where pinned apps wait between openings.
+    private let stage: Stage? = Stage.isSupported ? Stage() : nil
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
     private var settings: SettingsWindowController!
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
@@ -41,7 +43,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        overlay = OverlayController(preferences: preferences, journal: placementJournal)
+        overlay = OverlayController(preferences: preferences, journal: placementJournal, stage: stage)
+        stage?.onLost = { [weak self] in self?.overlay.stageLost() }
         overlay.onDeferredRestore = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
@@ -184,7 +187,15 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.async { [weak self] in self?.overlay.open() }
         }
+        startStageIfUseful()
         startDebugDriversIfRequested()
+    }
+
+    /// The Stage is created ahead of the first opening, so pinned apps open at once. It
+    /// needs Full App interaction and Accessibility; it is never created otherwise.
+    private func startStageIfUseful() {
+        guard let stage, preferences.value.interaction == .fullApp, WindowPlacer.isTrusted else { return }
+        Task { await stage.start() }
     }
 
     /// Development-only drivers for repeatable measurements without input automation.
@@ -235,6 +246,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A deferred entry stays in the journal; the next launch keeps trying.
         placementJournal.restoreAll()
         parkingTabs.removeAll()
+        // Last: windows on the Stage have been put back by now.
+        stage?.stop()
     }
 
     /// Development-only M2 experiment:
@@ -424,7 +437,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
             }
         }
-        if new.interaction != old.interaction { overlay.dockingPreferencesChanged() }
+        if new.interaction != old.interaction {
+            overlay.dockingPreferencesChanged()
+            startStageIfUseful()
+        }
         if new.sizePreset != old.sizePreset || new.contentMode != old.contentMode || new.automaticWindowSize != old.automaticWindowSize, overlay.state != .closed {
             overlay.close()
             overlay.open()
@@ -437,6 +453,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settings.model.shortcutRejected("Another app already uses \(new.shortcut.display). Choose a different one.")
         }
         if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier {
+            overlay.pinnedAppChanged()
             // An open overlay still choosing a window shows the newly pinned app now.
             if new.pinnedBundleIdentifier != nil, overlay.state == .selecting { overlay.refreshWindows() }
         }

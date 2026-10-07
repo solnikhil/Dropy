@@ -4,18 +4,22 @@ import DropyCore
 /// Full App interaction: the chosen app's real window moves into the overlay and its
 /// app comes to the front, so the person uses it exactly as usual. A snapshot covers
 /// the window's place while it moves in and out, so the swap does not show. Nothing
-/// streams while the window is in use. Closing puts the window back where it was.
+/// streams while the window is in use. Closing puts a pinned app's window on the
+/// Stage, ready for the next opening from any desktop, and any other window back
+/// where it was.
 @MainActor
 final class NativeSession: NSObject {
     private unowned let host: OverlaySessionHost
     private let dock: WindowDock
+    private let stage: Stage?
     /// Where the docked window and the overlay's body are, in screen coordinates.
     private var dockLayout: DockLayout?
     private var monitors: [Any] = []
 
-    init(host: OverlaySessionHost, journal: PlacementJournal) {
+    init(host: OverlaySessionHost, journal: PlacementJournal, stage: Stage?) {
         self.host = host
-        dock = WindowDock(journal: journal)
+        self.stage = stage
+        dock = WindowDock(journal: journal, stage: stage)
         super.init()
         dock.onEvent = { [weak self] event in self?.handleDockEvent(event) }
     }
@@ -61,6 +65,9 @@ final class NativeSession: NSObject {
         setSnapshot(nil)
         host.setState(.docking(applicationName: selected.applicationName))
         Task {
+            // The Stage normally starts with Dropy; start it now if it is not up yet.
+            if let stage, !stage.isReady { await stage.start() }
+            guard isCurrent(request) else { return }
             do {
                 try await dock.adopt(selected.window, identity: selected.identity)
             } catch {
@@ -181,15 +188,16 @@ final class NativeSession: NSObject {
     }
 
     /// Finishes closing an overlay that was docking: a fresh picture covers the
-    /// window's place, the window goes back where it was (unless the person already
-    /// took it), the outline collapses, and focus returns to the previous app only
-    /// while the person is still in the docked app or in Dropy.
+    /// window's place, the window goes to the Stage (a pinned app) or back where it was
+    /// (unless the person already took it), the outline collapses, and focus returns to
+    /// the previous app only while the person is still in the docked app or in Dropy.
     /// - Returns: false when nothing was docked, so the overlay closes normally.
     func close(panel: OverlayPanel, backdrop: MorphBackdropView?, content: NSView?, workspace: OverlayWorkspaceView?,
                wasDocked: Bool, putsBack: Bool, returnsFocus: Bool, previous: NSRunningApplication?) -> Bool {
         guard dock.current != nil else { return false }
         panel.ignoresMouseEvents = true
         let dropyActive = NSApplication.shared.isActive
+        let stages = putsBack && waitsOnStage
         Task { @MainActor [weak self] in
             guard let self else { return }
             let source = self.dock.current?.identity.processID
@@ -200,21 +208,50 @@ final class NativeSession: NSObject {
                 workspace?.layoutSubtreeIfNeeded()
             }
             backdrop?.hole = nil
-            if putsBack { await self.dock.release() }
+            if putsBack {
+                if stages { await self.dock.moveToStage() } else { await self.dock.release() }
+            }
             self.host.morphClosed(panel, backdrop: backdrop, content: content)
-            guard returnsFocus else { return }
             let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            // A staged window's app keeps the keyboard with nothing on screen, so focus
+            // always moves on from it; otherwise only when asked.
+            guard returnsFocus || (stages && front == source) else { return }
             guard dropyActive || front == source || front == getpid() else { return }
             if let previous, !previous.isTerminated, previous.processIdentifier != source {
                 WindowDock.activateApplication(previous.processIdentifier)
+            } else if stages, let finder = NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.apple.finder").first {
+                WindowDock.activateApplication(finder.processIdentifier)
             }
         }
         return true
     }
 
-    /// Puts a docked window back where the person had it, for quitting.
+    /// Whether closing sends the window to the Stage: only the pinned app's window
+    /// waits there; anything else goes back where the person had it.
+    private var waitsOnStage: Bool {
+        guard stage?.isReady == true, let pinned = host.preferences.value.pinnedBundleIdentifier else { return false }
+        return dock.current?.identity.bundleIdentifier == pinned
+    }
+
+    /// Puts a docked or staged window back where the person had it, for quitting.
     func releaseNow() {
         dock.releaseNow()
+    }
+
+    /// The pinned app changed: a staged window of another app goes back where it was.
+    func pinnedAppChanged() {
+        guard dock.isStaged, dock.current?.identity.bundleIdentifier != host.preferences.value.pinnedBundleIdentifier,
+              !host.state.isDocking else { return }
+        Task { await dock.release() }
+    }
+
+    /// The Stage ended (the window server stopped it): macOS has moved its windows to a
+    /// real display already, so a staged window is no longer Dropy's to move.
+    func stageLost() {
+        guard dock.isStaged else { return }
+        dock.detach()
+        if host.state.isDocking { host.close(returnsFocus: false, putsBack: false) }
     }
 
     // MARK: While docked

@@ -51,9 +51,12 @@ final class WindowDock {
         /// The window as it last looked, for the opening and closing animations.
         var snapshot: CGImage?
         var cornerRadius: CGFloat
+        /// Waiting on the Stage between openings (a pinned app's window).
+        var isStaged = false
     }
 
     private let journal: PlacementJournal
+    private weak var stage: Stage?
     private(set) var current: Docked?
     var onEvent: ((Event) -> Void)?
     /// Called when a release could not finish yet, so recovery can retry it.
@@ -61,9 +64,13 @@ final class WindowDock {
     private var observer: AXObserver?
     private var queue: Task<Void, Never>?
 
-    init(journal: PlacementJournal) {
+    init(journal: PlacementJournal, stage: Stage?) {
         self.journal = journal
+        self.stage = stage
     }
+
+    /// Whether the managed window is waiting on the Stage.
+    var isStaged: Bool { current?.isStaged ?? false }
 
     /// Runs `body` after every operation asked for before it.
     private func serially<T: Sendable>(_ body: @escaping @Sendable @MainActor () async throws -> T) async throws -> T {
@@ -102,6 +109,13 @@ final class WindowDock {
             let state = try WindowPlacer.readState(element, identity: identity)
             current = Docked(identity: identity, window: window, element: element, frame: state.frame,
                              snapshot: nil, cornerRadius: DockGeometry.defaultCornerRadius)
+            // A window on another desktop is pulled over through the Stage: a move to
+            // another display lands on that display's current desktop, and from the
+            // Stage it lands on the person's (spike S2).
+            if !onActiveSpace, stage?.isReady == true {
+                try await moveToStageNow()
+                NSLog("Dropy dock: brought window=%u from another desktop through the Stage", identity.windowID)
+            }
             if onActiveSpace { await refreshSnapshot() }
         }
     }
@@ -160,6 +174,7 @@ final class WindowDock {
             entry.applicationConfirmed = true
             do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
             docked.frame = observed.frame
+            docked.isStaged = false
             current = docked
             startObserving(docked)
             // The capture catalog's copy of the window still has its old size; refresh it
@@ -288,6 +303,47 @@ final class WindowDock {
         return DockGeometry.cornerRadius(diagonalAlpha: diagonal, scale: scale)
     }
 
+    // MARK: Waiting on the Stage
+
+    /// Moves the window to its place on the Stage, where it waits for the next opening
+    /// out of sight and still rendered, then covers the Stage so it idles there.
+    func moveToStage() async {
+        do {
+            try await serially { [self] in try await moveToStageNow() }
+        } catch {
+            NSLog("Dropy dock: cannot stage (%@); putting the window back", String(describing: error))
+            await release()
+        }
+    }
+
+    private func moveToStageNow() async throws {
+        guard var docked = current else { throw DockError.nothingDocked }
+        guard let stage, stage.isReady, let slot = stage.slot(for: docked.frame.size) else {
+            throw DockError.windowUnreachable("noStage")
+        }
+        let identity = docked.identity
+        let original = try existingEntry(identity)?.original ?? WindowPlacer.readState(docked.element, identity: identity)
+        var entry = PlacementEntry(identity: identity, mode: .staged, original: original,
+                                   applied: WindowPlacementState(frame: CGRect(origin: slot, size: docked.frame.size),
+                                                                 isMinimized: false, isAppHidden: false),
+                                   createdAt: existingEntry(identity)?.createdAt ?? Date(), applicationConfirmed: false)
+        do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
+        // Marked first: the observer ignores Dropy's own moves of a staged window.
+        docked.isStaged = true
+        current = docked
+        try WindowPlacer.setPosition(slot, of: docked.element)
+        try? await Task.sleep(for: .milliseconds(30))
+        let observed = try WindowPlacer.readState(docked.element, identity: identity)
+        entry.applied = observed
+        entry.applicationConfirmed = true
+        do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
+        docked.frame = observed.frame
+        current = docked
+        if observer == nil { startObserving(docked) }
+        stage.setCovered(true)
+        NSLog("Dropy dock: staged window=%u at %.0f,%.0f", identity.windowID, observed.frame.minX, observed.frame.minY)
+    }
+
     // MARK: Letting it go
 
     /// Puts the window back where the person had it and forgets it. This is what
@@ -345,7 +401,7 @@ final class WindowDock {
     }
 
     private func existingEntry(_ identity: WindowIdentity) -> PlacementEntry? {
-        journal.entries.first { $0.identity == identity && $0.mode == .docked }
+        journal.entries.first { $0.identity == identity && ($0.mode == .docked || $0.mode == .staged) }
     }
 
     // MARK: Watching the window
@@ -378,6 +434,8 @@ final class WindowDock {
             onEvent?(.closed)
             return
         }
+        // A staged window only moves when Dropy moves it.
+        guard !docked.isStaged else { return }
         switch notification {
         case kAXWindowMiniaturizedNotification:
             onEvent?(.minimized)

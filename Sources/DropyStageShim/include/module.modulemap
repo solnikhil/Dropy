@@ -1,0 +1,4 @@
+module DropyStageShim {
+    header "DropyStageShim.h"
+    export *
+}

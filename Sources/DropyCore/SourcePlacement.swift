@@ -17,9 +17,14 @@ public enum PlacementMode: String, Codable, CaseIterable, Sendable {
     /// The window is in Dropy's notch overlay, or sent home from it (its app hidden,
     /// or the window parked). It is moved and resized, so a restore puts back both.
     case docked
+    /// A pinned app's window waiting on Dropy's Stage display between openings.
+    case staged
 
     /// Modes that move the window rather than minimizing or hiding it.
-    public var movesWindow: Bool { self == .offscreen || self == .parked || self == .docked }
+    public var movesWindow: Bool { self == .offscreen || self == .parked || self == .docked || self == .staged }
+
+    /// Modes that also resize the window, so a restore puts its size back too.
+    public var resizesWindow: Bool { self == .docked || self == .staged }
 }
 
 /// The source window facts needed to put it back. Frames use global display

@@ -213,8 +213,8 @@ public enum RestorePlan: Equatable, Sendable {
                             unhide: current.isAppHidden && !target.isAppHidden,
                             unminimize: movesWindow && current.isMinimized && !target.isMinimized,
                             frame: movesWindow ? target.frame : nil,
-                            // A docked window was resized to fit the overlay, so its size goes back too.
-                            resize: entry.mode == .docked || decision != .restore(target))
+                            // A docked or staged window was resized to fit the overlay, so its size goes back too.
+                            resize: entry.mode.resizesWindow || decision != .restore(target))
         case .keepUserChange, .sourceGone, .pending:
             return .settle(decision)
         }
