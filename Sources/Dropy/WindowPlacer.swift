@@ -270,6 +270,26 @@ enum WindowPlacer {
     /// active Space, so the main and focused windows, which the app reports on any
     /// Space, are candidates too; each must still match the exact window ID.
     /// On a miss, the facts are gathered once and diagnosed, and the result is logged.
+    /// The CGWindowID behind an Accessibility window element, if the lookup exists.
+    static func windowID(of element: AXUIElement) -> UInt32? {
+        var id: CGWindowID = 0
+        guard let getWindow, getWindow(element, &id) == .success else { return nil }
+        return id
+    }
+
+    /// The app's main (or focused) window: the one a person means by "this app".
+    static func mainWindow(of processID: pid_t) -> AXUIElement? {
+        let application = AXUIElementCreateApplication(processID)
+        for attribute in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(application, attribute as CFString, &value) == .success,
+               let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+                return (value as! AXUIElement)
+            }
+        }
+        return nil
+    }
+
     static func find(_ identity: WindowIdentity) throws -> Lookup {
         guard let getWindow else { throw PlacementError.exactWindowLookupUnavailable }
         guard isTrusted else { return .missing(.accessibilityNotTrusted) }
@@ -406,6 +426,18 @@ enum Spaces {
             ?? (CGDisplayIsMain(display) != 0 ? displays.first { $0["Display Identifier"] as? String == "Main" } : nil)
         // Space type 4 is a full-screen app (0 is an ordinary desktop).
         return (entry?["Current Space"] as? [String: Any])?["type"] as? Int == 4
+    }
+
+    /// The display's current Space, or nil when unknown.
+    static func current(on display: CGDirectDisplayID) -> UInt64? {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopyManagedDisplaySpaces", as: CopyDisplaySpaces.self),
+              let displays = copy(connection)?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let uuid = CGDisplayCreateUUIDFromDisplayID(display)
+            .map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String }
+        let entry = displays.first { $0["Display Identifier"] as? String == uuid }
+            ?? (CGDisplayIsMain(display) != 0 ? displays.first { $0["Display Identifier"] as? String == "Main" } : nil)
+        return (entry?["Current Space"] as? [String: Any])?["id64"] as? UInt64
     }
 
     /// Whether every display shares one set of desktops ("Displays have separate Spaces"

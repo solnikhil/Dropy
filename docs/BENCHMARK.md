@@ -1,5 +1,43 @@
 # Capture benchmark
 
+## Benchmarking a version (Bun, 2026-10-08)
+
+Dropy's tooling runs on [Bun](https://bun.sh). From the repository root:
+
+```sh
+caffeinate -d bun run bench          # build, measure every scenario, save, check
+bun run bench -- --cycles 8 --style rapid --no-build --only native,pinned
+bun run bench:check                  # newest result against budgets and the previous run
+bun run bench:compare                # the two newest results side by side
+bun run bench:list                   # every saved result with its commit
+```
+
+Each run measures the current build on this Mac against a scratch TextEdit document (nothing of the person's is opened or moved), saves `docs/benchmarks/results/<date>-<commit>[-dirty].json`, and checks it:
+
+| Scenario | What it measures |
+|---|---|
+| `native` | Full App, direct open, Native size: request → docked window (`openReadyMs`), size changes on the way (`layoutChanges`, must be 0), close → window back home (`closeHomeMs`), CPU and memory |
+| `pinned` | The same app pinned and kept ready: openings from the Stage, closes to it, Stage creation time |
+| `preview` | Preview only: request → live preview, first frame on screen |
+| `idle` | Overlay closed: CPU and memory |
+
+Budgets are in `docs/benchmarks/budgets.json`; a result also fails when an opening never became ready, or when a latency is more than 25 % and 40 ms slower than the previous result from the same Mac model and macOS. Runs refuse to start on a locked screen and are discarded if it locks or capture is suspended part way: a locked Mac measured on 2026-10-08 showed broken Accessibility and suspended capture, nothing like normal use. Dropy's preferences are exported first and restored after; TextEdit comes to the front while it runs.
+
+The timings come from one log line per opening (`Dropy timing: ready mode=… ms=… layoutChanges=…`) and per close (`Dropy timing: closed home=…`).
+
+**First baseline** (2026-10-08, `48a2dd2` plus the first-opening fix, M2 MacBook Air, macOS 27.0.1, Balanced, 4 openings per scenario; the run's file was not kept):
+
+| Scenario | Open p50 / max | Layout changes | Close home p50 / p95 | Other |
+|---|---|---|---|---|
+| native | 666 / 755 ms | 0 | 65 / 70 ms | CPU mean 3.2 % |
+| pinned | 668 / 687 ms | 0 | 98 / 118 ms | Stage ready in 422 ms |
+| preview | 231 ms (first frame 249 / 266 ms) | 0 | — | — |
+| idle | — | — | — | CPU 0.0 %, 61 MB |
+
+Before the fix, a Native-size opening grew to the preset's size first and morphed again once the window list arrived (`layoutChanges` 1), and the first opening after launch could wait for the Stage.
+
+## The capture path (2026-09)
+
 This page explains what Dropy measures, how to reproduce the numbers, and what the first baseline shows. It covers the view-only capture path in M1. Input response time needs the M3 input bridge and is not measured yet.
 
 ## What is measured
@@ -135,7 +173,7 @@ The static source's rate reconfiguration produced a changed frame, which previou
 
 ## Idle input-to-visible latency trace, 2026-09-30
 
-Measurement only; the pipeline and the provisional 50 ms frame-age target are unchanged. `DROPY_DEBUG_FRAME_TRACE=1` (off by default) logs, per forwarded frame, the time spent in each stage: `capture` (ScreenCaptureKit display time to Dropy's callback), `compare` (identical-frame check), `forward` (mailbox), `main` (hand-off to the main thread), `draw` (delivery to the commit of the draw that was finally shown, so drawable misses and their retries land here), `compose` (commit to on-glass), plus each draw's outcome and the time since the last input Dropy sent. `Scripts/latency-trace.sh 20 3` previews the disposable Electron fixture on the static text page, waits 10 s, then clicks the page's Press button through the preview 20 times, 3 s apart, so capture is back at its idle 10 fps before every click. `Scripts/bench/latency-summary.py` groups frames. Three runs on the same Mac, same load as above:
+Measurement only; the pipeline and the provisional 50 ms frame-age target are unchanged. `DROPY_DEBUG_FRAME_TRACE=1` (off by default) logs, per forwarded frame, the time spent in each stage: `capture` (ScreenCaptureKit display time to Dropy's callback), `compare` (identical-frame check), `forward` (mailbox), `main` (hand-off to the main thread), `draw` (delivery to the commit of the draw that was finally shown, so drawable misses and their retries land here), `compose` (commit to on-glass), plus each draw's outcome and the time since the last input Dropy sent. `Scripts/latency-trace.sh 20 3` previews the disposable Electron fixture on the static text page, waits 10 s, then clicks the page's Press button through the preview 20 times, 3 s apart, so capture is back at its idle 10 fps before every click. `bun Scripts/bench/latency-summary.ts <log>` groups frames. Three runs on the same Mac, same load as above:
 
 | Run | Response frame age p50 / p95 | Input → presented p50 / p95 | Input → captured p50 | draw p50 / p95 | compose p50 / p95 | Drawable misses per response frame |
 |---|---|---|---|---|---|---|

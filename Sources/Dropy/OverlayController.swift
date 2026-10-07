@@ -47,6 +47,18 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private(set) var selectedApplicationName = ""
     private var overlaySession = UUID()
     private var opensInProcess = 0
+    /// The opening was laid out ahead for this window (nil: any window of the target
+    /// app); the window list then selects it without showing the picker first.
+    private var awaitingAutoSelection = false
+    private var predictedWindowID: UInt32?
+    /// Timing for the benchmark (`bun run bench`): when this opening was asked for, and
+    /// how many times the layout changed before the window was ready.
+    private var openedAt: CFTimeInterval = 0
+    private var openReadyLogged = true
+    /// The notch display's desktop when this opening started; only a change of it
+    /// closes a docked window (adding the Stage display also posts a desktop change).
+    private var desktopAtOpen: UInt64?
+    private var layoutChangesBeforeReady = 0
     private var requestedScreenCaptureAccess = false
     /// Changes on open, close, every selection and every failure. Async work
     /// continues only while its captured generation is still current.
@@ -88,7 +100,11 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.native.activeSpaceChanged()
-                guard self.state.isDocking else { return }
+                guard self.state.isDocking, let screen = self.overlayScreen else { return }
+                // Other displays changing desktops (or the Stage appearing) leave the
+                // docked window where it is; only a switch on this display strands it.
+                let now = Spaces.current(on: Self.displayID(of: screen))
+                guard now == nil || now != self.desktopAtOpen else { return }
                 NSLog("Dropy dismiss: switched desktops")
                 self.close(returnsFocus: false)
             }
@@ -121,8 +137,17 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         overlaySession = UUID()
         overlayScreen = screen
         expandedPreview = false
-        let full = OverlayGeometry.frame(on: screen.frame,
-                                         preferredSize: preferences.value.sizePreset.dimensions)
+        notchSize = Self.notchSize(on: screen)
+        openedAt = CACurrentMediaTime()
+        openReadyLogged = false
+        desktopAtOpen = Spaces.current(on: Self.displayID(of: screen))
+        layoutChangesBeforeReady = 0
+        // Open straight to the size the chosen window will need when it is known, so
+        // the outline grows once instead of opening at the preset's size and morphing
+        // again when the window list arrives.
+        let prediction = predictOpening(on: screen)
+        let full = prediction?.body ?? OverlayGeometry.frame(on: screen.frame,
+                                                             preferredSize: preferences.value.sizePreset.dimensions)
         // The window is final from the start, with a transparent margin for the ears
         // and the opening overshoot; only the outline inside it moves. Resizing the
         // window itself each frame stuttered.
@@ -130,10 +155,12 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         let canvas = OverlayGeometry.pixelAligned(CGRect(x: full.minX - margin, y: full.minY - margin,
                             width: full.width + 2 * margin, height: full.height + margin), scale: screen.backingScaleFactor)
         let panel = OverlayPanel.make(contentRect: canvas)
-        notchSize = Self.notchSize(on: screen)
         buildContent(in: panel, size: full.size)
+        if let prediction, let root = panel.contentView, let workspace {
+            place(panel: panel, root: root, workspace: workspace, frame: canvas, body: full, preview: prediction.preview)
+        }
         opensInProcess += 1
-        let openedAt = CACurrentMediaTime()
+        let openedAt = self.openedAt
         let openNumber = opensInProcess
         // Reveal: open request to the first captured frame on screen. "Warm" means
         // this process has opened the overlay before.
@@ -153,9 +180,52 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         // still gets the keyboard, but Dropy never becomes the active app and its menu
         // bar never flashes over the app the person was in (or the one being docked).
         panel.makeKeyAndOrderFront(nil)
-        setState(.selecting)
+        if let prediction {
+            awaitingAutoSelection = true
+            predictedWindowID = prediction.windowID
+            setState(prediction.state)
+            if case .docking = prediction.state { native.showCachedSnapshot() }
+        } else {
+            awaitingAutoSelection = false
+            setState(.selecting)
+        }
         onOpen?()
         refreshWindows()
+    }
+
+    private struct OpeningPrediction {
+        let body: CGRect
+        let preview: CGRect
+        let windowID: UInt32?
+        let state: CapturePhase
+    }
+
+    /// The final layout of an opening that goes straight to a known app's window.
+    private func predictOpening(on screen: NSScreen) -> OpeningPrediction? {
+        guard ProcessInfo.processInfo.environment["DROPY_DEBUG_WINDOW_ID"] == nil,
+              let bundleID = preferences.value.openTargetBundleIdentifier,
+              let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .first(where: { !$0.isTerminated }) else { return nil }
+        let name = application.localizedName ?? ""
+        switch SessionModePolicy.mode(for: sessionConditions) {
+        case .native, .live:
+            guard let predicted = native.predictedLayout(for: bundleID, on: screen) else { return nil }
+            return OpeningPrediction(body: predicted.layout.body, preview: predicted.layout.windowInBody,
+                                     windowID: predicted.windowID, state: .docking(applicationName: name))
+        case .preview:
+            // The app's frontmost window, from the window server (no permission needed).
+            let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] ?? []
+            guard let row = rows.first(where: { ($0[kCGWindowOwnerPID as String] as? pid_t) == application.processIdentifier
+                    && ($0[kCGWindowLayer as String] as? Int) == 0 }),
+                  let bounds = (row[kCGWindowBounds as String] as? NSDictionary).flatMap(CGRect.init(dictionaryRepresentation:)),
+                  bounds.width > 60 else { return nil }
+            let layout = previewLayout(for: bounds.size, on: screen)
+            let body = CGRect(x: screen.frame.midX - layout.size.width / 2, y: screen.frame.maxY - layout.size.height,
+                              width: layout.size.width, height: layout.size.height)
+            return OpeningPrediction(body: body, preview: layout.preview, windowID: row[kCGWindowNumber as String] as? UInt32,
+                                     state: .starting(applicationName: name))
+        }
     }
 
     /// Closes the overlay. A docked window goes back where the person had it, unless
@@ -216,6 +286,10 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     }
 
     // MARK: Morph
+
+    static func displayID(of screen: NSScreen) -> CGDirectDisplayID {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+    }
 
     /// The camera housing's size, from the menu-bar areas either side of it.
     private static func notchSize(on screen: NSScreen) -> CGSize? {
@@ -358,7 +432,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     func refreshWindows() {
         guard state != .closed else { return }
         let request = generation
-        let shouldAutoSelect = state == .selecting
+        let shouldAutoSelect = state == .selecting || awaitingAutoSelection
         if !hasSelection { status?.stringValue = "Finding open windows…" }
         Task {
             do {
@@ -366,7 +440,19 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                 guard request == generation, state != .closed else { return }
                 available = windows
                 rebuildWindowList()
-                guard !hasSelection else { return }
+                if awaitingAutoSelection {
+                    awaitingAutoSelection = false
+                    let target = preferences.value.openTargetBundleIdentifier
+                    let exact = predictedWindowID.flatMap { id in windows.firstIndex { $0.window.windowID == id } }
+                    if let index = exact ?? windows.firstIndex(where: { $0.bundleIdentifier == target }) {
+                        selectWindow(at: index)
+                        return
+                    }
+                    // The window went away since the opening was laid out: choose as usual.
+                    resetToPickerLayout()
+                } else {
+                    guard !hasSelection else { return }
+                }
                 setState(.selecting)
                 let preferredBundleID = preferences.value.openTargetBundleIdentifier
                 if shouldAutoSelect,
@@ -385,7 +471,11 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                 }
                 if shouldAutoSelect { startDebugAlternationIfRequested() }
             } catch {
-                guard request == generation, state != .closed, !hasSelection else { return }
+                guard request == generation, state != .closed, !hasSelection || awaitingAutoSelection else { return }
+                if awaitingAutoSelection {
+                    awaitingAutoSelection = false
+                    resetToPickerLayout()
+                }
                 let failure = PreviewSession.catalogFailure(for: error)
                 setState(.failed(failure))
                 // Ask once per launch so macOS lists Dropy under Screen Recording and
@@ -396,6 +486,13 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                 }
             }
         }
+    }
+
+    /// Back to the window list's own size after a predicted opening could not be used.
+    private func resetToPickerLayout() {
+        guard let screen = overlayScreen else { return }
+        let body = OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions)
+        applyLayout(body: body, preview: WorkspaceLayout.preview(in: body.size, notch: notchSize ?? CGSize(width: 180, height: 32)))
     }
 
     /// Shows the pinned app's window, launching the app or asking it for a window
@@ -456,6 +553,18 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     func setState(_ next: CapturePhase) {
         if next != state { NSLog("Dropy state: %@", next.diagnosticName) }
+        let showing: Bool = switch next {
+        case .docked, .live, .viewing, .sourceVisibility, .paused: true
+        default: false
+        }
+        if !openReadyLogged, showing {
+            openReadyLogged = true
+            // One line per opening, read by the benchmark: request to usable window, and
+            // how often the outline had to change size on the way (0 is the goal).
+            NSLog("Dropy timing: ready mode=%@ ms=%.1f layoutChanges=%ld predicted=%@", next.diagnosticName,
+                  (CACurrentMediaTime() - openedAt) * 1000, layoutChangesBeforeReady,
+                  predictedWindowID != nil || awaitingAutoSelection ? "yes" : "no")
+        }
         state = next
         switch next {
         case .closed: break
@@ -536,21 +645,24 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// ownership.
     func layoutSelectedWindow() {
         guard let source = selectedWindowSize, let screen = overlayScreen, let workspace else { return }
-        let layout: WorkspaceLayout
-        let preset = preferences.value.sizePreset
-        if preferences.value.automaticWindowSize || preset == .nativeSize || expandedPreview {
-            layout = WorkspaceLayout.make(source: source, screen: screen.frame.size,
-                notch: notchSize ?? CGSize(width: 180, height: 32), expanded: expandedPreview,
-                maximumSize: preset.maximumSize)
-        } else {
-            let size = OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions).size
-            layout = WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size,
-                notch: notchSize ?? CGSize(width: 180, height: 32)))
-        }
+        let layout = previewLayout(for: source, on: screen)
         guard workspace.frame.size != layout.size || workspace.previewRect != layout.preview else { return }
         // Hanging from the top edge, centered.
         applyLayout(body: CGRect(x: screen.frame.midX - layout.size.width / 2, y: screen.frame.maxY - layout.size.height,
                                  width: layout.size.width, height: layout.size.height), preview: layout.preview)
+    }
+
+    /// The preview's layout for a window of `source` size.
+    private func previewLayout(for source: CGSize, on screen: NSScreen) -> WorkspaceLayout {
+        let preset = preferences.value.sizePreset
+        if preferences.value.automaticWindowSize || preset == .nativeSize || expandedPreview {
+            return WorkspaceLayout.make(source: source, screen: screen.frame.size,
+                notch: notchSize ?? CGSize(width: 180, height: 32), expanded: expandedPreview,
+                maximumSize: preset.maximumSize)
+        }
+        let size = OverlayGeometry.frame(on: screen.frame, preferredSize: preset.dimensions).size
+        return WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size,
+            notch: notchSize ?? CGSize(width: 180, height: 32)))
     }
 
     /// The panel's frame around `body`, with room for the outline's overshoot.
@@ -566,6 +678,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         guard let screen = overlayScreen, let panel, let workspace, let root = panel.contentView else { return }
         let currentBody = workspace.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
         guard currentBody != newBody || workspace.previewRect != preview else { return }
+        if !openReadyLogged { layoutChangesBeforeReady += 1 }
         renderer?.prepareForLayoutChange()
         // Do not leave an old-size animation mask clipping the new viewport.
         workspace.layer?.mask = nil
@@ -703,6 +816,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private func selectWindow(at index: Int) {
         guard available.indices.contains(index), let renderer else { return }
         let selected = available[index]
+        awaitingAutoSelection = false
         // Choosing the window that is already in the overlay changes nothing.
         if state.isDocking, selected.identity == selectedIdentity, native.dockedIdentity == selected.identity { return }
         let request = UUID()

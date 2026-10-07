@@ -133,7 +133,7 @@ final class WindowDock {
             // A window on another desktop is pulled over through the Stage: a move to
             // another display lands on that display's current desktop, and from the
             // Stage it lands on the person's (spike S2).
-            if !onActiveSpace, stage?.isReady == true {
+            if !onActiveSpace, let stage, await stage.start() {
                 try await moveToStageNow()
                 NSLog("Dropy dock: brought window=%u from another desktop through the Stage", identity.windowID)
             }

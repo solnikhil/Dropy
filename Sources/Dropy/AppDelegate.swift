@@ -248,7 +248,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A deferred entry stays in the journal; the next launch keeps trying.
         placementJournal.restoreAll()
         parkingTabs.removeAll()
-        // Last: windows on the Stage have been put back by now.
+        // Last: windows on the Stage have been put back by now; wait for the moves to land.
+        stage?.waitUntilEmpty()
         stage?.stop()
     }
 

@@ -44,15 +44,43 @@ final class NativeSession: NSObject {
 
     /// Where the docked window should go for the current size preference.
     func targetLayout(for docked: WindowDock.Docked, on screen: NSScreen) -> DockLayout {
+        targetLayout(windowSize: dock.originalSize ?? docked.frame.size, on: screen)
+    }
+
+    /// The same, for a window of `current` size that Dropy has not moved yet.
+    func targetLayout(windowSize current: CGSize, on screen: NSScreen) -> DockLayout {
         let clearance = DockGeometry.clearance(notch: host.notchSize,
                                                menuBarHeight: screen.frame.maxY - screen.visibleFrame.maxY)
         let preferences = host.preferences.value
         let size = DockGeometry.windowSize(preset: preferences.sizePreset,
                                            adaptsToWindow: preferences.automaticWindowSize,
-                                           current: dock.originalSize ?? docked.frame.size,
-                                           screen: screen.frame, clearance: clearance)
+                                           current: current, screen: screen.frame, clearance: clearance)
         return DockGeometry.layout(windowSize: size, screen: screen.frame, clearance: clearance,
                                    minimumBodyWidth: minimumDockWidth)
+    }
+
+    /// The layout an opening of `bundleID` will end at, worked out before the window
+    /// list loads, so the overlay can open straight to its final size instead of
+    /// opening at the preset's size and morphing again (the late jump people saw on a
+    /// first opening). Uses the window Dropy already manages for that app, or the app's
+    /// main window. Nil when the app has no window to measure.
+    func predictedLayout(for bundleID: String, on screen: NSScreen) -> (layout: DockLayout, windowID: UInt32?)? {
+        if let docked = dock.current, docked.identity.bundleIdentifier == bundleID {
+            return (targetLayout(for: docked, on: screen), docked.identity.windowID)
+        }
+        guard let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .first(where: { !$0.isTerminated }),
+              let window = WindowPlacer.mainWindow(of: application.processIdentifier),
+              let size = try? WindowPlacer.sizeValue(window, kAXSizeAttribute), size.width > 0 else { return nil }
+        return (targetLayout(windowSize: size, on: screen), WindowPlacer.windowID(of: window))
+    }
+
+    /// Covers the window's place with the last picture of the window Dropy manages,
+    /// for an opening laid out before the window list arrives.
+    func showCachedSnapshot() {
+        guard let docked = dock.current else { return }
+        host.workspace?.coversWindow = true
+        setSnapshot(docked.snapshot, radius: docked.cornerRadius)
     }
 
     // MARK: Opening
@@ -66,9 +94,9 @@ final class NativeSession: NSObject {
         setSnapshot(nil)
         host.setState(.docking(applicationName: selected.applicationName))
         Task {
-            // The Stage normally starts with Dropy; start it now if it is not up yet.
-            if let stage, !stage.isReady { await stage.start() }
-            guard isCurrent(request) else { return }
+            // The Stage is not awaited here: only a window on another desktop needs it,
+            // and `adopt` waits for it then. Waiting for it on every first opening held
+            // the overlay up while the Stage was still starting after launch.
             do {
                 try await dock.adopt(selected.window, identity: selected.identity)
             } catch {
@@ -199,6 +227,7 @@ final class NativeSession: NSObject {
         panel.ignoresMouseEvents = true
         let dropyActive = NSApplication.shared.isActive
         let stages = putsBack && waitsOnStage
+        let closeStarted = CACurrentMediaTime()
         Task { @MainActor [weak self] in
             guard let self else { return }
             let source = self.dock.current?.identity.processID
@@ -211,6 +240,9 @@ final class NativeSession: NSObject {
             backdrop?.hole = nil
             if putsBack {
                 if stages { await self.dock.moveToStage() } else { await self.dock.release() }
+                // Read by the benchmark: close request to the window being back home.
+                NSLog("Dropy timing: closed home=%.1fms staged=%@", (CACurrentMediaTime() - closeStarted) * 1000,
+                      stages ? "yes" : "no")
             }
             self.host.morphClosed(panel, backdrop: backdrop, content: content)
             let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
