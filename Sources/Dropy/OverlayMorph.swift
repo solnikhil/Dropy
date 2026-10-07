@@ -128,23 +128,28 @@ final class MorphBackdropView: NSView {
 /// fades before the outline closes over it.
 @MainActor
 enum OverlayMotion {
-    /// The content starts once the outline has visibly begun to grow.
-    static let revealDelay: TimeInterval = 0.07
-    static let revealDuration: TimeInterval = 0.34
-    static let hideDuration: TimeInterval = 0.16
-    /// Out of focus at the start of a reveal and the end of a hide.
-    static let blurRadius: CGFloat = 14
+    /// The person's choice of Rapid, Balanced or Smooth; read at the start of each motion.
+    static var style: MotionStyle = .balanced
+    /// The outline's springs for the current style.
+    static var morph: NotchMorph.Motions { style.morph }
+    private static var content: ContentMotion { style.content }
+
+    static var revealDelay: TimeInterval { content.revealDelay }
+    static var revealDuration: TimeInterval { content.revealDuration }
+    static var hideDuration: TimeInterval { content.hideDuration }
+    /// Out of focus at the start of a reveal and the end of a hide; 0 skips the blur.
+    static var blurRadius: CGFloat { content.blurRadius }
     /// Size relative to its final size at the start of a reveal and the end of a hide.
-    static let restScale: CGFloat = 0.9
+    static var restScale: CGFloat { content.restScale }
     /// The system's "emphasized" curves: fast in, long gentle settle; and its mirror.
     static let settleCurve = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
     static let leaveCurve = CAMediaTimingFunction(controlPoints: 0.3, 0, 0.8, 0.15)
 
     /// Content lower in the overlay arrives later, up to this much, so it reads as
     /// falling out of the notch: header first, then the list, then the preview.
-    static let staggerSpan: TimeInterval = 0.1
+    static var staggerSpan: TimeInterval { content.staggerSpan }
     /// Each piece of content drifts down into place from this far above.
-    static let staggerDrift: CGFloat = 10
+    static var staggerDrift: CGFloat { content.staggerDrift }
 
     /// System setting "Reduce motion": cross-fade instead of morphing.
     static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -169,7 +174,7 @@ enum OverlayMotion {
         if !reduced {
             animations.append(basic("transform", from: scaleFromTopCenter(restScale, in: view.bounds),
                                     to: CATransform3DIdentity, duration: duration, curve: settleCurve))
-            if let blur = attachBlur(to: view) {
+            if blurRadius > 0, let blur = attachBlur(to: view) {
                 animations.append(basic("filters.\(blur).inputRadius", from: blurRadius, to: 0,
                                         duration: duration, curve: settleCurve))
             }
@@ -189,8 +194,9 @@ enum OverlayMotion {
     static func relayoutContent(_ view: NSView) {
         guard let layer = view.layer else { return }
         let begin = layer.convertTime(CACurrentMediaTime(), from: nil) + 0.04
-        run([basic("opacity", from: 0, to: 1, duration: 0.26, curve: CAMediaTimingFunction(name: .easeOut))],
-            on: layer, begin: begin, duration: 0.26, key: "relayout")
+        let duration = content.relayoutDuration
+        run([basic("opacity", from: 0, to: 1, duration: duration, curve: CAMediaTimingFunction(name: .easeOut))],
+            on: layer, begin: begin, duration: duration, key: "relayout")
     }
 
     /// Each piece fades in and drifts down into place, later the lower it sits.
@@ -217,7 +223,7 @@ enum OverlayMotion {
             basic("transform", from: CATransform3DIdentity, to: scaleFromTopCenter(restScale, in: view.bounds),
                   duration: hideDuration, curve: leaveCurve),
         ]
-        if let blur = attachBlur(to: view) {
+        if blurRadius > 0, let blur = attachBlur(to: view) {
             animations.append(basic("filters.\(blur).inputRadius", from: 0, to: blurRadius,
                                     duration: hideDuration, curve: leaveCurve))
         }

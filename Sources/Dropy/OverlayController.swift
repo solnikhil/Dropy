@@ -192,7 +192,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         let closingRenderer = renderer
         renderer = nil
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(OverlayMotion.wall(NotchMorph.close.duration)))
+            try? await Task.sleep(for: .seconds(OverlayMotion.wall(OverlayMotion.morph.close.duration)))
             closingRenderer?.clear()
         }
         preview.stop(reason: "closed")
@@ -239,7 +239,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             backdrop.set(open)
             settlesAt = Date()
         } else {
-            let duration = backdrop.morph(from: closedShape(in: canvas), to: open, motion: NotchMorph.open,
+            let duration = backdrop.morph(from: closedShape(in: canvas), to: open, motion: OverlayMotion.morph.open,
                                           clipping: content)
             settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
         }
@@ -273,7 +273,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         OverlayMotion.hideContent(content)
         // Start from where the outline is on screen, even mid-opening or mid-resize.
         let duration = backdrop.morph(from: backdrop.visibleShape ?? .open(body: content.frame),
-                                      to: closedShape(in: canvas), motion: NotchMorph.close, clipping: content)
+                                      to: closedShape(in: canvas), motion: OverlayMotion.morph.close, clipping: content)
         // The last stretch fades, so the outline melts into the notch; without a notch
         // there is nothing to merge with, so it fades throughout.
         let fadeStart = notchSize == nil ? 0 : duration * 0.55
@@ -581,7 +581,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         place(panel: panel, root: root, workspace: workspace, frame: frame, body: newBody, preview: layout.preview)
         let endShape = NotchShape.open(body: workspace.frame)
         if animate, let backdrop, let startShape {
-            let duration = backdrop.morph(from: startShape, to: endShape, motion: NotchMorph.resize, clipping: workspace)
+            let duration = backdrop.morph(from: startShape, to: endShape, motion: OverlayMotion.morph.resize, clipping: workspace)
             OverlayMotion.relayoutContent(workspace)
             settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
             // Once settled, shrink the panel to fit; nothing moves on screen.

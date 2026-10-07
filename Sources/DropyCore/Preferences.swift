@@ -131,6 +131,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     /// Keep the pinned app's window on Dropy's hidden Stage display between openings,
     /// so it opens on any desktop and over full-screen apps.
     public var keepsPinnedAppReady: Bool
+    /// How the overlay animates.
+    public var motionStyle: MotionStyle
     /// Show a Dock icon and Dropy's own menu bar like an ordinary app. Off leaves only
     /// the menu-bar item (the Settings window still brings the Dock icon while open).
     public var showInDock: Bool
@@ -152,6 +154,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         automaticWindowSize: Bool = true,
         interaction: InteractionMode = .fullApp,
         keepsPinnedAppReady: Bool = true,
+        motionStyle: MotionStyle = .balanced,
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
         shortcut: KeyShortcut = .default
@@ -167,6 +170,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.automaticWindowSize = automaticWindowSize
         self.interaction = interaction
         self.keepsPinnedAppReady = keepsPinnedAppReady
+        self.motionStyle = motionStyle
         self.showInDock = showInDock
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
         self.shortcut = shortcut
@@ -185,7 +189,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
-        case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, showInDock
+        case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, motionStyle, showInDock
         case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize
     }
 
@@ -209,6 +213,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         interaction = try container.decodeIfPresent(InteractionMode.self, forKey: .interaction) ?? defaults.interaction
         keepsPinnedAppReady = try container.decodeIfPresent(Bool.self, forKey: .keepsPinnedAppReady)
             ?? defaults.keepsPinnedAppReady
+        motionStyle = try container.decodeIfPresent(MotionStyle.self, forKey: .motionStyle) ?? defaults.motionStyle
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)

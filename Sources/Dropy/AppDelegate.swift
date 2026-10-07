@@ -43,6 +43,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        OverlayMotion.style = preferences.value.motionStyle
         overlay = OverlayController(preferences: preferences, journal: placementJournal, stage: stage)
         stage?.onLost = { [weak self] in self?.overlay.stageLost() }
         overlay.onDeferredRestore = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
@@ -447,6 +448,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlay.open()
         }
         if new.showInDock != old.showInDock { updateActivationPolicy() }
+        // The next motion uses the new style; one already playing finishes as it began.
+        OverlayMotion.style = new.motionStyle
         if new.shortcut != old.shortcut, !registerShortcut() {
             // Another app owns it: keep the shortcut that works and say why.
             preferences.update { $0.shortcut = old.shortcut }

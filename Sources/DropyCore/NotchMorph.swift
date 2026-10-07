@@ -57,17 +57,10 @@ public enum NotchMorph {
         public var duration: TimeInterval { max(width.settlingTime(), height.settlingTime()) }
     }
 
-    /// Out of the notch: lively, with a small settle.
-    public static let open = Motion(width: MorphSpring(response: 0.42, dampingRatio: 0.78),
-                                    height: MorphSpring(response: 0.5, dampingRatio: 0.8))
-    /// Back into the notch: quicker, no overshoot, height leading.
-    public static let close = Motion(width: MorphSpring(response: 0.4, dampingRatio: 1),
-                                     height: MorphSpring(response: 0.3, dampingRatio: 1))
-
-    /// Between two open sizes, as when the window list gives way to the chosen
-    /// window: settled, with barely any overshoot, since the overlay is already open.
-    public static let resize = Motion(width: MorphSpring(response: 0.44, dampingRatio: 0.88),
-                                      height: MorphSpring(response: 0.48, dampingRatio: 0.9))
+    /// The default style's springs. Each `MotionStyle` has its own set.
+    public static var open: Motion { MotionStyle.balanced.morph.open }
+    public static var close: Motion { MotionStyle.balanced.morph.close }
+    public static var resize: Motion { MotionStyle.balanced.morph.resize }
 
     /// The frame on screen `elapsed` seconds into a morph: the nearest sample, or the
     /// end shape once it has settled. Lets an interrupting morph start from where the

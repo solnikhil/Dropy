@@ -74,6 +74,9 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "fit", pane: .overlay, title: "Adapt to the Window",
                       detail: "Small windows keep their size. Larger ones scale down.",
                       keywords: "automatic scale native shrink"),
+        SettingsTopic(id: "motion", pane: .overlay, title: "Animation Style",
+                      detail: "Rapid, Balanced, or Smooth opening and closing.",
+                      keywords: "animation motion speed fast rapid smooth balanced spring bounce"),
         SettingsTopic(id: "content", pane: .overlay, title: "Content Scaling",
                       detail: "Fit, Fill, or native size.",
                       keywords: "fit fill crop scale letterbox"),
@@ -378,6 +381,16 @@ struct SettingsView: View {
                     .disabled(model.preferences.sizePreset == .nativeSize)
             }
 
+            SettingsCard("Animation") {
+                SettingsRow("Style", detail: motionDetail) {
+                    SettingsChoiceTiles(label: "Animation style", selection: model.binding(\.motionStyle), options: [
+                        ("Rapid", .rapid, "Quick and direct"),
+                        ("Balanced", .balanced, "Smooth but quick"),
+                        ("Smooth", .smooth, "Unhurried, with a soft settle"),
+                    ])
+                }
+            }
+
             SettingsCard("Appearance") {
                 SettingsRow("Content Scaling", detail: contentDetail) {
                     SettingsChoiceTiles(label: "Content scaling", selection: model.binding(\.contentMode), options: [
@@ -396,6 +409,14 @@ struct SettingsView: View {
         default:
             let size = preset.dimensions
             return "Up to \(Int(size.width)) × \(Int(size.height)) points. Expand the overlay whenever you need more room."
+        }
+    }
+
+    private var motionDetail: String {
+        switch model.preferences.motionStyle {
+        case .rapid: "Snaps open and shut with no bounce. Best when you open Dropy many times an hour."
+        case .balanced: "Smooth with a light settle, and still quick enough for everyday use."
+        case .smooth: "Grows out of the notch with a soft settle, and the content drifts into focus."
         }
     }
 
