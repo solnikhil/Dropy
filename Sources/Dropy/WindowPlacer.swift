@@ -414,6 +414,15 @@ enum Spaces {
         UserDefaults(suiteName: "com.apple.spaces")?.bool(forKey: "spans-displays") ?? false
     }
 
+    /// Every Space of every display (desktops and full-screen spaces).
+    static func all() -> [UInt64]? {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopyManagedDisplaySpaces", as: CopyDisplaySpaces.self),
+              let displays = copy(connection)?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let spaces = displays.flatMap { ($0["Spaces"] as? [[String: Any]] ?? []).compactMap { $0["id64"] as? UInt64 } }
+        return spaces.isEmpty ? nil : spaces
+    }
+
     /// The current Space of each display.
     static func current() -> [UInt64]? {
         guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),

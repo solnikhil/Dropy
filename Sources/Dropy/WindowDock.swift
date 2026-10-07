@@ -53,7 +53,17 @@ final class WindowDock {
         var cornerRadius: CGFloat
         /// Waiting on the Stage between openings (a pinned app's window).
         var isStaged = false
+        /// The desktop the window was on before Dropy first moved it, so it can go back
+        /// to that desktop and not only to that position.
+        var homeSpace: UInt64?
     }
+
+    /// Windows that went back to a desktop the person is not on: they wait on the
+    /// Stage until the person switches to that desktop, then return to their exact
+    /// place there. macOS offers no public way to move a window to a desktop that is
+    /// not showing, but a move between displays lands on the destination's current
+    /// desktop, so the move happens the moment the home desktop is current.
+    private var returning: [Docked] = []
 
     private let journal: PlacementJournal
     private weak var stage: Stage?
@@ -94,7 +104,16 @@ final class WindowDock {
                 current = docked
                 return
             }
-            if current != nil { releaseNow() }
+            // Opened again while waiting to go home: it is on the Stage already.
+            if let index = returning.firstIndex(where: { $0.identity == identity }) {
+                var docked = returning.remove(at: index)
+                if current != nil { await sendHomeNow() }
+                docked.window = window
+                current = docked
+                startObserving(docked)
+                return
+            }
+            if current != nil { await sendHomeNow() }
             guard WindowPlacer.isTrusted else { throw DockError.accessibilityNotTrusted }
             let application = NSRunningApplication(processIdentifier: identity.processID)
             // A window the person hid or minimized is shown so it can be placed.
@@ -107,8 +126,10 @@ final class WindowDock {
                 try? await Task.sleep(for: .milliseconds(350))
             }
             let state = try WindowPlacer.readState(element, identity: identity)
+            let spaces = Spaces.of(identity.windowID) ?? []
             current = Docked(identity: identity, window: window, element: element, frame: state.frame,
-                             snapshot: nil, cornerRadius: DockGeometry.defaultCornerRadius)
+                             snapshot: nil, cornerRadius: DockGeometry.defaultCornerRadius,
+                             homeSpace: spaces.count == 1 ? spaces[0] : nil)
             // A window on another desktop is pulled over through the Stage: a move to
             // another display lands on that display's current desktop, and from the
             // Stage it lands on the person's (spike S2).
@@ -371,10 +392,70 @@ final class WindowDock {
 
     // MARK: Letting it go
 
-    /// Puts the window back where the person had it and forgets it. This is what
-    /// closing the overlay does.
+    /// Puts the window back where the person had it, on its own desktop, and forgets
+    /// it. This is what closing the overlay does. If its desktop is not the one showing,
+    /// it waits on the Stage until it is (`returning`).
     func release() async {
-        _ = try? await serially { [self] in releaseNow() }
+        _ = try? await serially { [self] in await sendHomeNow() }
+    }
+
+    private func sendHomeNow() async {
+        guard let docked = current else { return }
+        guard let home = docked.homeSpace, Self.isElsewhere(home), stage?.isReady == true else {
+            releaseNow()
+            return
+        }
+        do {
+            try await moveToStageNow()
+        } catch {
+            releaseNow()
+            return
+        }
+        guard let waiting = current else { return }
+        stopObserving()
+        current = nil
+        returning.append(waiting)
+        NSLog("Dropy dock: window=%u waits on the Stage for its desktop", waiting.identity.windowID)
+    }
+
+    /// Whether `space` still exists but is not showing on any display.
+    private static func isElsewhere(_ space: UInt64) -> Bool {
+        guard let showing = Spaces.current(), !showing.contains(space), let all = Spaces.all() else { return false }
+        return all.contains(space)
+    }
+
+    /// The person switched desktops: windows whose desktop is now showing go back to
+    /// their place there (and any whose desktop was removed go back here).
+    func activeSpaceChanged() {
+        for waiting in returning {
+            guard let home = waiting.homeSpace, !Self.isElsewhere(home) else { continue }
+            returnHome(waiting, reason: "desktop showing")
+        }
+    }
+
+    /// The person brought an app forward (Command-Tab, the Dock): a window of it that is
+    /// waiting on the Stage would be invisible, so it comes back now, on this desktop.
+    func applicationActivated(pid: pid_t) {
+        for waiting in returning where waiting.identity.processID == pid {
+            returnHome(waiting, reason: "app brought forward")
+        }
+    }
+
+    /// Every waiting window goes back now, wherever the person is (quitting).
+    func returnAllNow() {
+        for waiting in returning { returnHome(waiting, reason: "quitting") }
+    }
+
+    /// The Stage ended: macOS has moved its windows to a real display already.
+    func forgetReturning() { returning = [] }
+
+    private func returnHome(_ waiting: Docked, reason: String) {
+        returning.removeAll { $0.identity == waiting.identity }
+        guard let entry = existingEntry(waiting.identity) else { return }
+        let outcome = WindowPlacer.restore(entry, journal: journal)
+        NSLog("Dropy dock: window=%u went home (%@) outcome=%@", waiting.identity.windowID, reason,
+              PlacementJournal.name(outcome))
+        if outcome.retriesAutomatically { onDeferredRestore?(waiting.identity) }
     }
 
     /// The synchronous release, for quitting.

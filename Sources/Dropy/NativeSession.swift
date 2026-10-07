@@ -239,6 +239,12 @@ final class NativeSession: NSObject {
     /// Puts a docked or staged window back where the person had it, for quitting.
     func releaseNow() {
         dock.releaseNow()
+        dock.returnAllNow()
+    }
+
+    /// The person switched desktops: windows waiting for that desktop go back to it.
+    func activeSpaceChanged() {
+        dock.activeSpaceChanged()
     }
 
     /// The pinned app or the keep-ready choice changed: a staged window that should no
@@ -254,6 +260,7 @@ final class NativeSession: NSObject {
     /// The Stage ended (the window server stopped it): macOS has moved its windows to a
     /// real display already, so a staged window is no longer Dropy's to move.
     func stageLost() {
+        dock.forgetReturning()
         guard dock.isStaged else { return }
         dock.detach()
         if host.state.isDocking { host.close(returnsFocus: false, putsBack: false) }
@@ -321,6 +328,7 @@ final class NativeSession: NSObject {
     /// Another app came to the front: its windows would rise over the docked one, so
     /// the overlay closes and the window goes back.
     func applicationActivated(pid: pid_t, bundleIdentifier: String?) {
+        if host.state == .closed { dock.applicationActivated(pid: pid) }
         guard let docked = dock.current, host.state.isDocking,
               DockPolicy.activationCloses(processID: pid, bundleIdentifier: bundleIdentifier,
                                           sourceProcessID: docked.identity.processID,

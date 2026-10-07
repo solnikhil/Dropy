@@ -86,7 +86,9 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         workspaceObservers.append(center.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.state.isDocking else { return }
+                guard let self else { return }
+                self.native.activeSpaceChanged()
+                guard self.state.isDocking else { return }
                 NSLog("Dropy dismiss: switched desktops")
                 self.close(returnsFocus: false)
             }
