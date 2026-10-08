@@ -44,6 +44,7 @@ struct AnimationSettingsPage: View {
                 }
             }
             yours
+            examples
             ai
         }
     }
@@ -94,14 +95,6 @@ struct AnimationSettingsPage: View {
                 Button("New Animation…") { model.newAnimation() }
                     .buttonStyle(SettingsButtonStyle(outlined: true))
                     .help("Starts as the animation in use and opens the Animation Studio")
-                Menu("Start from an Example") {
-                    ForEach(DropyAnimation.gallery, id: \.id) { example in
-                        Button(example.animation.name) { model.addExample(example.id) }
-                    }
-                }
-                .menuStyle(.button)
-                .buttonStyle(SettingsButtonStyle())
-                .fixedSize()
                 Button("Paste Share Code") { model.pasteShareCode() }
                     .buttonStyle(SettingsButtonStyle())
                 Button { model.surpriseMe() } label: { Image(systemName: "dice") }
@@ -125,6 +118,17 @@ struct AnimationSettingsPage: View {
         let detail = errors.first.map { "\($0.path.isEmpty ? "" : $0.path + ": ")\($0.message)" }
             ?? (entry.animation?.summary.isEmpty == false ? entry.animation!.summary : "\(entry.id).json")
         return HStack(spacing: SettingsMetrics.rowInset) {
+            Group {
+                if let animation = entry.animation {
+                    MotionSparkline(motion: animation.open)
+                } else {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+            }
+            .frame(width: 64, height: 30)
+            .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: SettingsMetrics.controlSpacing) {
                     Text(entry.name).font(SettingsMetrics.body)
@@ -158,6 +162,34 @@ struct AnimationSettingsPage: View {
                 .fixedSize()
         }
         .settingsRow()
+    }
+
+    // MARK: Examples
+
+    private var examples: some View {
+        SettingsCard("Examples", footer: "Add one to make a copy in your animations, ready to use or to change in the Animation Studio.") {
+            ForEach(DropyAnimation.gallery, id: \.id) { example in
+                HStack(spacing: SettingsMetrics.rowInset) {
+                    MotionSparkline(motion: example.animation.open)
+                        .frame(width: 64, height: 30)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(example.animation.name).font(SettingsMetrics.body)
+                        Text(example.animation.summary).font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: SettingsMetrics.rowInset)
+                    Button { _ = model.playOnNotch?(example.animation, 1) } label: { Image(systemName: "play.fill") }
+                        .buttonStyle(SettingsButtonStyle(circular: true))
+                        .help("Play \(example.animation.name) on the notch")
+                        .accessibilityLabel("Play \(example.animation.name) on the notch")
+                    Button("Add") { model.addExample(example.id) }
+                        .buttonStyle(SettingsButtonStyle())
+                        .accessibilityLabel("Add \(example.animation.name)")
+                }
+                .settingsRow()
+            }
+        }
     }
 
     // MARK: AI

@@ -446,6 +446,40 @@ enum PlayedProgress {
     }
 }
 
+// MARK: Sparkline
+
+/// A motion's two curves, small: how an animation moves at a glance.
+struct MotionSparkline: View {
+    let motion: NotchMorph.Motion
+
+    var body: some View {
+        Canvas { context, size in
+            let duration = max(motion.duration, 0.05)
+            let extent = motion.extent
+            let low = min(0, extent.lowerBound)
+            let high = max(1, extent.upperBound)
+            func point(_ time: Double, _ value: Double) -> CGPoint {
+                CGPoint(x: 2 + (size.width - 4) * time / duration,
+                        y: size.height - 3 - (size.height - 6) * (value - low) / (high - low))
+            }
+            var end = Path()
+            end.move(to: point(0, 1))
+            end.addLine(to: point(duration, 1))
+            context.stroke(end, with: .color(.primary.opacity(0.15)), lineWidth: 1)
+            for (curve, color) in [(motion.width, StudioColors.width), (motion.height, StudioColors.height)] {
+                var path = Path()
+                for step in 0...60 {
+                    let time = duration * Double(step) / 60
+                    let p = point(time, curve.value(at: time))
+                    if step == 0 { path.move(to: p) } else { path.addLine(to: p) }
+                }
+                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
 // MARK: Timing curve
 
 @MainActor
