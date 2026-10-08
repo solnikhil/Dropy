@@ -127,6 +127,9 @@ struct MotionGraph: View {
         .focusable()
         .focusEffectDisabled()
         .onDeleteCommand { if let key = model.selectedKey { model.deleteKey(key) } }
+        .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow, .tab], phases: [.down, .repeat]) { press in
+            nudge(press.key, large: press.modifiers.contains(.shift)) ? .handled : .ignored
+        }
         .accessibilityElement()
         .accessibilityLabel("\(model.tab.title) curves")
         .accessibilityValue(model.motion.map { motion in
@@ -294,6 +297,39 @@ struct MotionGraph: View {
                        anchor: UnitPoint = .center, opacity: Double = 0.6) {
         context.draw(Text(text).font(.system(size: 10).monospacedDigit()).foregroundColor(.primary.opacity(opacity)),
                      at: point, anchor: anchor)
+    }
+
+    // MARK: Keyboard
+
+    /// Arrow keys move the selected keyframe (5 ms or 1 % a press, five times that with
+    /// Shift) or, on a spring, its speed and bounce; Tab moves to the next keyframe.
+    private func nudge(_ key: KeyEquivalent, large: Bool) -> Bool {
+        let scale = large ? 5.0 : 1.0
+        if let keys = model.keys {
+            if key == .tab {
+                model.selectedKey = ((model.selectedKey ?? -1) + 1) % keys.count
+                return true
+            }
+            guard let index = model.selectedKey, keys.indices.contains(index) else { return false }
+            let current = keys[index]
+            switch key {
+            case .leftArrow: model.moveKey(index, time: current.time - 0.005 * scale)
+            case .rightArrow: model.moveKey(index, time: current.time + 0.005 * scale)
+            case .upArrow: model.moveKey(index, value: current.value + 0.01 * scale)
+            case .downArrow: model.moveKey(index, value: current.value - 0.01 * scale)
+            default: return false
+            }
+            return true
+        }
+        guard let spring = model.spring else { return false }
+        switch key {
+        case .leftArrow: model.updateSpring(response: max(AnimationLimits.response.lowerBound, spring.spring.response - 0.01 * scale))
+        case .rightArrow: model.updateSpring(response: min(AnimationLimits.response.upperBound, spring.spring.response + 0.01 * scale))
+        case .upArrow: model.updateSpring(damping: max(AnimationLimits.damping.lowerBound, spring.spring.dampingRatio - 0.01 * scale))
+        case .downArrow: model.updateSpring(damping: min(AnimationLimits.damping.upperBound, spring.spring.dampingRatio + 0.01 * scale))
+        default: return false
+        }
+        return true
     }
 
     // MARK: Dragging

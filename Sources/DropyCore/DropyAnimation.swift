@@ -84,6 +84,7 @@ extension DropyAnimation {
     /// animations folder's Examples as files to start from, and can be added from Settings.
     public static let gallery: [(id: String, animation: DropyAnimation)] = [
         ("springy", springy), ("elastic-drop", elasticDrop), ("snap", snap), ("float", float), ("pop", pop),
+        ("jelly", jelly), ("curtain", curtain),
     ]
 
     private static func spring(_ response: Double, _ damping: Double, delay: Double = 0) -> MotionCurve {
@@ -142,6 +143,28 @@ extension DropyAnimation {
         content: ContentMotion(revealDelay: 0.16, revealDuration: 0.6, hideDuration: 0.2, relayoutDuration: 0.36,
                                staggerSpan: 0.18, staggerDrift: 18, restScale: 0.9, blurRadius: 18,
                                revealCurve: glideEase, hideCurve: .leave))
+
+    static let jelly = DropyAnimation(
+        name: "Jelly", summary: "Wobbles out of the notch: width and height bounce out of step, like a jelly set down.",
+        author: "Dropy",
+        open: .init(width: spring(0.36, 0.48), height: spring(0.42, 0.5, delay: 0.03)),
+        resize: .init(width: spring(0.34, 0.6), height: spring(0.38, 0.6, delay: 0.03)),
+        close: .init(width: spring(0.24, 1), height: spring(0.18, 1)),
+        content: ContentMotion(revealDelay: 0.08, revealDuration: 0.34, hideDuration: 0.1, relayoutDuration: 0.2,
+                               staggerSpan: 0.1, staggerDrift: 12, restScale: 0.86, blurRadius: 0,
+                               revealCurve: overshootEase, hideCurve: .leave))
+
+    static let curtain = DropyAnimation(
+        name: "Curtain", summary: "Spans its full width at once, then falls slowly like a curtain, its content following it down.",
+        author: "Dropy",
+        open: .init(width: spring(0.2, 1),
+                    height: keys((0.08, 0, .smooth), (0.5, 1, .easeInOut))),
+        resize: .init(width: spring(0.24, 1), height: spring(0.4, 0.95, delay: 0.05)),
+        close: .init(width: keys((0.14, 0, .smooth), (0.34, 1, .easeIn)),
+                     height: keys((0, 0, .smooth), (0.24, 1, .easeInOut))),
+        content: ContentMotion(revealDelay: 0.18, revealDuration: 0.36, hideDuration: 0.12, relayoutDuration: 0.24,
+                               staggerSpan: 0.2, staggerDrift: 24, restScale: 1, blurRadius: 0,
+                               revealCurve: .settle, hideCurve: .leave))
 
     static let pop = DropyAnimation(
         name: "Pop", summary: "Bursts sideways past its width, then drops; the content pops in with a little overshoot.",

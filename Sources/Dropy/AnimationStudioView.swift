@@ -187,6 +187,14 @@ struct AnimationStudioView: View {
 
     private var tabs: some View {
         HStack(spacing: 12) {
+            // ⌘1–⌘4 switch motions (invisible buttons that only carry the shortcuts).
+            ForEach(Array(AnimationStudioModel.Tab.allCases.enumerated()), id: \.offset) { index, tab in
+                Button("") { model.tab = tab }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
             Picker("Motion", selection: $model.tab) {
                 ForEach(AnimationStudioModel.Tab.allCases) { tab in Text(tab.title).tag(tab) }
             }
@@ -253,9 +261,9 @@ struct AnimationStudioView: View {
             return "Draw the \(model.channel.rawValue) curve from left to right with the pen; Dropy smooths it into keyframes."
         }
         if model.spring != nil {
-            return "Drag the round handle sideways for speed and up for bounce; the square sets a delay. Or switch to Keyframes."
+            return "Drag the round handle sideways for speed and up for bounce (or click the graph and use the arrow keys); the square sets a delay."
         }
-        return "Drag points to move them. Double-click to add one; Delete removes the selected one. ⌘Z undoes."
+        return "Drag points, or click one and use the arrow keys (Shift for bigger steps; Tab for the next). Double-click adds a point; Delete removes it."
     }
 
     // MARK: Content

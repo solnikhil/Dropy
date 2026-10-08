@@ -82,7 +82,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 app_binary="$build_dir/Dropy.app/Contents/MacOS/Dropy"
 animations_dir="$(mktemp -d)"
 export DROPY_ANIMATIONS_FOLDER="$animations_dir"
-for name in rapid balanced smooth springy elastic-drop snap float pop; do
+for name in rapid balanced smooth springy elastic-drop snap float pop jelly curtain; do
   "$app_binary" animation check "$name" >/dev/null || { print -u2 "animation check $name failed"; exit 1; }
 done
 "$app_binary" animation new "Check Drop" --from springy >/dev/null

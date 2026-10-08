@@ -67,7 +67,7 @@ This is the built-in Balanced style, written out in full:
 }
 ```
 
-Only `"dropyAnimation": 1` is required. Anything left out comes from the style named in `"basedOn"`: `rapid`, `balanced` (the default), `smooth`, or one of the examples (`springy`, `elastic-drop`, `snap`, `float`, `pop`). Comments (`//`) and trailing commas are allowed.
+Only `"dropyAnimation": 1` is required. Anything left out comes from the style named in `"basedOn"`: `rapid`, `balanced` (the default), `smooth`, or one of the examples (`springy`, `elastic-drop`, `snap`, `float`, `pop`, `jelly`, `curtain`). Comments (`//`) and trailing commas are allowed.
 
 ## How the outline moves
 
