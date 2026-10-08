@@ -130,6 +130,9 @@ struct AnimationStudioView: View {
                 Button(model.shareCodeCopied ? "Share Code Copied" : "Copy Share Code") { model.copyShareCode() }
                 Button("Copy AI Prompt to Refine It") { model.copyRefinePrompt() }
                 Divider()
+                Button("Duplicate") { model.duplicate() }
+                Button("New Animation from This") { model.duplicate(named: "My Animation") }
+                Divider()
                 Button("Show in Finder") {
                     model.saveNow()
                     NSWorkspace.shared.activateFileViewerSelecting([model.url])
@@ -387,6 +390,9 @@ struct AnimationStudioView: View {
             startFromMenu
         }
         if model.tab == .close {
+            Button("Mirror the Opening") { model.mirrorOpening() }
+                .buttonStyle(SettingsButtonStyle())
+                .help("Make the closing the opening played backwards")
             Text("Closing is forward-only: it can never bounce back out of the notch. A dashed line shows a curve as written when that changes it.")
                 .font(SettingsMetrics.detail).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

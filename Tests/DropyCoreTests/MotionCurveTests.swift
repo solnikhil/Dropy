@@ -100,6 +100,18 @@ final class MotionCurveTests: XCTestCase {
         XCTAssertEqual(landed.last?.time ?? 0, 0.3, accuracy: 0.001, "a stroke lifted at the end needs no settle")
     }
 
+    func testAReversedOpeningIsTheMatchingClosing() {
+        let opening = MotionCurve.spring(MorphSpring(response: 0.3, dampingRatio: 1), delay: 0.05)
+        let closing = opening.reversed()
+        XCTAssertEqual(closing.value(at: 0), 0)
+        XCTAssertEqual(closing.value(at: closing.duration), 1)
+        XCTAssertTrue(closing.duration < opening.duration - 0.03, "the opening's wait is not kept as a hold")
+        for step in 1..<20 {
+            let t = opening.duration * Double(step) / 20
+            XCTAssertEqual(closing.value(at: t), 1 - opening.value(at: opening.duration - t), accuracy: 0.05)
+        }
+    }
+
     func testClosingIsPlayedForwardOnlyWhateverItsCurve() {
         let bouncy = NotchMorph.Motion(width: .spring(MorphSpring(response: 0.4, dampingRatio: 0.4)),
                                        height: .keyframes(keys((0, 0, .smooth), (0.1, 1.2, .smooth), (0.2, 0.6, .smooth), (0.3, 1, .smooth))))

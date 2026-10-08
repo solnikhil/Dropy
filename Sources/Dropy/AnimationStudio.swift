@@ -256,6 +256,32 @@ final class AnimationStudioModel: ObservableObject {
         selectedKey = nil
     }
 
+    /// Makes the closing the opening played backwards (both parts).
+    func mirrorOpening() {
+        edit { animation in
+            animation.close.width = animation.open.width.reversed()
+            animation.close.height = animation.open.height.reversed()
+        }
+    }
+
+    /// Opens another animation file in the Studio.
+    var openFile: ((String) -> Void)?
+
+    /// Saves a copy (or a new animation starting as this one) and opens it.
+    func duplicate(named name: String? = nil) {
+        saveNow()
+        var copy = animation
+        copy.name = name ?? "\(animation.name) Copy"
+        let id = library.freeID(for: copy.name)
+        if name != nil { copy.name = AnimationLibrary.title(for: id) }
+        do {
+            try library.save(copy, as: id)
+            openFile?(id)
+        } catch {
+            NSLog("Dropy studio: cannot save a copy: %@", error.localizedDescription)
+        }
+    }
+
     /// Gives the other part the same curve.
     func copyCurveToOtherChannel() {
         guard let curve else { return }
@@ -422,6 +448,7 @@ final class AnimationStudioController: NSObject, NSWindowDelegate {
         model.playOnNotch = playOnNotch
         model.use = use
         model.inUse = { [weak self] in self?.inUse(fileID) ?? false }
+        model.openFile = { [weak self] id in self?.open(id) }
         self.model = model
         let window = self.window ?? makeWindow()
         let host = NSHostingController(rootView: AnimationStudioView(model: model))

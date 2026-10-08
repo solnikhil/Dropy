@@ -60,6 +60,21 @@ public enum MotionCurve: Equatable, Sendable {
         }
     }
 
+    /// This curve played backwards, as keyframes: an opening turned into the matching
+    /// closing. Where the original waited at its start, the reverse ends as soon as it
+    /// arrives instead of holding.
+    public func reversed() -> MotionCurve {
+        let end = max(duration, 0.05)
+        var samples: [(time: Double, value: Double)] = []
+        for step in 0...160 {
+            let time = end * Double(step) / 160
+            let value = 1 - value(at: end - time)
+            samples.append((time, value))
+            if step > 0, value >= 0.999 { break }
+        }
+        return .keyframes(CurveSketch.keyframes(from: samples, tolerance: 0.008))
+    }
+
     /// Keyframes that trace this curve closely, for editing a spring by hand.
     public func asKeyframes() -> [MotionKeyframe] {
         if case .keyframes(let keys) = self { return keys }

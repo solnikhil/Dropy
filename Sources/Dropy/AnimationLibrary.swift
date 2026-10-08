@@ -139,6 +139,8 @@ final class AnimationLibrary: ObservableObject {
     /// Reads every animation file in the folder (not the examples).
     func scan(notify: Bool = true) {
         let manager = FileManager.default
+        // Deleted while Dropy runs: put the folder and its guide back.
+        if !manager.fileExists(atPath: folder.path) { prepareFolder() }
         let urls = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
                                                      options: [.skipsHiddenFiles])) ?? []
         var next: [Entry] = []
