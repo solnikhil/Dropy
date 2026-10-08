@@ -12,6 +12,7 @@ enum AnimationCommand {
           check <file or name>                 Read an animation and list every problem, its timings and cost.
           render <file or name> [--out <png>]  Draw each motion as a filmstrip with its curves.
           play <file or name> [--slow <n>]     Play it on the notch of the running Dropy.
+          watch <file or name> [--slow <n>]    Play it again every time the file is saved (Control-C stops).
           new <name> [--from <style, example or file>]
                                                Write a new animation into the animations folder.
           use <name>                           Make it the active animation (rapid, balanced, smooth are built in).
@@ -34,6 +35,7 @@ enum AnimationCommand {
         case "check": return check(rest, library)
         case "render": return render(rest, library)
         case "play": return play(rest, library)
+        case "watch": return watch(rest, library)
         case "new": return new(rest, library)
         case "use": return use(rest, library)
         case "list": return list(library)
@@ -104,6 +106,41 @@ enum AnimationCommand {
         guard let reply else { return fail("Dropy didn't answer. Is it this copy of Dropy that's running?") }
         print(reply)
         return 0
+    }
+
+    /// Plays the animation, then again each time its file changes, listing its problems.
+    private static func watch(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
+        guard let target = arguments.first(where: { !$0.hasPrefix("--") }) else {
+            return fail("Which file? \(AnimationLibrary.command) watch <file or name> [--slow <n>]", status: 2)
+        }
+        let expanded = URL(fileURLWithPath: (target as NSString).expandingTildeInPath)
+        let url = FileManager.default.fileExists(atPath: expanded.path) ? expanded
+            : library.entry(URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent)?.url
+        guard let url else { return notFound(target, library) }
+        guard AnimationRemote.dropyIsRunning else { return fail("Dropy isn't running. Open it, then try again.") }
+        let slow = option("--slow", in: arguments).flatMap(Double.init) ?? 1
+        // Line by line, so a person or an agent reading the output sees each play at once.
+        setvbuf(stdout, nil, _IOLBF, 0)
+        print("Watching \(AnimationText.clean(url.lastPathComponent, limit: 100)). Save it to play it on the notch; Control-C stops.")
+        var lastSeen: Date?
+        while true {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
+            if let modified, modified != lastSeen {
+                lastSeen = modified
+                let result = AnimationLibrary.read(url)
+                let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+                for issue in result.issues {
+                    print("  \(issue.severity.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0))\(issue.path.isEmpty ? "" : issue.path + ": ")\(issue.message)")
+                }
+                if let animation = result.animation {
+                    let reply = AnimationRemote.send(.play, payload: AnimationFile.shareCode(for: animation), slow: slow)
+                    print("\(time)  \(reply ?? "Dropy didn't answer.")")
+                } else {
+                    print("\(time)  Not played: fix the errors above and save again.")
+                }
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        }
     }
 
     private static func new(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {

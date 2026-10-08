@@ -135,6 +135,7 @@ public enum AnimationGuide {
         | `\(command) check <file>` | Reads the file and lists every problem, the timings and the cost. Exits 1 on errors. |
         | `\(command) render <file> [--out <png>]` | Draws each motion as a filmstrip, with its curves, into a PNG. |
         | `\(command) play <file or name> [--slow <n>]` | Plays it on the notch of the running Dropy. |
+        | `\(command) watch <file or name> [--slow <n>]` | Plays it again every time the file is saved, listing its problems. Control-C stops. |
         | `\(command) new <name> [--from <style, example or file>]` | Writes a new animation into this folder to start from. |
         | `\(command) use <name>` | Makes it the active animation (`rapid`, `balanced` and `smooth` are the built-ins). |
         | `\(command) list` | Lists the built-in styles, the examples and this folder's animations. |

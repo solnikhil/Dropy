@@ -151,6 +151,7 @@ The outline is a filled shape and costs almost nothing at any speed. Blur is the
 | `'/Applications/Dropy.app/Contents/MacOS/Dropy' animation check <file>` | Reads the file and lists every problem, the timings and the cost. Exits 1 on errors. |
 | `'/Applications/Dropy.app/Contents/MacOS/Dropy' animation render <file> [--out <png>]` | Draws each motion as a filmstrip, with its curves, into a PNG. |
 | `'/Applications/Dropy.app/Contents/MacOS/Dropy' animation play <file or name> [--slow <n>]` | Plays it on the notch of the running Dropy. |
+| `'/Applications/Dropy.app/Contents/MacOS/Dropy' animation watch <file or name> [--slow <n>]` | Plays it again every time the file is saved, listing its problems. Control-C stops. |
 | `'/Applications/Dropy.app/Contents/MacOS/Dropy' animation new <name> [--from <style, example or file>]` | Writes a new animation into this folder to start from. |
 | `'/Applications/Dropy.app/Contents/MacOS/Dropy' animation use <name>` | Makes it the active animation (`rapid`, `balanced` and `smooth` are the built-ins). |
 | `'/Applications/Dropy.app/Contents/MacOS/Dropy' animation list` | Lists the built-in styles, the examples and this folder's animations. |
