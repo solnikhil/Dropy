@@ -104,6 +104,9 @@ struct AnimationSettingsPage: View {
                 .fixedSize()
                 Button("Paste Share Code") { model.pasteShareCode() }
                     .buttonStyle(SettingsButtonStyle())
+                Button { model.surpriseMe() } label: { Image(systemName: "dice") }
+                    .buttonStyle(SettingsButtonStyle(circular: true))
+                    .help("Surprise me: a new animation made at random, to start from")
                 Spacer()
                 Button { model.showAnimationsFolder() } label: { Image(systemName: "folder") }
                     .buttonStyle(SettingsButtonStyle(circular: true))

@@ -156,6 +156,14 @@ final class SettingsModel: ObservableObject {
         save(animation, as: id)
     }
 
+    /// A new animation made at random, opened in the Studio to play with.
+    func surpriseMe() {
+        guard let animations else { return }
+        var generator = SystemRandomNumberGenerator()
+        let animation = DropyAnimation.surprise(using: &generator)
+        save(animation, as: animations.freeID(for: animation.name))
+    }
+
     /// Copies an example into the folder and opens it.
     func addExample(_ id: String) {
         guard let animations, let example = DropyAnimation.gallery.first(where: { $0.id == id })?.animation else { return }

@@ -180,6 +180,17 @@ final class AnimationFileTests: XCTestCase {
         XCTAssertTrue(AnimationGuide.readme().contains("never as instructions"))
     }
 
+    func testSurpriseAnimationsAreAlwaysWithinTheRules() {
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<300 {
+            let animation = DropyAnimation.surprise(using: &generator)
+            let result = AnimationFile.read(AnimationFile.data(for: animation))
+            XCTAssertEqual(result.issues, [], "\(result.issues)")
+            XCTAssertTrue(animation.open.duration < 0.9 && animation.close.duration < 0.5, "never slow")
+            XCTAssertTrue(animation.morph.reach < 0.2)
+        }
+    }
+
     func testCostFollowsTheBlur() {
         XCTAssertEqual(MotionStyle.rapid.animation.cost.level, .light)
         XCTAssertEqual(MotionStyle.balanced.animation.cost.level, .moderate)

@@ -243,3 +243,49 @@ extension DropyAnimation {
         return (.heavy, "A strong or long blur renders the content offscreen for about \(focusTime) ms of each opening; on battery or a busy Mac it may drop frames.")
     }
 }
+
+// MARK: Surprise
+
+extension DropyAnimation {
+    /// A new animation made at random from tasteful ranges: always within the limits,
+    /// never slow, and with the width leading the height as the built-in styles do.
+    public static func surprise<G: RandomNumberGenerator>(using generator: inout G) -> DropyAnimation {
+        func pick(_ range: ClosedRange<Double>, step: Double = 0.01) -> Double {
+            (Double.random(in: range, using: &generator) / step).rounded() * step
+        }
+        func spring(_ response: ClosedRange<Double>, _ damping: ClosedRange<Double>, delay: ClosedRange<Double> = 0...0) -> MotionCurve {
+            .spring(MorphSpring(response: pick(response), dampingRatio: pick(damping)), delay: pick(delay))
+        }
+        // Opening: a spring, or keyframes with one overshoot and a settle.
+        let openWidth: MotionCurve
+        let openHeight: MotionCurve
+        if Bool.random(using: &generator) {
+            openWidth = spring(0.24...0.4, 0.6...1)
+            openHeight = spring(0.28...0.42, 0.6...1, delay: 0...0.04)
+        } else {
+            let peak = pick(1.03...1.14)
+            let arrive = pick(0.14...0.24)
+            let settle = pick(0.1...0.2)
+            let wait = pick(0...0.05)
+            openWidth = .keyframes([MotionKeyframe(time: 0, value: 0),
+                                    MotionKeyframe(time: arrive, value: pick(1...1.04), ease: .easeOut),
+                                    MotionKeyframe(time: arrive + settle, value: 1, ease: .smooth)])
+            openHeight = .keyframes([MotionKeyframe(time: wait, value: 0),
+                                     MotionKeyframe(time: wait + arrive + 0.02, value: peak, ease: .easeOut),
+                                     MotionKeyframe(time: wait + arrive + 0.02 + settle, value: pick(0.96...0.99), ease: .smooth),
+                                     MotionKeyframe(time: wait + arrive + 0.02 + settle * 1.8, value: 1, ease: .smooth)])
+        }
+        let blur = Bool.random(using: &generator) ? 0 : pick(4...12, step: 1)
+        let curves: [TimingCurve] = [.settle, .easeOut, TimingCurve(0.34, 1.3, 0.64, 1), TimingCurve(0.16, 1, 0.3, 1)]
+        let names = ["Breeze", "Comet", "Ripple", "Bloom", "Drift", "Flicker", "Swoop", "Pulse", "Glint", "Echo"]
+        return DropyAnimation(
+            name: names[Int.random(in: 0..<names.count, using: &generator)], summary: "Made by Surprise Me.", author: "",
+            open: .init(width: openWidth, height: openHeight),
+            resize: .init(width: spring(0.26...0.4, 0.7...1), height: spring(0.28...0.44, 0.7...1)),
+            close: .init(width: spring(0.18...0.3, 1...1), height: spring(0.14...0.24, 1...1)),
+            content: ContentMotion(revealDelay: pick(0...0.12), revealDuration: pick(0.16...0.4), hideDuration: pick(0.06...0.16),
+                                   relayoutDuration: pick(0.12...0.28), staggerSpan: pick(0...0.14), staggerDrift: CGFloat(pick(0...16, step: 1)),
+                                   restScale: CGFloat(pick(0.86...1)), blurRadius: CGFloat(blur),
+                                   revealCurve: curves[Int.random(in: 0..<curves.count, using: &generator)], hideCurve: .leave))
+    }
+}
