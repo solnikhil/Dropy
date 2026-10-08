@@ -20,7 +20,7 @@ enum AnimationCommand {
           import <code> [--name <name>]        Save the animation in a share code.
           docs                                 Print the format guide.
 
-        Animations live in \((AnimationLibrary.defaultFolder.path as NSString).abbreviatingWithTildeInPath).
+        Animations live in \(AnimationLibrary().shownFolder).
         """
 
     /// Runs the command in `arguments` (after "animation") and returns the exit status.
@@ -42,8 +42,7 @@ enum AnimationCommand {
         case "docs":
             let generic = rest.contains("--generic")
             print(generic ? AnimationGuide.readme(marker: AnimationGuide.repositoryMarker)
-                          : AnimationGuide.readme(folder: (library.folder.path as NSString).abbreviatingWithTildeInPath,
-                                                  command: AnimationLibrary.command), terminator: "")
+                          : AnimationGuide.readme(folder: library.shownFolder, command: AnimationLibrary.command), terminator: "")
             return 0
         case "help", "--help", "-h":
             print(usage)
@@ -217,9 +216,8 @@ enum AnimationCommand {
     private static func resolve(_ target: String, _ library: AnimationLibrary) -> Found? {
         let expanded = (target as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
-        if FileManager.default.fileExists(atPath: url.path), let data = try? Data(contentsOf: url) {
-            let id = url.deletingPathExtension().lastPathComponent
-            return Found(label: url.lastPathComponent, result: AnimationFile.read(data, fallbackName: AnimationLibrary.title(for: id)))
+        if FileManager.default.fileExists(atPath: url.path) {
+            return Found(label: AnimationText.clean(url.lastPathComponent, limit: 100), result: AnimationLibrary.read(url))
         }
         let id = url.deletingPathExtension().lastPathComponent
         if let entry = library.entry(id) { return Found(label: entry.url.lastPathComponent, result: entry.result) }

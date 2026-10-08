@@ -47,9 +47,51 @@ final class AnimationLibrary: ObservableObject {
         self.folder = folder
     }
 
-    /// How to run Dropy's animation commands from a terminal.
+    /// How to run Dropy's animation commands from a terminal. It goes into the guide
+    /// agents run commands from, so the path is single-quoted (a folder named with
+    /// `$(…)` must not run anything), and a path that could break out of the guide's
+    /// text is not written at all.
     static var command: String {
-        "\"\(Bundle.main.executablePath ?? "/Applications/Dropy.app/Contents/MacOS/Dropy")\" animation"
+        guard let path = Bundle.main.executablePath, AnimationText.canEmbed(path: path) else {
+            return AnimationGuide.genericCommand
+        }
+        return "\(AnimationText.shellQuoted(path)) animation"
+    }
+
+    /// The folder as the guide and prompts show it (the default location when the real
+    /// path could break out of the text).
+    var shownFolder: String {
+        let path = folder.path
+        return AnimationText.canEmbed(path: path) ? path : AnimationGuide.genericFolder
+    }
+
+    /// An animation file's path for a command in a prompt, single-quoted.
+    func quotedPath(for id: String) -> String {
+        AnimationText.shellQuoted("\(shownFolder)/\(id).json")
+    }
+
+    /// Reads an animation file, refusing one too big to be an animation before loading it.
+    static func read(_ url: URL) -> AnimationReadResult {
+        guard let data = data(at: url) else {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let message = size > AnimationFile.maximumSize
+                ? "The file is \(size / 1024) KB; an animation file may be at most \(AnimationFile.maximumSize / 1024) KB."
+                : "The file could not be read."
+            return AnimationReadResult(animation: nil, issues: [AnimationIssue(.error, "", message)])
+        }
+        return AnimationFile.read(data, fallbackName: title(for: url.deletingPathExtension().lastPathComponent))
+    }
+
+    /// A file's contents, or nil when it cannot be read or is too big to be an animation.
+    static func data(at url: URL) -> Data? {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= AnimationFile.maximumSize else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    /// Whether a file name can be listed and used as an animation's name in commands.
+    static func isUsable(id: String) -> Bool {
+        id.count <= 100 && AnimationText.canEmbed(path: id) && !id.contains("/")
     }
 
     // MARK: Starting
@@ -67,20 +109,19 @@ final class AnimationLibrary: ObservableObject {
     func prepareFolder() {
         let manager = FileManager.default
         try? manager.createDirectory(at: examplesFolder, withIntermediateDirectories: true)
-        let path = (folder.path as NSString).abbreviatingWithTildeInPath
-        writeIfChanged(AnimationGuide.readme(folder: path, command: Self.command), to: folder.appendingPathComponent("README.md"))
+        writeIfChanged(AnimationGuide.readme(folder: shownFolder, command: Self.command), to: folder.appendingPathComponent("README.md"))
         for name in ["AGENTS.md", "CLAUDE.md"] {
             writeIfChanged(AnimationGuide.agentPointer, to: folder.appendingPathComponent(name))
         }
         for (id, animation) in Self.examples {
             let url = examplesFolder.appendingPathComponent("\(id).json")
             let data = AnimationFile.data(for: animation)
-            if (try? Data(contentsOf: url)) != data { try? data.write(to: url, options: .atomic) }
+            if Self.data(at: url) != data { try? data.write(to: url, options: .atomic) }
         }
     }
 
     private func writeIfChanged(_ text: String, to url: URL) {
-        let existing = try? String(contentsOf: url, encoding: .utf8)
+        let existing = Self.data(at: url).flatMap { String(data: $0, encoding: .utf8) }
         guard existing != text else { return }
         if let existing, !existing.hasPrefix(AnimationGuide.generatedMarker) { return }
         try? Data(text.utf8).write(to: url, options: .atomic)
@@ -103,18 +144,15 @@ final class AnimationLibrary: ObservableObject {
         var next: [Entry] = []
         for url in urls where url.pathExtension.lowercased() == "json" {
             let id = url.deletingPathExtension().lastPathComponent
+            // A name with control characters or backticks could restyle a terminal or
+            // smuggle text into what an agent reads; such files are not listed.
+            guard Self.isUsable(id: id) else { continue }
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             if let old = entry(id), old.modified == modified, old.url == url {
                 next.append(old)
                 continue
             }
-            let result: AnimationReadResult
-            if let data = try? Data(contentsOf: url) {
-                result = AnimationFile.read(data, fallbackName: Self.title(for: id))
-            } else {
-                result = AnimationReadResult(animation: nil, issues: [AnimationIssue(.error, "", "The file could not be read.")])
-            }
-            next.append(Entry(id: id, url: url, result: result, modified: modified))
+            next.append(Entry(id: id, url: url, result: Self.read(url), modified: modified))
         }
         next.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         guard next != entries else { return }

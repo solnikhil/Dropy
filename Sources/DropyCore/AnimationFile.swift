@@ -1,3 +1,4 @@
+import Compression
 import CoreGraphics
 import Foundation
 
@@ -51,11 +52,27 @@ public enum AnimationFile {
     public static let version = 1
     public static let shareCodePrefix = "dropy-animation:"
 
+    /// Files, and share codes once unpacked, may be at most this big. A complete
+    /// animation is about 1.5 KB; the limit keeps a hostile or runaway file (or a share
+    /// code that unpacks to gigabytes) from using up memory or time.
+    public static let maximumSize = 128 * 1024
+    /// The longest share code read; real ones are under 1,000 characters.
+    public static let maximumShareCodeLength = 16 * 1024
+    /// Problems listed per file, at most.
+    public static let maximumIssues = 40
+    /// Text fields keep at most this many characters.
+    public static let maximumNameLength = 80
+    public static let maximumSummaryLength = 400
+
     // MARK: Reading
 
     /// Reads an animation; `fallbackName` names it when the file does not.
     public static func read(_ data: Data, fallbackName: String = "Untitled") -> AnimationReadResult {
         let reader = Reader()
+        guard data.count <= maximumSize else {
+            reader.error("", "The file is \(data.count / 1024) KB; an animation file may be at most \(maximumSize / 1024) KB.")
+            return AnimationReadResult(animation: nil, issues: reader.issues)
+        }
         let json: Any
         do {
             json = try JSONSerialization.jsonObject(with: data, options: [.json5Allowed])
@@ -70,6 +87,11 @@ public enum AnimationFile {
 
     /// Reads a code made by `shareCode(for:)`.
     public static func read(shareCode: String) -> AnimationReadResult {
+        guard shareCode.utf8.count <= maximumShareCodeLength else {
+            return AnimationReadResult(animation: nil, issues: [
+                AnimationIssue(.error, "", "This is too long to be a share code."),
+            ])
+        }
         let trimmed = shareCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix(shareCodePrefix) else {
             return AnimationReadResult(animation: nil, issues: [
@@ -80,13 +102,61 @@ public enum AnimationFile {
             .replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
             .filter { !$0.isWhitespace }
         base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
-        guard let packed = Data(base64Encoded: base64),
-              let json = try? (packed as NSData).decompressed(using: .zlib) as Data else {
+        guard let packed = Data(base64Encoded: base64) else {
             return AnimationReadResult(animation: nil, issues: [
                 AnimationIssue(.error, "", "This share code is incomplete or damaged; copy all of it."),
             ])
         }
-        return read(json)
+        switch inflate(packed, limit: maximumSize) {
+        case .success(let json): return read(json)
+        case .failure(.tooLarge):
+            return AnimationReadResult(animation: nil, issues: [
+                AnimationIssue(.error, "", "This share code unpacks to more than \(maximumSize / 1024) KB, far more than any animation; it was not read."),
+            ])
+        case .failure(.damaged):
+            return AnimationReadResult(animation: nil, issues: [
+                AnimationIssue(.error, "", "This share code is incomplete or damaged; copy all of it."),
+            ])
+        }
+    }
+
+    enum InflateFailure: Error { case damaged, tooLarge }
+
+    /// Unpacks raw DEFLATE (what `NSData.compressed(using: .zlib)` writes), stopping as
+    /// soon as the output would pass `limit`. `NSData.decompressed` has no limit, so a
+    /// tiny code could unpack to gigabytes.
+    static func inflate(_ data: Data, limit: Int) -> Result<Data, InflateFailure> {
+        guard !data.isEmpty else { return .failure(.damaged) }
+        let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        defer { stream.deallocate() }
+        guard compression_stream_init(stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
+            return .failure(.damaged)
+        }
+        defer { compression_stream_destroy(stream) }
+        let chunk = 16 * 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunk)
+        defer { buffer.deallocate() }
+        return data.withUnsafeBytes { (source: UnsafeRawBufferPointer) -> Result<Data, InflateFailure> in
+            guard let base = source.bindMemory(to: UInt8.self).baseAddress else { return .failure(.damaged) }
+            stream.pointee.src_ptr = base
+            stream.pointee.src_size = source.count
+            var output = Data()
+            while true {
+                stream.pointee.dst_ptr = buffer
+                stream.pointee.dst_size = chunk
+                let status = compression_stream_process(stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+                let produced = chunk - stream.pointee.dst_size
+                if output.count + produced > limit { return .failure(.tooLarge) }
+                output.append(buffer, count: produced)
+                switch status {
+                case COMPRESSION_STATUS_END: return .success(output)
+                case COMPRESSION_STATUS_OK:
+                    // No progress with input left means the data ends early.
+                    if produced == 0, stream.pointee.src_size == 0 { return .failure(.damaged) }
+                default: return .failure(.damaged)
+                }
+            }
+        }
     }
 
     // MARK: Writing
@@ -166,10 +236,28 @@ public enum AnimationFile {
 
 private final class Reader {
     var issues: [AnimationIssue] = []
-    var hasErrors: Bool { issues.contains { $0.severity == .error } }
+    private(set) var hasErrors = false
+    private var dropped = 0
 
-    func error(_ path: String, _ message: String) { issues.append(AnimationIssue(.error, path, message)) }
-    func warning(_ path: String, _ message: String) { issues.append(AnimationIssue(.warning, path, message)) }
+    func error(_ path: String, _ message: String) {
+        hasErrors = true
+        add(AnimationIssue(.error, path, message))
+    }
+
+    func warning(_ path: String, _ message: String) { add(AnimationIssue(.warning, path, message)) }
+
+    /// Keeps the list short however broken the file: past the limit, one line says how
+    /// many more there were.
+    private func add(_ issue: AnimationIssue) {
+        let limit = AnimationFile.maximumIssues
+        if issues.count < limit - 1 {
+            issues.append(issue)
+            return
+        }
+        dropped += 1
+        let summary = AnimationIssue(hasErrors ? .error : .warning, "", "…and \(dropped) more problem\(dropped == 1 ? "" : "s") not listed.")
+        if issues.count == limit { issues[limit - 1] = summary } else { issues.append(summary) }
+    }
 
     func animation(_ json: Any, fallbackName: String) -> DropyAnimation? {
         guard let root = json as? [String: Any] else {
@@ -199,9 +287,10 @@ private final class Reader {
             }
         }
         var animation = base
-        animation.name = text(root, "name") ?? fallbackName
-        animation.summary = text(root, "description") ?? ""
-        animation.author = text(root, "author") ?? ""
+        animation.name = text(root, "name", limit: AnimationFile.maximumNameLength)
+            ?? AnimationText.clean(fallbackName, limit: AnimationFile.maximumNameLength)
+        animation.summary = text(root, "description", limit: AnimationFile.maximumSummaryLength) ?? ""
+        animation.author = text(root, "author", limit: AnimationFile.maximumNameLength) ?? ""
         for part in DropyAnimation.Part.allCases {
             guard let value = root[part.rawValue] else { continue }
             if let motion = motion(value, base: base[part], at: part.rawValue) {
@@ -372,7 +461,7 @@ private final class Reader {
     private func ease(_ value: Any, at path: String) -> MotionEase {
         if let name = value as? String {
             if let ease = MotionEase(name: name) { return ease }
-            warning(path, "Unknown ease “\(name)”\(suggestion(for: name, among: MotionEase.names)); using smooth. Use one of: \(MotionEase.names.joined(separator: ", ")), or [x1, y1, x2, y2].")
+            warning(path, "Unknown ease “\(AnimationText.clean(name, limit: 40))”\(suggestion(for: name, among: MotionEase.names)); using smooth. Use one of: \(MotionEase.names.joined(separator: ", ")), or [x1, y1, x2, y2].")
             return .smooth
         }
         if let curve = timingCurve(value, at: path) { return .curve(curve) }
@@ -383,7 +472,7 @@ private final class Reader {
         if let name = value as? String {
             if let curve = TimingCurve.named.first(where: { $0.name == name })?.curve { return curve }
             if name == "linear" { return .linear }
-            warning(path, "Unknown curve “\(name)”\(suggestion(for: name, among: TimingCurve.named.map(\.name))); using the default.")
+            warning(path, "Unknown curve “\(AnimationText.clean(name, limit: 40))”\(suggestion(for: name, among: TimingCurve.named.map(\.name))); using the default.")
             return nil
         }
         guard let list = value as? [Any], list.count == 4 else {
@@ -432,14 +521,19 @@ private final class Reader {
 
     // MARK: Values
 
-    private func text(_ object: [String: Any], _ key: String) -> String? {
+    /// Text from the file, on one line, without control characters (which could restyle
+    /// a terminal) and shortened to `limit`: animations come from other people, and their
+    /// names end up in lists, menus and command output.
+    private func text(_ object: [String: Any], _ key: String, limit: Int) -> String? {
         guard let value = object[key] else { return nil }
         guard let string = value as? String else {
             warning(key, "Must be text; ignored.")
             return nil
         }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        let whole = AnimationText.clean(string, limit: .max)
+        if whole.count > limit { warning(key, "Shortened to \(limit) characters.") }
+        let cleaned = AnimationText.clean(whole, limit: limit)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     func number(_ value: Any?) -> Double? {
@@ -465,13 +559,15 @@ private final class Reader {
 
     private func expect(keys object: [String: Any], _ known: [String], at path: String) {
         for key in object.keys.sorted() where !known.contains(key) {
-            let full = path.isEmpty ? key : "\(path).\(key)"
+            let shown = AnimationText.clean(key, limit: 40)
+            let full = path.isEmpty ? shown : "\(path).\(shown)"
             warning(full, "Unknown key, ignored\(suggestion(for: key, among: known)).")
         }
     }
 
     private func suggestion(for word: String?, among options: [String]) -> String {
-        guard let word = word?.lowercased(), !word.isEmpty else { return "" }
+        // Long strings are not typos of short keys, and comparing them costs time.
+        guard let word = word?.lowercased(), !word.isEmpty, word.count <= 40 else { return "" }
         let best = options.map { ($0, distance(word, $0.lowercased())) }.min { $0.1 < $1.1 }
         guard let best, best.1 <= max(2, word.count / 3) else { return "" }
         return " (did you mean “\(best.0)”?)"
@@ -497,6 +593,47 @@ private final class Reader {
     private func show(_ value: Double) -> String { JSONText.format(value) }
     private func range(_ limits: ClosedRange<Double>) -> String { "\(show(limits.lowerBound))–\(show(limits.upperBound))" }
     private func seconds(_ value: Double) -> String { "\(show((value * 100).rounded() / 100)) s" }
+}
+
+// MARK: Text
+
+/// Cleaning text that comes from animation files, file names and paths before it is
+/// shown, printed or written into a guide that AI agents read.
+public enum AnimationText {
+    /// One line, no control characters (escape sequences could restyle a terminal or
+    /// hide text), trimmed, and at most `limit` characters.
+    public static func clean(_ text: String, limit: Int) -> String {
+        var result = ""
+        var lastWasSpace = false
+        for scalar in text.unicodeScalars {
+            let isControl = scalar.properties.generalCategory == .control || scalar.properties.generalCategory == .format
+                || scalar == "\u{2028}" || scalar == "\u{2029}"
+            if isControl || CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                if !lastWasSpace, !result.isEmpty { result.append(" ") }
+                lastWasSpace = true
+                continue
+            }
+            result.unicodeScalars.append(scalar)
+            lastWasSpace = false
+        }
+        result = result.trimmingCharacters(in: .whitespaces)
+        return result.count > limit ? String(result.prefix(limit - 1)) + "…" : result
+    }
+
+    /// Whether a path can be written into the guide that AI agents read and run
+    /// commands from: inside a Markdown code span, and single-quoted (`shellQuoted`) in a
+    /// command. Nothing that could end the span or start a new line.
+    public static func canEmbed(path: String) -> Bool {
+        !path.isEmpty && !path.unicodeScalars.contains { scalar in
+            scalar.properties.generalCategory == .control || scalar.properties.generalCategory == .format
+                || scalar == "`" || scalar == "\u{2028}" || scalar == "\u{2029}"
+        }
+    }
+
+    /// `text` as a single shell word, inside single quotes, which nothing expands.
+    public static func shellQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }
 
 // MARK: JSON text

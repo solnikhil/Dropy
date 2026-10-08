@@ -567,11 +567,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let animationOverride: DropyAnimation? = {
         guard let path = ProcessInfo.processInfo.environment["DROPY_ANIMATION"] else { return nil }
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-        guard let data = try? Data(contentsOf: url) else {
-            NSLog("Dropy animation: cannot read %@", path)
-            return nil
-        }
-        let result = AnimationFile.read(data, fallbackName: url.deletingPathExtension().lastPathComponent)
+        let result = AnimationLibrary.read(url)
         for issue in result.issues { NSLog("Dropy animation: %@", issue.description) }
         return result.animation
     }()
@@ -626,8 +622,12 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         animations.scan()
         if let style = MotionStyle(rawValue: target) {
             change { $0.motionStyle = style; $0.customAnimation = nil }
-        } else {
+        } else if animations.entry(target)?.animation != nil {
             change { $0.customAnimation = target }
+        } else {
+            // Any process on the Mac can send this request: only a usable file in the
+            // animations folder may become the preference.
+            return AnimationRemote.answer(id, "There is no usable animation called “\(AnimationText.clean(target, limit: 60))”.")
         }
         let choice = animations.choice(for: preferences.value)
         AnimationRemote.answer(id, choice.problem ?? "Dropy now uses “\(choice.animation.name)”.")

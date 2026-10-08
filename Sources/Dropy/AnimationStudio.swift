@@ -349,7 +349,7 @@ final class AnimationStudioModel: ObservableObject {
             return
         }
         fileMissing = false
-        guard gestureStart == nil, let data = try? Data(contentsOf: entry.url), data != written else { return }
+        guard gestureStart == nil, let data = AnimationLibrary.data(at: entry.url), data != written else { return }
         written = data
         guard let outside = entry.animation, outside != animation else { return }
         undoStack.append(animation)
@@ -372,15 +372,16 @@ final class AnimationStudioModel: ObservableObject {
 
     /// A prompt for an AI agent to refine this very file.
     func copyRefinePrompt() {
+        let file = library.quotedPath(for: fileID)
         let prompt = """
-            Refine my Dropy animation in \(url.path).
+            Refine my Dropy animation in \(library.shownFolder)/\(fileID).json.
 
             What to change: <describe it here>
 
-            Read \(library.folder.path)/README.md first: it explains the format and the rules.
-            Check it with: \(AnimationLibrary.command) check "\(url.path)"
-            Look at it with: \(AnimationLibrary.command) render "\(url.path)" --out /tmp/dropy-animation.png
-            Show me on the notch with: \(AnimationLibrary.command) play "\(url.path)"
+            Read \(library.shownFolder)/README.md first: it explains the format and the rules.
+            Check it with: \(AnimationLibrary.command) check \(file)
+            Look at it with: \(AnimationLibrary.command) render \(file) --out /tmp/dropy-animation.png
+            Show me on the notch with: \(AnimationLibrary.command) play \(file)
             """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(prompt, forType: .string)

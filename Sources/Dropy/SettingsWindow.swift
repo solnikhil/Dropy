@@ -209,7 +209,7 @@ final class SettingsModel: ObservableObject {
     func copyAIPrompt() {
         guard let animations else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(AnimationGuide.prompt(folder: animations.folder.path, command: AnimationLibrary.command),
+        NSPasteboard.general.setString(AnimationGuide.prompt(folder: animations.shownFolder, command: AnimationLibrary.command),
                                        forType: .string)
         promptCopied = true
         Task { @MainActor [weak self] in
