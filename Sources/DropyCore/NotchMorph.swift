@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import os
 
 /// A damped spring as SwiftUI describes one: `response` is the period of the
 /// undamped oscillation in seconds, `dampingRatio` 1 settles without overshoot and
@@ -26,8 +27,28 @@ public struct MorphSpring: Equatable, Sendable {
         return 1 - decay * (cos(damped * time) + zeta * omega / damped * sin(damped * time))
     }
 
-    /// When the spring stays within `tolerance` of its target from then on.
+    /// When the spring stays within `tolerance` of its target from then on. Remembered
+    /// per spring: the Studio's graph and every morph ask many times a frame.
     public func settlingTime(tolerance: Double = 0.002) -> TimeInterval {
+        let key = SettlingKey(response: response, damping: dampingRatio, tolerance: tolerance)
+        if let known = Self.settling.withLock({ $0[key] }) { return known }
+        let time = computeSettlingTime(tolerance: tolerance)
+        Self.settling.withLock { cache in
+            if cache.count > 512 { cache.removeAll() }
+            cache[key] = time
+        }
+        return time
+    }
+
+    private struct SettlingKey: Hashable {
+        let response: Double
+        let damping: Double
+        let tolerance: Double
+    }
+
+    private static let settling = OSAllocatedUnfairLock(initialState: [SettlingKey: TimeInterval]())
+
+    private func computeSettlingTime(tolerance: Double) -> TimeInterval {
         let step = 1.0 / 240
         var settled: TimeInterval = 0
         var time: TimeInterval = 0

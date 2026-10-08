@@ -23,6 +23,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
     private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
     private var fullAppItems: [NSMenuItem] = []
+    private var animationMenu: NSMenu?
     /// "Open Dropy" items whose titles show the current shortcut.
     private var openItems: [NSMenuItem] = []
     /// Check scripts launch the binary with debug variables or --show; they keep the
@@ -175,6 +176,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contentItem.submenu = contentModes
         menu.addItem(contentItem)
         choiceMenus.append((contentModes, { $0.contentMode.rawValue }))
+        // Filled each time it opens (menuNeedsUpdate), since animation files come and go.
+        let animationMenu = NSMenu(title: "Animation")
+        animationMenu.delegate = self
+        self.animationMenu = animationMenu
+        let animationItem = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
+        animationItem.submenu = animationMenu
+        menu.addItem(animationItem)
         let fullApp = NSMenuItem(title: "Use Apps in the Overlay", action: #selector(toggleFullApp(_:)),
                                  keyEquivalent: "")
         fullApp.state = preferences.value.interaction == .fullApp ? .on : .off
@@ -561,6 +569,50 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: Animations
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === animationMenu else { return }
+        menu.removeAllItems()
+        let current = preferences.value
+        func add(_ title: String, _ action: Selector?, _ value: String? = nil, on: Bool = false) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = value
+            item.state = on ? .on : .off
+            menu.addItem(item)
+        }
+        for style in MotionStyle.allCases {
+            add(style.title, #selector(chooseBuiltInAnimation(_:)), style.rawValue,
+                on: current.customAnimation == nil && current.motionStyle == style)
+        }
+        let usable = animations.entries.filter { $0.animation != nil }
+        if !usable.isEmpty {
+            menu.addItem(.separator())
+            for entry in usable {
+                add(entry.name, #selector(chooseCustomAnimation(_:)), entry.id, on: current.customAnimation == entry.id)
+            }
+        }
+        menu.addItem(.separator())
+        add("Play on Notch", #selector(playCurrentAnimation))
+        add("Animation Settings…", #selector(showAnimationSettings))
+    }
+
+    @objc private func chooseBuiltInAnimation(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let style = MotionStyle(rawValue: raw) else { return }
+        change { $0.motionStyle = style; $0.customAnimation = nil }
+    }
+
+    @objc private func chooseCustomAnimation(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        change { $0.customAnimation = id }
+    }
+
+    @objc private func playCurrentAnimation() { playOnNotch(OverlayMotion.animation, slowdown: 1) }
+
+    @objc private func showAnimationSettings() {
+        settings.model.navigate(to: .animation)
+        settings.show()
+    }
 
     /// `DROPY_ANIMATION=<file>` (development, benchmarks): use this file whatever the
     /// preferences say.

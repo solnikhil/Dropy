@@ -123,7 +123,7 @@ struct AnimationStudioView: View {
                     model.objectWillChange.send()
                 }
                 .buttonStyle(SettingsButtonStyle(outlined: true))
-                .disabled(!model.errors.isEmpty)
+                .disabled(!model.errors.isEmpty || model.fileMissing)
                 .help("Make the overlay use this animation")
             }
             Menu {
@@ -207,6 +207,19 @@ struct AnimationStudioView: View {
                     .padding(.trailing, 4)
                 playbackOptions
                 Spacer(minLength: 0)
+                Menu {
+                    Button("Nothing") { model.reference = nil }
+                    ForEach(MotionStyle.allCases, id: \.self) { style in
+                        Button(style.title) { model.reference = style }
+                    }
+                } label: {
+                    Text(model.reference.map { "Compare: \($0.title)" } ?? "Compare")
+                }
+                .menuStyle(.button)
+                .buttonStyle(SettingsButtonStyle())
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Draw a built-in style's curve behind yours")
             } else {
                 Button { model.play() } label: { Label("Play All", systemImage: "play") }
                     .buttonStyle(SettingsButtonStyle())

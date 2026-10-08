@@ -200,8 +200,17 @@ struct MotionGraph: View {
         label(String(format: "done %.2f s", motion.duration), at: CGPoint(x: end + 4, y: plot.minY + 8), in: &context,
               anchor: .leading, opacity: 0.7)
 
-        let played = PlayedProgress.played(motion)
         let selected = model.channel
+        if let reference = model.reference, let part = model.part {
+            let other = reference.animation[part]
+            let curve = selected == .width ? other.width : other.height
+            let shown = PlayedProgress.played(other)
+            let ghost = path(geometry: geometry) { other.isMonotonic ? shown($0)[selected == .width ? 0 : 1] : curve.value(at: $0) }
+            context.stroke(ghost, with: .color(.primary.opacity(0.28)), style: StrokeStyle(lineWidth: 1.5, dash: [2, 3]))
+            let end = geometry.point(min(other.duration, geometry.domain.duration), 1)
+            label(reference.title, at: CGPoint(x: end.x, y: end.y + 12), in: &context, opacity: 0.45)
+        }
+        let played = PlayedProgress.played(motion)
         for channel in [selected == .width ? AnimationStudioModel.Channel.height : .width, selected] {
             let isSelected = channel == selected
             let curve = channel == .width ? motion.width : motion.height

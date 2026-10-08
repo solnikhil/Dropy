@@ -37,6 +37,8 @@ final class AnimationStudioModel: ObservableObject {
     @Published var channel: Channel = .height { didSet { if channel != oldValue { selectedKey = nil } } }
     @Published var selectedKey: Int?
     @Published var tool: Tool = .select
+    /// A built-in style whose curve is drawn faintly behind the one being edited.
+    @Published var reference: MotionStyle?
     @Published var slowdown: Double = 1
     @Published var loop = false { didSet { if loop != oldValue { play() } } }
     /// Bumped to make the stage play `playParts`.
