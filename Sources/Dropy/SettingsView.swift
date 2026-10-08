@@ -4,7 +4,7 @@ import SwiftUI
 import DropyCore
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, opening, overlay, interaction, permissions, advanced, about
+    case general, opening, overlay, animation, interaction, permissions, advanced, about
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .general: "General"
         case .opening: "Opening"
         case .overlay: "Overlay"
+        case .animation: "Animation"
         case .interaction: "Interaction"
         case .permissions: "Permissions"
         case .advanced: "Advanced"
@@ -25,6 +26,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .general: "gearshape.fill"
         case .opening: "macwindow.badge.plus"
         case .overlay: "rectangle.center.inset.filled"
+        case .animation: "wand.and.stars"
         case .interaction: "hand.point.up.left.fill"
         case .permissions: "lock.shield.fill"
         case .advanced: "wrench.and.screwdriver.fill"
@@ -74,9 +76,18 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "fit", pane: .overlay, title: "Adapt to the Window",
                       detail: "Small windows keep their size. Larger ones scale down.",
                       keywords: "automatic scale native shrink"),
-        SettingsTopic(id: "motion", pane: .overlay, title: "Animation Style",
-                      detail: "Rapid, Balanced, or Smooth opening and closing.",
+        SettingsTopic(id: "motion", pane: .animation, title: "Animation Style",
+                      detail: "Rapid, Balanced, Smooth, or one of your own.",
                       keywords: "animation motion speed fast rapid smooth balanced spring bounce"),
+        SettingsTopic(id: "studio", pane: .animation, title: "Animation Studio",
+                      detail: "Make your own: springs, keyframes, or draw the curve.",
+                      keywords: "custom animation builder editor keyframes timeline frames draw curve spring easing"),
+        SettingsTopic(id: "aiAnimation", pane: .animation, title: "Make an Animation with AI",
+                      detail: "A prompt for Claude Code, Codex or Cursor.",
+                      keywords: "ai agent claude codex cursor prompt command line terminal"),
+        SettingsTopic(id: "shareAnimation", pane: .animation, title: "Share an Animation",
+                      detail: "Copy a share code, or paste one.",
+                      keywords: "share code import export paste copy gallery examples"),
         SettingsTopic(id: "content", pane: .overlay, title: "Content Scaling",
                       detail: "Fit, Fill, or native size.",
                       keywords: "fit fill crop scale letterbox"),
@@ -160,6 +171,7 @@ struct SettingsView: View {
         case .general: general
         case .opening: opening
         case .overlay: overlay
+        case .animation: AnimationSettingsPage(model: model)
         case .interaction: interaction
         case .permissions: permissions
         case .advanced: advanced
@@ -381,16 +393,6 @@ struct SettingsView: View {
                     .disabled(model.preferences.sizePreset == .nativeSize)
             }
 
-            SettingsCard("Animation") {
-                SettingsRow("Style", detail: motionDetail) {
-                    SettingsChoiceTiles(label: "Animation style", selection: model.binding(\.motionStyle), options: [
-                        ("Rapid", .rapid, "Quick and direct"),
-                        ("Balanced", .balanced, "Smooth but quick"),
-                        ("Smooth", .smooth, "Unhurried, with a soft settle"),
-                    ])
-                }
-            }
-
             SettingsCard("Appearance") {
                 SettingsRow("Content Scaling", detail: contentDetail) {
                     SettingsChoiceTiles(label: "Content scaling", selection: model.binding(\.contentMode), options: [
@@ -412,13 +414,6 @@ struct SettingsView: View {
         }
     }
 
-    private var motionDetail: String {
-        switch model.preferences.motionStyle {
-        case .rapid: "Snaps open and shut with no bounce. Best when you open Dropy many times an hour."
-        case .balanced: "Smooth with a light settle, and still quick enough for everyday use."
-        case .smooth: "Grows out of the notch with a soft settle, and the content drifts into focus."
-        }
-    }
 
     private var contentDetail: String {
         switch model.preferences.contentMode {

@@ -11,9 +11,9 @@ final class NotchMorphTests: XCTestCase {
     private var open: NotchShape { NotchShape.open(body: CGRect(origin: CGPoint(x: margin, y: margin), size: size)) }
 
     func testSpringsStartAtRestAndSettleOnTarget() {
-        for spring in [NotchMorph.open.width, NotchMorph.open.height, NotchMorph.close.width, NotchMorph.close.height] {
-            XCTAssertEqual(spring.value(at: 0), 0)
-            XCTAssertEqual(spring.value(at: spring.settlingTime()), 1, accuracy: 0.003)
+        for curve in [NotchMorph.open.width, NotchMorph.open.height, NotchMorph.close.width, NotchMorph.close.height] {
+            XCTAssertEqual(curve.value(at: 0), 0)
+            XCTAssertEqual(curve.value(at: curve.duration), 1, accuracy: 0.003)
         }
         // Opening overshoots a little; closing never does, so it cannot poke out of the notch.
         let peak = stride(from: 0.0, to: 1, by: 0.005).map(NotchMorph.open.height.value).max() ?? 0

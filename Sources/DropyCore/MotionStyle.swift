@@ -86,10 +86,15 @@ public struct ContentMotion: Equatable, Sendable {
     public var restScale: CGFloat
     /// Out of focus at the start of a reveal; 0 means no blur (cheaper, crisper).
     public var blurRadius: CGFloat
+    /// The timing of a reveal's scale, focus and drift.
+    public var revealCurve: TimingCurve
+    /// The timing of a hide.
+    public var hideCurve: TimingCurve
 
     public init(revealDelay: TimeInterval, revealDuration: TimeInterval, hideDuration: TimeInterval,
                 relayoutDuration: TimeInterval, staggerSpan: TimeInterval, staggerDrift: CGFloat,
-                restScale: CGFloat, blurRadius: CGFloat) {
+                restScale: CGFloat, blurRadius: CGFloat,
+                revealCurve: TimingCurve = .settle, hideCurve: TimingCurve = .leave) {
         self.revealDelay = revealDelay
         self.revealDuration = revealDuration
         self.hideDuration = hideDuration
@@ -98,6 +103,17 @@ public struct ContentMotion: Equatable, Sendable {
         self.staggerDrift = staggerDrift
         self.restScale = restScale
         self.blurRadius = blurRadius
+        self.revealCurve = revealCurve
+        self.hideCurve = hideCurve
+    }
+
+    /// The content's opacity `time` seconds into a reveal, with the stagger's last
+    /// piece arriving `staggerSpan` later (an approximation for drawings and previews).
+    public func revealOpacity(at time: TimeInterval) -> Double {
+        let fade = revealDuration * 0.8
+        guard fade > 0 else { return time >= revealDelay ? 1 : 0 }
+        let s = (time - revealDelay) / fade
+        return TimingCurve.easeOut.value(at: min(max(s, 0), 1))
     }
 }
 
@@ -113,8 +129,18 @@ extension NotchMorph {
 
         public init(open: Motion, close: Motion, resize: Motion) {
             self.open = open
+            var close = close
+            close.isMonotonic = true
             self.close = close
             self.resize = resize
+        }
+
+        /// How far past its target the outline ever goes while opening or resizing, as
+        /// a fraction of the overlay's size: the window's margin must hold it.
+        public var reach: Double {
+            let open = open.extent
+            let resize = resize.extent
+            return max(open.upperBound - 1, resize.upperBound - 1, -resize.lowerBound, 0)
         }
     }
 }

@@ -4,6 +4,8 @@
 //
 //   bun run bench                     build, measure every scenario, save, check
 //   bun run bench -- --cycles 8 --style rapid --no-build --only native,pinned
+//   bun run bench -- --animation ~/Library/Application\ Support/Dropy/Animations/mine.json
+//                                     measure with a custom animation (DROPY_ANIMATION)
 //   bun run bench:check [result.json] check a result (default: the newest) against
 //                                     docs/benchmarks/budgets.json and the previous
 //                                     result from this Mac
@@ -68,7 +70,7 @@ interface BenchResult {
   version: { commit: string; dirty: boolean; branch: string; describe: string };
   machine: { model: string; macOS: string; build: string };
   date: string;
-  settings: { cycles: number; holdMs: number; motionStyle: string };
+  settings: { cycles: number; holdMs: number; motionStyle: string; animation?: string };
   scenarios: Partial<Record<Scenario, ScenarioResult>>;
 }
 
@@ -184,7 +186,7 @@ function numbers(log: string, pattern: RegExp): number[] {
 // MARK: Running a scenario
 
 async function runScenario(scenario: Scenario, base: Record<string, unknown>, cycles: number, holdMs: number,
-                           style: string, work: string): Promise<ScenarioResult> {
+                           style: string, work: string, animation?: string): Promise<ScenarioResult> {
   const pinned = scenario === "pinned" || scenario === "fullscreen";
   const prefs: Record<string, unknown> = {
     ...base,
@@ -210,7 +212,8 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
   const env = idle
     ? ["--env", `DROPY_DEBUG_QUIT_AFTER=${seconds}`]
     : ["--env", `DROPY_DEBUG_CYCLES=${cycles},${holdMs}`, "--env", `DROPY_DEBUG_QUIT_AFTER=${seconds}`,
-       ...(scenario === "fullscreen" ? ["--env", "DROPY_DEBUG_LIVE_POINTER=1"] : [])];
+       ...(scenario === "fullscreen" ? ["--env", "DROPY_DEBUG_LIVE_POINTER=1"] : []),
+       ...(animation ? ["--env", `DROPY_ANIMATION=${animation}`] : [])];
   // Started first so it sees the first opening too.
   const probe = scenario === "native"
     ? Bun.spawn([await topEdgeProbe(), String(seconds + 2)], { stdout: "pipe", stderr: "ignore" })
@@ -270,6 +273,12 @@ async function run() {
   const cycles = Number(option("cycles") ?? 6);
   const holdMs = Number(option("hold") ?? 1500);
   const style = option("style") ?? "balanced";
+  const animationOption = option("animation");
+  const animation = animationOption ? resolve(animationOption.replace(/^~/, process.env.HOME ?? "~")) : undefined;
+  if (animation && !(await Bun.file(animation).exists())) {
+    console.error(`No animation file at ${animation}.`);
+    process.exit(2);
+  }
   const only = option("only")?.split(",") as Scenario[] | undefined;
   const scenarios = only ?? allScenarios;
 
@@ -305,7 +314,7 @@ async function run() {
       build: await sh`sw_vers -buildVersion`,
     },
     date: new Date().toISOString(),
-    settings: { cycles, holdMs, motionStyle: style },
+    settings: { cycles, holdMs, motionStyle: style, ...(animation ? { animation: basename(animation) } : {}) },
     scenarios: {},
   };
 
@@ -316,7 +325,7 @@ async function run() {
     await Bun.sleep(2000);
     for (const scenario of scenarios) {
       console.log(`Running ${scenario}…`);
-      result.scenarios[scenario] = await runScenario(scenario, base, cycles, holdMs, style, work);
+      result.scenarios[scenario] = await runScenario(scenario, base, cycles, holdMs, style, work, animation);
       await quitDropy();
     }
   } catch (error) {
@@ -345,7 +354,7 @@ async function run() {
 }
 
 function printResult(result: BenchResult) {
-  console.log(`${result.version.commit}${result.version.dirty ? " (uncommitted changes)" : ""} · ${result.machine.model} · macOS ${result.machine.macOS} · ${result.settings.motionStyle}`);
+  console.log(`${result.version.commit}${result.version.dirty ? " (uncommitted changes)" : ""} · ${result.machine.model} · macOS ${result.machine.macOS} · ${result.settings.animation ?? result.settings.motionStyle}`);
   const rows: string[][] = [["Scenario", "Metric", "p50", "p95", "max", "mean", "n"]];
   for (const [scenario, values] of Object.entries(result.scenarios)) {
     for (const [metric, summary] of Object.entries(values ?? {})) {

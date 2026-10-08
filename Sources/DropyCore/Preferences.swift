@@ -133,6 +133,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var keepsPinnedAppReady: Bool
     /// How the overlay animates.
     public var motionStyle: MotionStyle
+    /// The person's own animation: a file in the animations folder, by name (without
+    /// ".json"). Nil uses `motionStyle`, as does a file that is missing or has errors.
+    public var customAnimation: String?
     /// Show a Dock icon and Dropy's own menu bar like an ordinary app. Off leaves only
     /// the menu-bar item (the Settings window still brings the Dock icon while open).
     public var showInDock: Bool
@@ -155,6 +158,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         interaction: InteractionMode = .fullApp,
         keepsPinnedAppReady: Bool = true,
         motionStyle: MotionStyle = .balanced,
+        customAnimation: String? = nil,
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
         shortcut: KeyShortcut = .default
@@ -171,6 +175,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.interaction = interaction
         self.keepsPinnedAppReady = keepsPinnedAppReady
         self.motionStyle = motionStyle
+        self.customAnimation = customAnimation
         self.showInDock = showInDock
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
         self.shortcut = shortcut
@@ -189,7 +194,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
-        case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, motionStyle, showInDock
+        case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, motionStyle, customAnimation, showInDock
         case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize
     }
 
@@ -214,6 +219,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         keepsPinnedAppReady = try container.decodeIfPresent(Bool.self, forKey: .keepsPinnedAppReady)
             ?? defaults.keepsPinnedAppReady
         motionStyle = try container.decodeIfPresent(MotionStyle.self, forKey: .motionStyle) ?? defaults.motionStyle
+        customAnimation = try container.decodeIfPresent(String.self, forKey: .customAnimation)
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)

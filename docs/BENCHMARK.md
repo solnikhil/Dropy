@@ -6,6 +6,7 @@ Dropy's tooling runs on [Bun](https://bun.sh). From the repository root:
 
 ```sh
 caffeinate -d bun run bench          # build, measure every scenario, save, check
+bun run bench -- --animation ~/Library/Application\ Support/Dropy/Animations/mine.json   # with your own animation
 bun run bench -- --cycles 8 --style rapid --no-build --only native,pinned
 bun run bench:check                  # newest result against budgets and the previous run
 bun run bench:compare                # the two newest results side by side

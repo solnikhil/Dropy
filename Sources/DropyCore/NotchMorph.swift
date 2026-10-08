@@ -46,15 +46,43 @@ public struct MorphSpring: Equatable, Sendable {
 /// shape looked like a rectangle being scaled.
 public enum NotchMorph {
     public struct Motion: Equatable, Sendable {
-        public var width: MorphSpring
-        public var height: MorphSpring
+        /// The width and the ears where the outline meets the screen edge.
+        public var width: MotionCurve
+        /// The height and the lower corners.
+        public var height: MotionCurve
+        /// Progress only moves forward and never past the end. Set for closing: once
+        /// the outline has gone into the notch it can never spring back out of the
+        /// camera housing, whatever curve an animation gives it.
+        public var isMonotonic: Bool
 
         public init(width: MorphSpring, height: MorphSpring) {
-            self.width = width
-            self.height = height
+            self.init(width: .spring(width), height: .spring(height))
         }
 
-        public var duration: TimeInterval { max(width.settlingTime(), height.settlingTime()) }
+        public init(width: MotionCurve, height: MotionCurve, isMonotonic: Bool = false) {
+            self.width = width
+            self.height = height
+            self.isMonotonic = isMonotonic
+        }
+
+        public var duration: TimeInterval { max(width.duration, height.duration) }
+
+        /// How far past its end (above 1) or back past its start (below 0) the outline
+        /// travels, as played.
+        public var extent: ClosedRange<Double> {
+            if isMonotonic { return 0...1 }
+            let width = width.extent
+            let height = height.extent
+            return min(width.lowerBound, height.lowerBound)...max(width.upperBound, height.upperBound)
+        }
+
+        /// Progress of each part at `time`, as played (forward only when monotonic).
+        func progress(at time: TimeInterval, after previous: (width: Double, height: Double)?) -> (width: Double, height: Double) {
+            let width = width.value(at: time)
+            let height = height.value(at: time)
+            guard isMonotonic else { return (width, height) }
+            return (max(min(width, 1), previous?.width ?? 0), max(min(height, 1), previous?.height ?? 0))
+        }
     }
 
     /// The default style's springs. Each `MotionStyle` has its own set.
@@ -95,20 +123,26 @@ public enum NotchMorph {
         let count = max(2, Int((duration * framesPerSecond).rounded(.up)) + 1)
         var shapes: [NotchShape] = []
         var keyTimes: [Double] = []
+        var previous: (width: Double, height: Double)?
         for index in 0..<count {
             let fraction = Double(index) / Double(count - 1)
             let time = fraction * duration
+            let progress = motion.progress(at: time, after: previous)
+            previous = progress
             shapes.append(index == count - 1 ? end : shape(from: start, to: end,
-                                                           widthProgress: motion.width.value(at: time),
-                                                           heightProgress: motion.height.value(at: time)))
+                                                           widthProgress: progress.width,
+                                                           heightProgress: progress.height))
             keyTimes.append(fraction)
         }
         return (shapes, keyTimes, duration)
     }
 
-    /// Room around the open body for the opening overshoot, so the window edge never
-    /// clips it.
-    public static func overshootMargin(for size: CGSize) -> CGFloat {
-        ceil(max(size.width, size.height) * 0.025) + NotchShape.openEarRadius
+    /// Room around the open body for the outline's overshoot, so the window edge never
+    /// clips it. `reach` is how far past its target (as a fraction of the size) the
+    /// animation in use ever takes the outline; the built-in styles stay within 2.5 %.
+    public static func overshootMargin(for size: CGSize, reach: Double = defaultReach) -> CGFloat {
+        ceil(max(size.width, size.height) * max(reach, defaultReach)) + NotchShape.openEarRadius
     }
+
+    public static let defaultReach = 0.025
 }

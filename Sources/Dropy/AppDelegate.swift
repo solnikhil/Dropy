@@ -14,6 +14,11 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The hidden display where pinned apps wait between openings.
     private let stage: Stage? = Stage.isSupported ? Stage() : nil
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
+    /// The person's animation files, watched for changes.
+    let animations = AnimationLibrary()
+    /// Plays an animation on the notch for the Studio and `Dropy animation play`.
+    private let demo = AnimationDemo()
+    private lazy var studio = AnimationStudioController(library: animations)
     private var settings: SettingsWindowController!
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
     private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
@@ -26,6 +31,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         || ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("DROPY_DEBUG_") }
 
     static func main() {
+        // `Dropy animation …`: the animation tools for the terminal and AI agents.
+        if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "animation" {
+            exit(AnimationCommand.run(Array(CommandLine.arguments.dropFirst(2))))
+        }
         let app = NSApplication.shared
         let delegate = DropyAppDelegate()
         app.delegate = delegate
@@ -43,7 +52,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        OverlayMotion.style = preferences.value.motionStyle
+        animations.start()
+        animations.onChange = { [weak self] in self?.applyAnimation() }
+        applyAnimation()
+        listenForAnimationRequests()
         overlay = OverlayController(preferences: preferences, journal: placementJournal, stage: stage)
         stage?.onLost = { [weak self] in self?.overlay.stageLost() }
         overlay.onDeferredRestore = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
@@ -71,6 +83,17 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings = SettingsWindowController(model: SettingsModel(
             preferences: preferences.value, change: { [weak self] edit in self?.change(edit) }))
         settings.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        settings.model.animations = animations
+        settings.model.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
+        settings.model.openStudio = { [weak self] id in self?.studio.open(id) }
+        studio.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
+        studio.use = { [weak self] id in self?.change { $0.customAnimation = id } }
+        studio.inUse = { [weak self] id in
+            guard let self else { return false }
+            return self.preferences.value.customAnimation == id && self.animations.choice(for: self.preferences.value).problem == nil
+        }
+        studio.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        applyAnimation()
         NSApp.mainMenu = makeMainMenu()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -188,6 +211,18 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.async { [weak self] in self?.overlay.open() }
         }
+        // Development: `--settings <page>` opens Settings on that page; `--studio <name>`
+        // opens an animation file in the Animation Studio.
+        let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--settings") {
+            if index + 1 < arguments.count, let pane = SettingsPane(rawValue: arguments[index + 1]) {
+                settings.model.navigate(to: pane)
+            }
+            settings.show()
+        }
+        if let index = arguments.firstIndex(of: "--studio"), index + 1 < arguments.count {
+            studio.open(arguments[index + 1])
+        }
         startStageIfUseful()
         startDebugDriversIfRequested()
     }
@@ -247,6 +282,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // An edit made in the Animation Studio a moment ago is saved, not lost.
+        studio.model?.saveNow()
+        demo.stop()
         overlay.shutdown()
         trigger?.stop()
         hotKey?.unregister()
@@ -501,8 +539,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlay.open()
         }
         if new.showInDock != old.showInDock { updateActivationPolicy() }
-        // The next motion uses the new style; one already playing finishes as it began.
-        OverlayMotion.style = new.motionStyle
+        // The next motion uses the new animation; one already playing finishes as it began.
+        if new.motionStyle != old.motionStyle || new.customAnimation != old.customAnimation { applyAnimation() }
         if new.shortcut != old.shortcut, !registerShortcut() {
             // Another app owns it: keep the shortcut that works and say why.
             preferences.update { $0.shortcut = old.shortcut }
@@ -520,6 +558,79 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         syncMenuChecks()
         settings.model.preferencesChanged(preferences.value)
+    }
+
+    // MARK: Animations
+
+    /// `DROPY_ANIMATION=<file>` (development, benchmarks): use this file whatever the
+    /// preferences say.
+    private static let animationOverride: DropyAnimation? = {
+        guard let path = ProcessInfo.processInfo.environment["DROPY_ANIMATION"] else { return nil }
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard let data = try? Data(contentsOf: url) else {
+            NSLog("Dropy animation: cannot read %@", path)
+            return nil
+        }
+        let result = AnimationFile.read(data, fallbackName: url.deletingPathExtension().lastPathComponent)
+        for issue in result.issues { NSLog("Dropy animation: %@", issue.description) }
+        return result.animation
+    }()
+
+    /// Puts the chosen animation (or the built-in style, when the chosen file cannot be
+    /// used) in charge of the overlay's motion.
+    private func applyAnimation() {
+        let choice = animations.choice(for: preferences.value)
+        OverlayMotion.animation = Self.animationOverride ?? choice.animation
+        settings?.model.animationChanged(choice)
+        if let problem = choice.problem { NSLog("Dropy animation: %@", problem) }
+    }
+
+    /// Plays an animation on the notch, closing the overlay first if it is open.
+    @discardableResult
+    func playOnNotch(_ animation: DropyAnimation, slowdown: Double) -> TimeInterval {
+        guard overlay.state != .closed else { return demo.play(animation, slowdown: slowdown) }
+        overlay.close()
+        let wait = OverlayMotion.wall(OverlayMotion.morph.close.duration) + 0.1
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            self?.demo.play(animation, slowdown: slowdown)
+        }
+        return wait + (animation.morph.open.duration + animation.morph.resize.duration + animation.morph.close.duration
+                       + AnimationDemo.holdOpen + AnimationDemo.holdResized) * slowdown
+    }
+
+    /// Requests from `Dropy animation play` and `use` in a terminal.
+    private func listenForAnimationRequests() {
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(self, selector: #selector(remotePlay(_:)),
+                           name: Notification.Name(AnimationRemote.Request.play.rawValue), object: nil,
+                           suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(remoteUse(_:)),
+                           name: Notification.Name(AnimationRemote.Request.use.rawValue), object: nil,
+                           suspensionBehavior: .deliverImmediately)
+    }
+
+    @objc private func remotePlay(_ note: Notification) {
+        guard let id = note.object as? String, let code = note.userInfo?["payload"] as? String else { return }
+        let slow = (note.userInfo?["slow"] as? NSNumber)?.doubleValue ?? 1
+        guard let animation = AnimationFile.read(shareCode: code).animation else {
+            return AnimationRemote.answer(id, "Dropy could not read that animation.")
+        }
+        let seconds = playOnNotch(animation, slowdown: slow)
+        AnimationRemote.answer(id, String(format: "Playing “%@” on the notch for %.1f s: it opens, resizes, then closes%@.",
+                                          animation.name, seconds, slow > 1 ? String(format: ", %.0f× slower", slow) : ""))
+    }
+
+    @objc private func remoteUse(_ note: Notification) {
+        guard let id = note.object as? String, let target = note.userInfo?["payload"] as? String else { return }
+        animations.scan()
+        if let style = MotionStyle(rawValue: target) {
+            change { $0.motionStyle = style; $0.customAnimation = nil }
+        } else {
+            change { $0.customAnimation = target }
+        }
+        let choice = animations.choice(for: preferences.value)
+        AnimationRemote.answer(id, choice.problem ?? "Dropy now uses “\(choice.animation.name)”.")
     }
 
     /// Registers the shortcut from preferences in place of the current one; false when
@@ -555,7 +666,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A Dock icon and Dropy's own menu bar when "Show in Dock" is on, and always while
     /// Settings is open so the window can be found with Command-Tab.
     private func updateActivationPolicy() {
-        let regular = wantsDockIcon || settings.isVisible
+        let regular = wantsDockIcon || settings.isVisible || studio.isVisible
         guard NSApp.activationPolicy() != (regular ? .regular : .accessory) else { return }
         NSApp.setActivationPolicy(regular ? .regular : .accessory)
         if regular { NSApp.activate(ignoringOtherApps: true) }

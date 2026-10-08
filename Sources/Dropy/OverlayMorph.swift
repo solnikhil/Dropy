@@ -18,11 +18,13 @@ final class MorphBackdropView: NSView {
     }
     /// The morph in progress, to tell where the outline is on screen right now.
     private var active: (frames: [NotchShape], duration: TimeInterval, startedAt: CFTimeInterval)?
+    /// How many times slower than real time its layers run (a slowed-down preview).
+    var slowdown = OverlayMotion.slowdown
 
     /// The outline as drawn at this moment: part way through a morph, or settled.
     var visibleShape: NotchShape? {
         guard let active else { return currentShape }
-        let elapsed = (CACurrentMediaTime() - active.startedAt) / OverlayMotion.slowdown
+        let elapsed = (CACurrentMediaTime() - active.startedAt) / slowdown
         return NotchMorph.shape(in: active.frames, duration: active.duration, at: elapsed) ?? currentShape
     }
 
@@ -114,8 +116,9 @@ final class MorphBackdropView: NSView {
         mask.add(keyframes(shifted), forKey: "morph")
         contentLayer.mask = mask
         let duration = frames.duration
+        let wall = duration * slowdown
         Task { @MainActor [weak contentLayer] in
-            try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
+            try? await Task.sleep(for: .seconds(wall))
             // A later morph may have put its own clip in place; leave that one.
             if contentLayer?.mask === mask { contentLayer?.mask = nil }
         }
@@ -123,33 +126,19 @@ final class MorphBackdropView: NSView {
     }
 }
 
-/// How the overlay's content arrives and leaves, tuned to system motion: it comes
-/// into focus while growing from the notch, and on the way out it blurs, shrinks and
-/// fades before the outline closes over it.
+/// How the overlay moves: the outline's motions and how its content arrives and
+/// leaves. It comes into focus while growing from the notch, and on the way out it
+/// blurs, shrinks and fades before the outline closes over it. Everything comes from
+/// the animation in use, a built-in style or the person's own.
 @MainActor
 enum OverlayMotion {
-    /// The person's choice of Rapid, Balanced or Smooth; read at the start of each motion.
-    static var style: MotionStyle = .balanced
-    /// The outline's springs for the current style.
-    static var morph: NotchMorph.Motions { style.morph }
-    private static var content: ContentMotion { style.content }
-
-    static var revealDelay: TimeInterval { content.revealDelay }
-    static var revealDuration: TimeInterval { content.revealDuration }
-    static var hideDuration: TimeInterval { content.hideDuration }
-    /// Out of focus at the start of a reveal and the end of a hide; 0 skips the blur.
-    static var blurRadius: CGFloat { content.blurRadius }
-    /// Size relative to its final size at the start of a reveal and the end of a hide.
-    static var restScale: CGFloat { content.restScale }
-    /// The system's "emphasized" curves: fast in, long gentle settle; and its mirror.
-    static let settleCurve = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
-    static let leaveCurve = CAMediaTimingFunction(controlPoints: 0.3, 0, 0.8, 0.15)
-
-    /// Content lower in the overlay arrives later, up to this much, so it reads as
-    /// falling out of the notch: header first, then the list, then the preview.
-    static var staggerSpan: TimeInterval { content.staggerSpan }
-    /// Each piece of content drifts down into place from this far above.
-    static var staggerDrift: CGFloat { content.staggerDrift }
+    /// Read at the start of each motion; one already playing finishes as it began.
+    static var animation: DropyAnimation = MotionStyle.balanced.animation
+    /// The outline's motions.
+    static var morph: NotchMorph.Motions { animation.morph }
+    /// How far past its target the outline goes, for the overlay window's margin.
+    static var reach: Double { morph.reach }
+    private static var content: ContentMotion { animation.content }
 
     /// System setting "Reduce motion": cross-fade instead of morphing.
     static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -163,93 +152,120 @@ enum OverlayMotion {
     /// A motion duration in wall-clock seconds.
     static func wall(_ duration: TimeInterval) -> TimeInterval { duration * slowdown }
 
+    // MARK: Content, on views (the overlay)
+
     /// Brings the content in: focus, scale and opacity together, from the top center.
-    static func revealContent(_ view: NSView) {
+    static func revealContent(_ view: NSView, motion: ContentMotion? = nil, slowdown: Double = slowdown) {
         guard let layer = view.layer else { return }
-        let begin = layer.convertTime(CACurrentMediaTime(), from: nil) + (reduced ? 0 : revealDelay)
-        let duration = reduced ? 0.2 : revealDuration
-        var animations: [CAAnimation] = [
-            basic("opacity", from: 0, to: 1, duration: duration * 0.8, curve: CAMediaTimingFunction(name: .easeOut)),
-        ]
-        if !reduced {
-            animations.append(basic("transform", from: scaleFromTopCenter(restScale, in: view.bounds),
-                                    to: CATransform3DIdentity, duration: duration, curve: settleCurve))
-            if blurRadius > 0, let blur = attachBlur(to: view) {
-                animations.append(basic("filters.\(blur).inputRadius", from: blurRadius, to: 0,
-                                        duration: duration, curve: settleCurve))
-            }
-        }
-        run(animations, on: layer, begin: begin, duration: duration, key: "reveal")
-        if !reduced { stagger(view.subviews, in: view.bounds, begin: begin, duration: duration) }
-        // The filter renders offscreen; it goes as soon as the content is in focus.
-        let remaining = begin - layer.convertTime(CACurrentMediaTime(), from: nil) + duration + staggerSpan
-        Task { @MainActor [weak view] in
-            try? await Task.sleep(for: .seconds(wall(remaining)))
-            view?.layer?.filters = nil
+        let parts = view.subviews.compactMap { subview in subview.layer.map { ($0, subview.frame) } }
+        reveal(layer, parts: parts, bounds: view.bounds, motion: motion ?? content, slowdown: slowdown) {
+            view.layerUsesCoreImageFilters = true
         }
     }
 
     /// After a resize: the new layout fades up inside the moving outline, without the
     /// blur and scale of opening, since the overlay is already open.
-    static func relayoutContent(_ view: NSView) {
+    static func relayoutContent(_ view: NSView, motion: ContentMotion? = nil) {
         guard let layer = view.layer else { return }
+        relayout(layer, motion: motion ?? content)
+    }
+
+    /// Takes the content away before the outline closes over it.
+    static func hideContent(_ view: NSView, motion: ContentMotion? = nil) {
+        guard let layer = view.layer else { return }
+        hide(layer, bounds: view.bounds, motion: motion ?? content) { view.layerUsesCoreImageFilters = true }
+    }
+
+    // MARK: Content, on layers (shared with the Animation Studio's preview)
+
+    /// Reveals `layer` and, cascading from the top, each of `parts` (sublayers with their
+    /// frames in `bounds`). `enableFilters` is called before a blur is attached.
+    static func reveal(_ layer: CALayer, parts: [(CALayer, CGRect)], bounds: CGRect, motion: ContentMotion,
+                       slowdown: Double, enableFilters: () -> Void) {
+        let begin = layer.convertTime(CACurrentMediaTime(), from: nil) + (reduced ? 0 : motion.revealDelay)
+        let duration = reduced ? 0.2 : motion.revealDuration
+        let curve = motion.revealCurve.mediaTimingFunction
+        var animations: [CAAnimation] = [
+            basic("opacity", from: 0, to: 1, duration: duration * 0.8, curve: CAMediaTimingFunction(name: .easeOut)),
+        ]
+        if !reduced {
+            animations.append(basic("transform", from: scaleFromTopCenter(motion.restScale, in: bounds),
+                                    to: CATransform3DIdentity, duration: duration, curve: curve))
+            if motion.blurRadius > 0, let blur = attachBlur(to: layer, enableFilters: enableFilters) {
+                animations.append(basic("filters.\(blur).inputRadius", from: motion.blurRadius, to: 0,
+                                        duration: duration, curve: curve))
+            }
+        }
+        run(animations, on: layer, begin: begin, duration: duration, key: "reveal")
+        if !reduced { stagger(parts, in: bounds, begin: begin, duration: duration, motion: motion) }
+        // The filter renders offscreen; it goes as soon as the content is in focus.
+        let remaining = begin - layer.convertTime(CACurrentMediaTime(), from: nil) + duration + motion.staggerSpan
+        Task { @MainActor [weak layer] in
+            try? await Task.sleep(for: .seconds(remaining * slowdown))
+            layer?.filters = nil
+        }
+    }
+
+    static func relayout(_ layer: CALayer, motion: ContentMotion) {
         let begin = layer.convertTime(CACurrentMediaTime(), from: nil) + 0.04
-        let duration = content.relayoutDuration
+        let duration = motion.relayoutDuration
         run([basic("opacity", from: 0, to: 1, duration: duration, curve: CAMediaTimingFunction(name: .easeOut))],
             on: layer, begin: begin, duration: duration, key: "relayout")
     }
 
-    /// Each piece fades in and drifts down into place, later the lower it sits.
-    private static func stagger(_ views: [NSView], in bounds: CGRect, begin: CFTimeInterval, duration: TimeInterval) {
-        for view in views {
-            guard let layer = view.layer, bounds.height > 0 else { continue }
-            let depth = Double(max(0, min(1, (bounds.maxY - view.frame.maxY) / bounds.height)))
-            let animations = [
-                basic("opacity", from: 0, to: 1, duration: duration * 0.7, curve: CAMediaTimingFunction(name: .easeOut)),
-                basic("transform", from: CATransform3DMakeTranslation(0, staggerDrift, 0), to: CATransform3DIdentity,
-                      duration: duration, curve: settleCurve),
-            ]
-            run(animations, on: layer, begin: begin + depth * staggerSpan, duration: duration, key: "reveal")
-        }
-    }
-
-    /// Takes the content away before the outline closes over it.
-    static func hideContent(_ view: NSView) {
-        guard let layer = view.layer else { return }
+    static func hide(_ layer: CALayer, bounds: CGRect, motion: ContentMotion, enableFilters: () -> Void) {
         layer.removeAnimation(forKey: "reveal")
         let now = layer.convertTime(CACurrentMediaTime(), from: nil)
+        let curve = motion.hideCurve.mediaTimingFunction
         var animations: [CAAnimation] = [
-            basic("opacity", from: 1, to: 0, duration: hideDuration, curve: leaveCurve),
-            basic("transform", from: CATransform3DIdentity, to: scaleFromTopCenter(restScale, in: view.bounds),
-                  duration: hideDuration, curve: leaveCurve),
+            basic("opacity", from: 1, to: 0, duration: motion.hideDuration, curve: curve),
+            basic("transform", from: CATransform3DIdentity, to: scaleFromTopCenter(motion.restScale, in: bounds),
+                  duration: motion.hideDuration, curve: curve),
         ]
-        if blurRadius > 0, let blur = attachBlur(to: view) {
-            animations.append(basic("filters.\(blur).inputRadius", from: 0, to: blurRadius,
-                                    duration: hideDuration, curve: leaveCurve))
+        if motion.blurRadius > 0, let blur = attachBlur(to: layer, enableFilters: enableFilters) {
+            animations.append(basic("filters.\(blur).inputRadius", from: 0, to: motion.blurRadius,
+                                    duration: motion.hideDuration, curve: curve))
         }
         layer.opacity = 0
-        run(animations, on: layer, begin: now, duration: hideDuration, key: "hide")
+        run(animations, on: layer, begin: now, duration: motion.hideDuration, key: "hide")
+    }
+
+    /// Each piece fades in and drifts down into place, later the lower it sits.
+    private static func stagger(_ parts: [(CALayer, CGRect)], in bounds: CGRect, begin: CFTimeInterval,
+                                duration: TimeInterval, motion: ContentMotion) {
+        let curve = motion.revealCurve.mediaTimingFunction
+        for (layer, frame) in parts {
+            guard bounds.height > 0 else { continue }
+            let depth = Double(max(0, min(1, (bounds.maxY - frame.maxY) / bounds.height)))
+            let animations = [
+                basic("opacity", from: 0, to: 1, duration: duration * 0.7, curve: CAMediaTimingFunction(name: .easeOut)),
+                basic("transform", from: CATransform3DMakeTranslation(0, motion.staggerDrift, 0), to: CATransform3DIdentity,
+                      duration: duration, curve: curve),
+            ]
+            run(animations, on: layer, begin: begin + depth * motion.staggerSpan, duration: duration, key: "reveal")
+        }
     }
 
     /// Fades the window over the last part of a close, so the outline melts into the
     /// notch (or, without one, into the menu bar) instead of vanishing on a frame.
-    static func fadeOut(_ window: NSWindow, after delay: TimeInterval, over duration: TimeInterval) {
+    static func fadeOut(_ window: NSWindow, after delay: TimeInterval, over duration: TimeInterval,
+                        slowdown: Double = slowdown) {
         Task { @MainActor [weak window] in
-            try? await Task.sleep(for: .seconds(wall(delay)))
+            try? await Task.sleep(for: .seconds(delay * slowdown))
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = wall(duration)
+                context.duration = duration * slowdown
                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 window?.animator().alphaValue = 0
             }, completionHandler: nil)
         }
     }
 
-    private static func attachBlur(to view: NSView) -> String? {
+    private static func attachBlur(to layer: CALayer, enableFilters: () -> Void) -> String? {
         guard let blur = CIFilter(name: "CIGaussianBlur") else { return nil }
-        view.layerUsesCoreImageFilters = true
+        enableFilters()
         blur.name = "focus"
         blur.setValue(0, forKey: kCIInputRadiusKey)
-        view.layer?.filters = [blur]
+        layer.filters = [blur]
         return blur.name
     }
 
@@ -283,5 +299,11 @@ enum OverlayMotion {
         var transform = CATransform3DMakeTranslation(anchor.x, anchor.y, 0)
         transform = CATransform3DScale(transform, scale, scale, 1)
         return CATransform3DTranslate(transform, -anchor.x, -anchor.y, 0)
+    }
+}
+
+extension TimingCurve {
+    var mediaTimingFunction: CAMediaTimingFunction {
+        CAMediaTimingFunction(controlPoints: Float(x1), Float(y1), Float(x2), Float(y2))
     }
 }

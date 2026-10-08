@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ServiceManagement
 import SwiftUI
 import DropyCore
@@ -36,6 +37,15 @@ final class SettingsModel: ObservableObject {
     private var sidebarDragOrigin: CGFloat?
     private static let sidebarWidthKey = "org.dropy.settings.sidebarWidth"
     @Published var chooserSelection: String?
+    /// The animations folder, set by the app delegate once it is watching it.
+    var animations: AnimationLibrary? {
+        didSet { animationsObservation = animations?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() } }
+    }
+    private var animationsObservation: AnyCancellable?
+    /// Plays an animation on the notch; returns how long it takes.
+    var playOnNotch: ((DropyAnimation, Double) -> TimeInterval)?
+    /// The animation in use, and why when it is not the one chosen.
+    @Published private(set) var animationChoice = AnimationLibrary.Choice(animation: MotionStyle.balanced.animation)
     private var shortcutRecorder: Any?
     private var catalogGeneration = 0
     private let change: (_ edit: (inout DropyPreferences) -> Void) -> Void
@@ -106,6 +116,123 @@ final class SettingsModel: ObservableObject {
         pane = destination
         UserDefaults.standard.set(destination.rawValue, forKey: Self.paneKey)
         if destination == .permissions { refresh() }
+    }
+
+    func animationChanged(_ choice: AnimationLibrary.Choice) {
+        if animationChoice != choice { animationChoice = choice }
+    }
+
+    // MARK: Animations
+
+    /// Opens a file from the animations folder in the Animation Studio.
+    var openStudio: ((String) -> Void)?
+    /// A short confirmation or problem under the animation actions.
+    @Published private(set) var animationMessage: String?
+    @Published private(set) var promptCopied = false
+
+    var animationEntries: [AnimationLibrary.Entry] { animations?.entries ?? [] }
+
+    func isInUse(_ id: String) -> Bool {
+        preferences.customAnimation == id && animationChoice.problem == nil
+    }
+
+    func useAnimation(_ id: String) { change { $0.customAnimation = id } }
+
+    func useBuiltIn(_ style: MotionStyle) {
+        change {
+            $0.motionStyle = style
+            $0.customAnimation = nil
+        }
+    }
+
+    /// A new file that starts as the animation in use, opened in the Studio.
+    func newAnimation() {
+        guard let animations else { return }
+        var animation = animationChoice.animation
+        let id = animations.freeID(for: "My Animation")
+        animation.name = AnimationLibrary.title(for: id)
+        animation.summary = ""
+        animation.author = ""
+        save(animation, as: id)
+    }
+
+    /// Copies an example into the folder and opens it.
+    func addExample(_ id: String) {
+        guard let animations, let example = DropyAnimation.gallery.first(where: { $0.id == id })?.animation else { return }
+        save(example, as: animations.freeID(for: example.name))
+    }
+
+    func duplicate(_ id: String) {
+        guard let animations, var animation = animations.entry(id)?.animation else { return }
+        animation.name += " Copy"
+        save(animation, as: animations.freeID(for: animation.name))
+    }
+
+    private func save(_ animation: DropyAnimation, as id: String) {
+        do {
+            try animations?.save(animation, as: id)
+            animationMessage = nil
+            openStudio?(id)
+        } catch {
+            animationMessage = "Could not save the animation: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteAnimation(_ id: String) {
+        if preferences.customAnimation == id { change { $0.customAnimation = nil } }
+        animations?.delete(id)
+        animationMessage = "Moved \(id).json to the Trash."
+    }
+
+    /// Reads a share code from the clipboard and adds the animation in it.
+    func pasteShareCode() {
+        guard let text = NSPasteboard.general.string(forType: .string),
+              text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(AnimationFile.shareCodePrefix) else {
+            animationMessage = "Copy a share code first: it starts with “\(AnimationFile.shareCodePrefix)”."
+            return
+        }
+        let result = AnimationFile.read(shareCode: text)
+        guard let animation = result.animation, let animations else {
+            animationMessage = result.errors.first?.message ?? "That share code could not be read."
+            return
+        }
+        save(animation, as: animations.freeID(for: animation.name))
+    }
+
+    func copyShareCode(_ id: String) {
+        guard let animation = animations?.entry(id)?.animation else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(AnimationFile.shareCode(for: animation), forType: .string)
+        animationMessage = "Copied the share code for “\(animation.name)”. Anyone with Dropy can paste it here."
+    }
+
+    func copyAIPrompt() {
+        guard let animations else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(AnimationGuide.prompt(folder: animations.folder.path, command: AnimationLibrary.command),
+                                       forType: .string)
+        promptCopied = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            self?.promptCopied = false
+        }
+    }
+
+    func copyAnimationCommand() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(AnimationLibrary.command, forType: .string)
+        animationMessage = "Copied the command. Run it with “help” to see what it does."
+    }
+
+    func showAnimationsFolder() {
+        guard let animations else { return }
+        animations.prepareFolder()
+        NSWorkspace.shared.activateFileViewerSelecting([animations.folder.appendingPathComponent("README.md")])
+    }
+
+    func showInFinder(_ id: String) {
+        guard let entry = animations?.entry(id) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([entry.url])
     }
 
     /// Called by the app delegate after any change, wherever it came from.
@@ -347,7 +474,7 @@ final class SettingsModel: ObservableObject {
         Fit within size: \(preferences.automaticWindowSize ? "on" : "off")
         Use the app: \(preferences.interaction == .fullApp ? "full app" : "preview only")
         Keep pinned app ready: \(preferences.keepsPinnedAppReady ? "on" : "off")
-        Animation: \(preferences.motionStyle.rawValue)
+        Animation: \(preferences.customAnimation.map { "custom (\($0))" } ?? preferences.motionStyle.rawValue)
         Notch crossing restriction: \(preferences.restrictNotchCrossing ? "on" : "off")
         Notch trigger saved: \(preferences.trigger.rawValue)
         Notch trigger in effect: \(preferences.trigger.effective.rawValue)

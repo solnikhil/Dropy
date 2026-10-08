@@ -76,6 +76,29 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 "$build_dir/WorkspaceChecks"
 
 
+# The animation command line, in a throwaway animations folder: every built-in style and
+# example checks clean, a new file round-trips, a broken one fails, and the repository's
+# format guide matches the one Dropy writes (regenerate with `bun run animation:docs`).
+app_binary="$build_dir/Dropy.app/Contents/MacOS/Dropy"
+animations_dir="$(mktemp -d)"
+export DROPY_ANIMATIONS_FOLDER="$animations_dir"
+for name in rapid balanced smooth springy elastic-drop snap float pop; do
+  "$app_binary" animation check "$name" >/dev/null || { print -u2 "animation check $name failed"; exit 1; }
+done
+"$app_binary" animation new "Check Drop" --from springy >/dev/null
+"$app_binary" animation check check-drop >/dev/null
+"$app_binary" animation render check-drop --out "$animations_dir/check.png" >/dev/null
+[[ -s "$animations_dir/check.png" ]] || { print -u2 "animation render wrote nothing"; exit 1; }
+print '{ "open": 1 }' > "$animations_dir/broken.json"
+if "$app_binary" animation check broken >/dev/null 2>&1; then print -u2 "a broken animation passed its check"; exit 1; fi
+[[ -f "$animations_dir/README.md" && -f "$animations_dir/AGENTS.md" && -f "$animations_dir/Examples/pop.json" ]] \
+  || { print -u2 "the animations folder was not prepared"; exit 1; }
+"$app_binary" animation docs --generic | diff -q - "$repo_dir/docs/ANIMATIONS.md" >/dev/null \
+  || { print -u2 "docs/ANIMATIONS.md is out of date: run bun run animation:docs"; exit 1; }
+unset DROPY_ANIMATIONS_FOLDER
+rm -rf "$animations_dir"
+print "Animation command checks passed"
+
 # Desktop-session lock and preference recovery (throwaway lock and preferences domain).
 "$repo_dir/Tests/LocalDeviceSessionCheck.zsh"
 

@@ -10,8 +10,8 @@ final class MotionStyleTests: XCTestCase {
     private var notch: NotchShape { NotchShape.notch(size: CGSize(width: 208, height: 37.5), in: canvas) }
     private var open: NotchShape { NotchShape.open(body: CGRect(origin: CGPoint(x: margin, y: margin), size: size)) }
 
-    private func peak(_ spring: MorphSpring) -> Double {
-        stride(from: 0.0, to: 2, by: 0.002).map(spring.value).max() ?? 0
+    private func peak(_ curve: MotionCurve) -> Double {
+        stride(from: 0.0, to: 2, by: 0.002).map(curve.value).max() ?? 0
     }
 
     func testRapidIsFasterThanBalancedWhichIsFasterThanSmooth() {

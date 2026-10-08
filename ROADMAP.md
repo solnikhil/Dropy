@@ -22,6 +22,14 @@ The M3 input bridge is replaced by using the real window (see [ARCHITECTURE](ARC
 - **Not handled yet:** Stage Manager, several displays, more than one pinned app, a crash that leaves a staged window on desktop 1 (macOS rescues it there; the journal restores its frame but not its desktop).
 - **Distribution:** `CGVirtualDisplay` is private; Dropy is Developer ID only (it cannot be sandboxed anyway).
 
+## Animations (2026-10-09)
+
+Built: the animation format and its limits, the Animation Studio (springs, keyframes, drawing the curve, content timing, undo, autosave), the gallery, share codes, playing on the notch, and the agent workflow (guide in the folder, a prompt in Settings, `Dropy animation` commands). See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). Open:
+
+- **Where the overlay opens from:** the notch today; corners and screen edges next, with the same animation format (an edge is the top-edge shape rotated; a corner needs its own shape).
+- **Manual testing by a person:** how editing feels in the Studio (keyframe dragging, the spring handle, the pen), and custom animations in daily use.
+- **Measurements:** `bun run bench -- --animation <file>` measures a build with a custom animation; no budgets for custom animations yet beyond the limits in the format.
+
 ## Earlier: M3 compatibility and reliability gates
 
 Status after the 2026-09-30 session, judged against the written [M3 workflow contract](docs/COMPATIBILITY.md#m3-workflow-contract). **M3 is not complete** (see the exit evaluation there). New keyboard features stay deferred; parking stays experimental.

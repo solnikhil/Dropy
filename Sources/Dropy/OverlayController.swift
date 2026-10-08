@@ -153,7 +153,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         // The window is final from the start, with a transparent margin for the ears
         // and the opening overshoot; only the outline inside it moves. Resizing the
         // window itself each frame stuttered.
-        let margin = NotchMorph.overshootMargin(for: full.size)
+        let margin = NotchMorph.overshootMargin(for: full.size, reach: OverlayMotion.reach)
         let canvas = OverlayGeometry.pixelAligned(CGRect(x: full.minX - margin, y: full.minY - margin,
                             width: full.width + 2 * margin, height: full.height + margin), scale: screen.backingScaleFactor)
         let panel = OverlayPanel.make(contentRect: canvas)
@@ -294,7 +294,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     }
 
     /// The camera housing's size, from the menu-bar areas either side of it.
-    private static func notchSize(on screen: NSScreen) -> CGSize? {
+    static func notchSize(on screen: NSScreen) -> CGSize? {
         guard let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
               right.minX > left.maxX, screen.safeAreaInsets.top > 0 else { return nil }
         return CGSize(width: right.minX - left.maxX, height: screen.safeAreaInsets.top)
@@ -669,7 +669,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// The panel's frame around `body`, with room for the outline's overshoot.
     private func canvasFrame(around body: CGRect, on screen: NSScreen) -> CGRect {
-        let margin = NotchMorph.overshootMargin(for: body.size)
+        let margin = NotchMorph.overshootMargin(for: body.size, reach: OverlayMotion.reach)
         return OverlayGeometry.pixelAligned(CGRect(x: body.minX - margin, y: body.minY - margin,
                       width: body.width + 2 * margin, height: body.height + margin), scale: screen.backingScaleFactor)
     }

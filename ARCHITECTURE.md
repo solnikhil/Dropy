@@ -22,6 +22,9 @@ That full contract is **not yet implemented**. The first native slice is a live,
 | `WindowPlacer` / `PlacementJournal` | M2 experiments: minimize, hide app or move off-screen, journaled before touching the window and restored on close, quit or next launch | Development driver only (`DROPY_DEBUG_PLACEMENT`), not in the product UI; exact window found via `_AXUIElementGetWindow` or refused |
 | `OverlayController` | AppKit panel, picker, view-only state, source selection and lifecycle | Drives `CapturePhase`; rechecks the exact window every two seconds while capturing, reacts to app termination and stream stops; closes without quitting the source app |
 | `AppDelegate` | Status menu, triggers, global shortcut, preferences | Notch hover/click or shortcut-only; ⌥⌘D toggles the overlay via a Carbon hot key (no Accessibility needed); dismiss mode menu |
+| `DropyCore/MotionCurve`, `DropyAnimation` | How the overlay moves: each motion (open, resize, close) moves the outline's width and height along a curve (a spring or keyframes with eases); the content's reveal, cascade, blur and hide | Unit-checked; closing is always forward-only; the window margin follows the animation's reach |
+| `DropyCore/AnimationFile`, `AnimationGuide`, `AnimationFilmstrip` | The animation file format: a forgiving reader with path-named problems and limits, a tidy writer, share codes, the guide for people and agents, and a picture of an animation | Unit-checked; every built-in style and example round-trips without an issue |
+| `AnimationLibrary`, `AnimationStudio`, `AnimationDemo`, `AnimationCommand` | The watched animations folder, the Studio editor, playing an animation on the notch, and `Dropy animation …` in a terminal | The command line is checked by `test-local.sh` in a throwaway folder; the Studio was driven with real mouse input once |
 | `DropyCore/Dismissal` | Which events end an overlay session for each dismiss mode | Unit-checked; Esc always closes; click-outside and pointer-leave watchers exist only while the overlay is open; focus returns to the previous app |
 
 The overlay runs as closed → selecting → starting → viewing ⇄ paused, with one failed state that keeps its reason: permission denied or revoked, source window closed, target quit, stopped from the system screen-sharing controls, stream interrupted, or window list unavailable. Every failure goes through one path that invalidates in-flight work, stops the stream, clears the preview and repopulates the list for an explicit new choice. Paused means the exact window still exists but is minimized, hidden or on another Space, so ScreenCaptureKit is delivering no new frames. An unexpected stream stop is re-resolved to decide between a closed window, a quit app and a genuine interruption; a genuine interruption restarts once, and a stop from the system controls never restarts. An interaction-active state belongs to M3.
@@ -55,6 +58,17 @@ A window cannot be moved between desktops with public API, but it can be moved b
 Without the Stage (unsupported macOS, the switch off, shared Spaces), a window on another desktop cannot be brought over: the overlay shows its snapshot and offers to go there, and a full-screen space gets the view-only preview.
 
 Pure decisions are in `DropyCore/DockGeometry.swift`, `DockPolicy.swift`, `StageGeometry.swift`, `PointerHandoff.swift` and `SessionModePolicy.swift`, each unit-tested; the AppKit side is `WindowDock`, `NativeSession`, `LiveSession`, `LiveCaster`, `Stage` and `PreviewSession`, hosted by `OverlayController`.
+
+## Animations (2026-10-09)
+
+One format, many ways to write it. An animation is a JSON file (`docs/ANIMATIONS.md`); the built-in styles, the gallery, the Animation Studio, share codes and AI agents all produce the same `DropyAnimation`, and the overlay plays only that. So there is one place for the rules:
+
+- **Two parts per motion.** Width (and the ears where the outline meets the screen edge) and height (and the lower corners) each follow a `MotionCurve` from 0 to 1. Springs keep their physics; keyframes join with a monotone smooth curve (no swing past a key, flat at peaks) or a named or custom timing curve.
+- **Closing is forward-only.** `NotchMorph.Motions` and `DropyAnimation` mark the close motion monotonic, so no curve can make the outline bounce back out of the camera housing.
+- **Limits, not trust.** `AnimationLimits` bounds every value; the reader brings values inside with a warning and speeds up a motion that runs too long. The overlay window's margin comes from the animation's actual reach, so an overshoot is never clipped.
+- **The same code everywhere.** The content's reveal, relayout and hide run on plain layers (`OverlayMotion.reveal` and friends), so the overlay, the notch demo and the Studio's stage play an animation identically.
+- **Files are the source of truth.** `AnimationLibrary` watches the folder with FSEvents; the Studio autosaves, and takes in a change made elsewhere while it is open. A chosen file with errors falls back to the chosen built-in style, and Settings says why.
+- **Agents are first-class.** The folder carries README.md (the guide) with AGENTS.md and CLAUDE.md pointing to it. `Dropy animation` (the app binary run from a terminal) checks, renders, plays (through a distributed notification to the running app), creates, selects and shares animations.
 
 ## Source-window placement boundary
 
