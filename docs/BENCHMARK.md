@@ -16,7 +16,7 @@ Each run measures the current build on this Mac against a scratch TextEdit docum
 
 | Scenario | What it measures |
 |---|---|
-| `native` | Full App, direct open, Native size: request → docked window (`openReadyMs`), size changes on the way (`layoutChanges`, must be 0), close → window back home (`closeHomeMs`), CPU and memory |
+| `native` | Full App, direct open, Native size: request → docked window (`openReadyMs`), size changes on the way (`layoutChanges`, must be 0), close → window back home (`closeHomeMs`), frames where the overlay was not flush with the top of the screen (`topGapFrames`, must be 0; `Scripts/bench/topedge.swift` streams the strip under the notch at 120 fps and needs Screen Recording for the terminal), CPU and memory |
 | `pinned` | The same app pinned and kept ready: openings from the Stage, closes to it, Stage creation time |
 | `preview` | Preview only: request → live preview, first frame on screen |
 | `fullscreen` | Pinned, opened over a scratch image shown full screen in Preview (Live mode), with "When the pointer leaves" dismissal. Each opening also moves the pointer into the app, clicks it and moves back out; the overlay must stay open, the pointer must be handed to the Stage and come back |
@@ -36,6 +36,8 @@ The timings come from one log line per opening (`Dropy timing: ready mode=… ms
 | idle | — | — | — | CPU 0.0 %, 61 MB |
 
 Full screen (2026-10-08, `3e59cc4` plus the fix below, 3 openings): open 695 / 860 ms (the first opening after launch, which brings the window from its desktop through the Stage, took 2.2 s in an earlier run), layout changes 0, close 42 / 43 ms, pointer check 3 of 3. Before the fix, Live mode closed the moment the pointer went into the app: the hand-off moves the real pointer to the Stage, which the overlay's pointer-leave watcher read as leaving, and a click in the app there counted as a click outside. The same check on that build: 0 of 2.
+
+Top edge (2026-10-08): every opening began with the system's "window appears" zoom, which scales a new window in from slightly smaller, so the overlay's top edge sat below the screen's and the menu bar showed above it: 12 such frames on the first opening (a 12 px gap closing over about 90 ms) and 1–2 on later ones. With the zoom turned off (`animationBehavior = .none`), 0 frames over 5 openings.
 
 Before the fix, a Native-size opening grew to the preset's size first and morphed again once the window list arrived (`layoutChanges` 1), and the first opening after launch could wait for the Stage.
 

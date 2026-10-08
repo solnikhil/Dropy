@@ -3,6 +3,7 @@
   "native.openReadyMs.max": { "max": 1200, "note": "includes the first, cold opening after launch" },
   "native.layoutChanges.max": { "max": 0, "note": "the overlay must open straight to its final size" },
   "native.closeHomeMs.p95": { "max": 400, "note": "close request to the window back where it was" },
+  "native.topGapFrames.max": { "max": 0, "note": "frames where the overlay was not flush with the top of the screen (the system window zoom once caused 12 per first opening)" },
   "native.cpuPercent.mean": { "max": 15 },
   "pinned.openReadyMs.p50": { "max": 800 },
   "pinned.openReadyMs.max": { "max": 1200, "note": "includes creating the Stage after launch" },

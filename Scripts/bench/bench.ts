@@ -12,7 +12,9 @@
 //
 // Scenarios (each runs Dropy's development cycle driver, DROPY_DEBUG_CYCLES, against a
 // scratch TextEdit document; nothing of the person's is opened or moved):
-//   native   Full App, direct open, Native size: open → docked, close → back home
+//   native   Full App, direct open, Native size: open → docked, close → back home; a
+//            120 fps probe (topedge.swift) counts frames where the overlay is not flush
+//            with the top of the screen
 //   pinned   the same app pinned and kept ready on the Stage
 //   preview  Preview only: open → first live frame
 //   fullscreen  pinned, opened over a scratch image shown full screen in Preview: Live
@@ -50,6 +52,8 @@ interface ScenarioResult {
   stageReadyMs?: Summary;
   cpuPercent: Summary;
   memoryMB: Summary;
+  /** Native only: frames, over the whole run, where the overlay was not flush with the top edge. */
+  topGapFrames?: Summary;
   /** Full screen only: openings that came up in Live mode (not a fallback). */
   liveCycles?: number;
   /** Full screen only: openings where the pointer was moved into the app and clicked… */
@@ -144,6 +148,19 @@ async function screenLocked(): Promise<boolean> {
 
 class InvalidRun extends Error {}
 
+/** The top-edge probe, compiled once per change to its source. Needs Screen Recording
+ *  for the terminal running the benchmark. */
+async function topEdgeProbe(): Promise<string> {
+  const source = join(import.meta.dir, "topedge.swift");
+  const binary = join(repo, ".build/bench/topedge");
+  const built = Bun.file(binary);
+  if (!(await built.exists()) || built.lastModified < Bun.file(source).lastModified) {
+    await $`mkdir -p ${join(repo, ".build/bench")}`.quiet();
+    await $`swiftc -O -o ${binary} ${source}`.quiet();
+  }
+  return binary;
+}
+
 /** A scratch image in Preview, full screen, so openings happen over a full-screen app. */
 async function enterFullScreen(work: string) {
   const image = join(work, "dropy-fullscreen.png");
@@ -194,6 +211,11 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
     ? ["--env", `DROPY_DEBUG_QUIT_AFTER=${seconds}`]
     : ["--env", `DROPY_DEBUG_CYCLES=${cycles},${holdMs}`, "--env", `DROPY_DEBUG_QUIT_AFTER=${seconds}`,
        ...(scenario === "fullscreen" ? ["--env", "DROPY_DEBUG_LIVE_POINTER=1"] : [])];
+  // Started first so it sees the first opening too.
+  const probe = scenario === "native"
+    ? Bun.spawn([await topEdgeProbe(), String(seconds + 2)], { stdout: "pipe", stderr: "ignore" })
+    : undefined;
+  if (probe) await Bun.sleep(800);
   await $`open -n --stderr ${log} ${env} ${app}`.quiet();
   let pid = 0;
   for (let i = 0; i < 40 && !pid; i++) {
@@ -205,6 +227,7 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
   const usage = pid ? await sample(pid, Date.now() + (seconds + 4) * 1000) : { cpu: [], memory: [] };
   for (let i = 0; i < 40 && (await dropyPIDs()).length; i++) await Bun.sleep(250);
   if (scenario === "fullscreen") await leaveFullScreen(work);
+  const probeOutput = probe ? await new Response(probe.stdout).text() : "";
   const text = await Bun.file(log).text().catch(() => "");
   if (await screenLocked()) throw new InvalidRun(`the screen locked during the ${scenario} scenario`);
   if (/status=\[[^\]]*suspended/.test(text)) {
@@ -217,6 +240,11 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
     cpuPercent: summarize(usage.cpu),
     memoryMB: summarize(usage.memory),
   };
+  if (probe) {
+    const gaps = probeOutput.match(/gapFrames=(\d+)/);
+    if (gaps) result.topGapFrames = summarize([Number(gaps[1])]);
+    else console.log("  (top-edge probe did not run: give the terminal Screen Recording permission)");
+  }
   if (scenario === "fullscreen") {
     const live = numbers(text, /Dropy timing: ready mode=(live)/g).length;
     result.liveCycles = live;

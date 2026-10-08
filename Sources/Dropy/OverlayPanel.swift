@@ -31,6 +31,11 @@ final class OverlayPanel: NSPanel {
         // "pointer leaves" modes), so the notch could not reopen it. Closing is decided
         // by the dismiss preference alone.
         panel.hidesOnDeactivate = false
+        // No system "window appears" zoom: it scaled the panel in from slightly smaller,
+        // so for the first frames of every opening its top edge sat below the screen's
+        // (up to 6 points on the first opening) and the menu bar showed above the outline.
+        // The outline's own morph is the opening animation.
+        panel.animationBehavior = .none
         return panel
     }
 

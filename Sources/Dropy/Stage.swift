@@ -199,6 +199,7 @@ final class Stage {
         panel.ignoresMouseEvents = true
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        panel.animationBehavior = .none
         panel.title = "Dropy Stage curtain"
         panel.setFrame(screen.frame, display: false)
         panel.orderFrontRegardless()
