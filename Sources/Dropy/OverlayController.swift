@@ -14,6 +14,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private var native: NativeSession!
     /// Over a full-screen app: the window stays on the Stage and is streamed.
     private var live: LiveSession?
+    /// Where Live mode shows the app, global top-left (development drivers).
+    var liveCast: CGRect? { live?.cast }
     private var workspaceObservers: [NSObjectProtocol] = []
     /// Size in points of the window being shown.
     var selectedWindowSize: CGSize?

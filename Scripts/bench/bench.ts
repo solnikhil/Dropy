@@ -15,6 +15,8 @@
 //   native   Full App, direct open, Native size: open → docked, close → back home
 //   pinned   the same app pinned and kept ready on the Stage
 //   preview  Preview only: open → first live frame
+//   fullscreen  pinned, opened over a scratch image shown full screen in Preview: Live
+//            mode (the window streamed from the Stage)
 //   idle     Dropy running with the overlay closed: CPU and memory
 //
 // Validity: the run refuses to start while the screen is locked and is discarded if it
@@ -37,8 +39,8 @@ const budgetsPath = join(repo, "docs/benchmarks/budgets.json");
 const domain = "org.dropy.app";
 const prefsKey = "org.dropy.preferences.v1";
 
-type Scenario = "native" | "pinned" | "preview" | "idle";
-const allScenarios: Scenario[] = ["native", "pinned", "preview", "idle"];
+type Scenario = "native" | "pinned" | "preview" | "fullscreen" | "idle";
+const allScenarios: Scenario[] = ["native", "pinned", "preview", "fullscreen", "idle"];
 
 interface ScenarioResult {
   openReadyMs?: Summary;
@@ -48,6 +50,12 @@ interface ScenarioResult {
   stageReadyMs?: Summary;
   cpuPercent: Summary;
   memoryMB: Summary;
+  /** Full screen only: openings that came up in Live mode (not a fallback). */
+  liveCycles?: number;
+  /** Full screen only: openings where the pointer was moved into the app and clicked… */
+  pointerChecks?: number;
+  /** …and the overlay stayed open, the pointer was handed over and came back. */
+  pointerPassed?: number;
   cycles: number;
   readyCycles: number;
 }
@@ -136,6 +144,22 @@ async function screenLocked(): Promise<boolean> {
 
 class InvalidRun extends Error {}
 
+/** A scratch image in Preview, full screen, so openings happen over a full-screen app. */
+async function enterFullScreen(work: string) {
+  const image = join(work, "dropy-fullscreen.png");
+  await $`sips -s format png -z 400 600 /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericDocumentIcon.icns --out ${image}`.quiet().nothrow();
+  await $`open -a Preview ${image}`.quiet();
+  await Bun.sleep(1500);
+  await $`osascript -e ${`tell application "System Events" to tell process "Preview" to set value of attribute "AXFullScreen" of (first window whose name contains "dropy-fullscreen") to true`}`.quiet().nothrow();
+  // The full-screen animation takes about a second.
+  await Bun.sleep(2000);
+}
+
+async function leaveFullScreen(work: string) {
+  await $`osascript -e 'tell application "Preview" to close (every window whose name contains "dropy-fullscreen")'`.quiet().nothrow();
+  await Bun.sleep(1500);
+}
+
 function numbers(log: string, pattern: RegExp): number[] {
   return [...log.matchAll(pattern)].map((m) => Number(m[1]));
 }
@@ -144,6 +168,7 @@ function numbers(log: string, pattern: RegExp): number[] {
 
 async function runScenario(scenario: Scenario, base: Record<string, unknown>, cycles: number, holdMs: number,
                            style: string, work: string): Promise<ScenarioResult> {
+  const pinned = scenario === "pinned" || scenario === "fullscreen";
   const prefs: Record<string, unknown> = {
     ...base,
     interaction: scenario === "preview" ? "previewOnly" : "fullApp",
@@ -151,18 +176,24 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
     selectedBundleIdentifier: "com.apple.TextEdit",
     lastUsedBundleIdentifier: "com.apple.TextEdit",
     sizePreset: "nativeSize",
-    dismissBehavior: "manual",
+    // Full screen uses the most eager dismissal, which once closed Live mode the
+    // moment the pointer went into the app.
+    dismissBehavior: scenario === "fullscreen" ? "pointerLeave" : "manual",
     motionStyle: style,
-    keepsPinnedAppReady: scenario === "pinned",
-    pinnedBundleIdentifier: scenario === "pinned" ? "com.apple.TextEdit" : undefined,
+    keepsPinnedAppReady: pinned,
+    pinnedBundleIdentifier: pinned ? "com.apple.TextEdit" : undefined,
   };
   await writePreferences(prefs);
+  if (scenario === "fullscreen") await enterFullScreen(work);
   const log = join(work, `${scenario}.log`);
   const idle = scenario === "idle";
-  const seconds = idle ? 12 : Math.ceil(4 + cycles * (holdMs / 1000 + 2.5));
+  // Full screen adds the pointer exercise (about 2.5 s) to each opening.
+  const perCycle = holdMs / 1000 + 2.5 + (scenario === "fullscreen" ? 3 : 0);
+  const seconds = idle ? 12 : Math.ceil(4 + cycles * perCycle);
   const env = idle
     ? ["--env", `DROPY_DEBUG_QUIT_AFTER=${seconds}`]
-    : ["--env", `DROPY_DEBUG_CYCLES=${cycles},${holdMs}`, "--env", `DROPY_DEBUG_QUIT_AFTER=${seconds}`];
+    : ["--env", `DROPY_DEBUG_CYCLES=${cycles},${holdMs}`, "--env", `DROPY_DEBUG_QUIT_AFTER=${seconds}`,
+       ...(scenario === "fullscreen" ? ["--env", "DROPY_DEBUG_LIVE_POINTER=1"] : [])];
   await $`open -n --stderr ${log} ${env} ${app}`.quiet();
   let pid = 0;
   for (let i = 0; i < 40 && !pid; i++) {
@@ -173,6 +204,7 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
   if (idle) await Bun.sleep(3000);
   const usage = pid ? await sample(pid, Date.now() + (seconds + 4) * 1000) : { cpu: [], memory: [] };
   for (let i = 0; i < 40 && (await dropyPIDs()).length; i++) await Bun.sleep(250);
+  if (scenario === "fullscreen") await leaveFullScreen(work);
   const text = await Bun.file(log).text().catch(() => "");
   if (await screenLocked()) throw new InvalidRun(`the screen locked during the ${scenario} scenario`);
   if (/status=\[[^\]]*suspended/.test(text)) {
@@ -185,14 +217,21 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
     cpuPercent: summarize(usage.cpu),
     memoryMB: summarize(usage.memory),
   };
+  if (scenario === "fullscreen") {
+    const live = numbers(text, /Dropy timing: ready mode=(live)/g).length;
+    result.liveCycles = live;
+    const checks = [...text.matchAll(/Dropy debug live pointer: handedOver=(\w+) kept=(\w+) returned=(\w+)/g)];
+    result.pointerChecks = checks.length;
+    result.pointerPassed = checks.filter((m) => m[1] === "yes" && m[2] === "yes" && m[3] === "yes").length;
+  }
   if (!idle) {
     result.openReadyMs = summarize(ready);
     result.layoutChanges = summarize(numbers(text, /Dropy timing: ready .*layoutChanges=(\d+)/g));
   }
-  if (scenario === "native" || scenario === "pinned") {
+  if (scenario === "native" || scenario === "pinned" || scenario === "fullscreen") {
     result.closeHomeMs = summarize(numbers(text, /Dropy timing: closed home=([\d.]+)ms/g));
   }
-  if (scenario === "pinned") result.stageReadyMs = summarize(numbers(text, /Dropy stage: ready .* in (\d+)ms/g));
+  if (pinned) result.stageReadyMs = summarize(numbers(text, /Dropy stage: ready .* in (\d+)ms/g));
   if (scenario === "preview") result.firstFrameMs = summarize(numbers(text, /Dropy reveal: firstFrame=([\d.]+)ms/g));
   return result;
 }
@@ -215,9 +254,11 @@ async function run() {
     await $`${join(repo, "Scripts/build-local.sh")}`.quiet();
   }
   const work = mkdtempSync(join(tmpdir(), "dropy-bench-"));
+  console.log(`Logs in ${work}`);
   const backup = join(work, "prefs-backup.plist");
   const dropyWasRunning = (await dropyPIDs()).length > 0;
   const textEditWasRunning = (await sh`pgrep -x TextEdit`).length > 0;
+  const previewWasRunning = (await sh`pgrep -x Preview`).length > 0;
   await $`defaults export ${domain} ${backup}`.quiet().nothrow();
   const base = await readPreferences();
   const document = join(work, "dropy-bench.txt");
@@ -257,6 +298,7 @@ async function run() {
     await $`defaults import ${domain} ${backup}`.quiet().nothrow();
     const name = basename(document);
     await $`osascript -e ${`tell application "TextEdit" to close (every document whose name is "${name}") saving no`}`.quiet().nothrow();
+    if (!previewWasRunning) await $`osascript -e 'tell application "Preview" to quit'`.quiet().nothrow();
     if (!textEditWasRunning) await $`osascript -e 'tell application "TextEdit" to quit'`.quiet().nothrow();
     if (dropyWasRunning) await $`open ${app}`.quiet().nothrow();
   }
@@ -330,6 +372,15 @@ async function check(path?: string): Promise<boolean> {
     if (values && values.cycles > 0 && values.readyCycles < values.cycles) {
       ok = false;
       console.log(`  FAIL  ${scenario}: only ${values.readyCycles} of ${values.cycles} openings became ready`);
+    }
+    if (values?.liveCycles !== undefined && values.liveCycles < values.cycles) {
+      ok = false;
+      console.log(`  FAIL  ${scenario}: only ${values.liveCycles} of ${values.cycles} openings used Live mode`);
+    }
+    if (values?.pointerChecks !== undefined) {
+      const pass = values.pointerChecks > 0 && values.pointerPassed === values.pointerChecks;
+      ok &&= pass;
+      console.log(`  ${pass ? "PASS" : "FAIL"}  ${scenario}: pointer into the app, click, back out: ${values.pointerPassed} of ${values.pointerChecks} kept the overlay open`);
     }
   }
   // Regressions: the previous result measured on the same Mac model and macOS.

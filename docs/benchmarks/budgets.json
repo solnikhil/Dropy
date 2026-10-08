@@ -12,6 +12,10 @@
   "preview.openReadyMs.p50": { "max": 600 },
   "preview.firstFrameMs.p95": { "max": 1000 },
   "preview.layoutChanges.max": { "max": 0 },
+  "fullscreen.openReadyMs.p50": { "max": 1000, "note": "over a full-screen app: request to the window streamed from the Stage (Live)" },
+  "fullscreen.openReadyMs.max": { "max": 2500, "note": "includes the first opening, which brings the window from its desktop through the Stage" },
+  "fullscreen.layoutChanges.max": { "max": 0 },
+  "fullscreen.closeHomeMs.p95": { "max": 400 },
   "idle.cpuPercent.mean": { "max": 1, "note": "overlay closed" },
   "idle.memoryMB.max": { "max": 120 }
 }

@@ -23,6 +23,8 @@ final class LiveSession {
     private var monitors: [Any] = []
     /// The overlay's body in global coordinates, for telling clicks outside apart.
     private var body: CGRect?
+    /// Where the person sees the app, global top-left.
+    private(set) var cast: CGRect?
 
     init(host: OverlaySessionHost, native: NativeSession, stage: Stage) {
         self.host = host
@@ -94,6 +96,7 @@ final class LiveSession {
         stage.allowsPointer = false
         handoff = nil
         body = nil
+        cast = nil
         cursor?.hide()
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
@@ -103,6 +106,11 @@ final class LiveSession {
     // MARK: Pointer hand-off
 
     private func beginHandoff(cast: CGRect, staged: CGRect) {
+        // The overlay's own pointer-leave and click-outside watchers would read the hand-off
+        // (the pointer moving to the Stage, clicks landing in the app there) as leaving:
+        // the app is the one in use, as when docked. clickedElsewhere decides instead.
+        host.removeSessionWatchers()
+        self.cast = cast
         handoff = PointerHandoff(cast: cast, staged: staged)
         if cursor == nil { cursor = SoftCursor() }
         stage.onPointerEvent = { [weak self] _, event in self?.pointerMoved(event) }

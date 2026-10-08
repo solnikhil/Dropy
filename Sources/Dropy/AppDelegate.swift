@@ -203,6 +203,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Development-only drivers for repeatable measurements without input automation.
     /// - `DROPY_DEBUG_CYCLES=<n>[,<hold-ms>]`: open, wait for a live preview (or a failure,
     ///   up to ten seconds), hold, close; repeat n times.
+    /// - `DROPY_DEBUG_LIVE_POINTER=1`: with the cycles, once Live mode is up, move the
+    ///   pointer into the app and click it, as a person would, and log whether the overlay
+    ///   stayed open (it must) and the pointer came back off the Stage afterwards.
     /// - `DROPY_DEBUG_QUIT_AFTER=<seconds>`: close the overlay and quit, so every
     ///   capture logs its metrics summary.
     private func startDebugDriversIfRequested() {
@@ -222,6 +225,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         waited += 50
                     }
                     NSLog("Dropy debug cycle %ld: %@", cycle, self.overlay.state.diagnosticName)
+                    if environment["DROPY_DEBUG_LIVE_POINTER"] != nil, self.overlay.state == .live {
+                        await self.exerciseLivePointer()
+                    }
                     try? await Task.sleep(for: .milliseconds(hold))
                     self.overlay.close()
                     try? await Task.sleep(for: .milliseconds(300))
@@ -258,6 +264,52 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// preview is live, place the source window, hold, restore, and log capture
     /// continuity, how much of the window stayed visible, and whether the restore
     /// matched the original. Logs modes, counts and fractions only.
+    /// Moves the pointer into the cast in small steps, clicks, and moves it back out,
+    /// through the HID event path a mouse uses (so the Stage's tap sees it).
+    private func exerciseLivePointer() async {
+        guard let cast = overlay.liveCast else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        // A mouse reports motion from wherever the pointer is, which after the hand-off
+        // is on the Stage, so each step goes from the current location.
+        func move(_ from: CGPoint, _ to: CGPoint) async {
+            let steps = 12
+            let delta = CGPoint(x: (to.x - from.x) / CGFloat(steps), y: (to.y - from.y) / CGFloat(steps))
+            for _ in 0..<steps {
+                let current = CGEvent(source: nil)?.location ?? from
+                let event = CGEvent(mouseEventSource: source, mouseType: .mouseMoved,
+                                    mouseCursorPosition: CGPoint(x: current.x + delta.x, y: current.y + delta.y),
+                                    mouseButton: .left)
+                event?.setIntegerValueField(.mouseEventDeltaX, value: Int64(delta.x.rounded()))
+                event?.setIntegerValueField(.mouseEventDeltaY, value: Int64(delta.y.rounded()))
+                event?.post(tap: .cghidEventTap)
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+        }
+        let outside = CGPoint(x: cast.midX, y: cast.maxY + 80)
+        let inside = CGPoint(x: cast.midX, y: cast.midY)
+        CGWarpMouseCursorPosition(outside)
+        CGAssociateMouseAndMouseCursorPosition(1)
+        try? await Task.sleep(for: .milliseconds(100))
+        await move(outside, inside)
+        try? await Task.sleep(for: .milliseconds(500))
+        let onStage = CGEvent(source: nil)?.location ?? .zero
+        let handedOver = !Stage.realDisplays(excluding: stage?.displayID).contains { $0.contains(onStage) }
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: onStage, mouseButton: .left)?
+                .post(tap: .cghidEventTap)
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+        try? await Task.sleep(for: .milliseconds(800))
+        let keptAfterClick = overlay.state == .live
+        await move(inside, outside)
+        try? await Task.sleep(for: .milliseconds(300))
+        let back = CGEvent(source: nil)?.location ?? .zero
+        let returned = Stage.realDisplays(excluding: stage?.displayID).contains { $0.contains(back) }
+        NSLog("Dropy debug live pointer: handedOver=%@ kept=%@ returned=%@ state=%@",
+              handedOver ? "yes" : "no", keptAfterClick ? "yes" : "no", returned ? "yes" : "no",
+              overlay.state.diagnosticName)
+    }
+
     private func runPlacementExperiment(_ spec: String) {
         let parts = spec.split(separator: ",").map(String.init)
         guard let mode = parts.first.flatMap(PlacementMode.init(rawValue:)) else {

@@ -19,6 +19,7 @@ Each run measures the current build on this Mac against a scratch TextEdit docum
 | `native` | Full App, direct open, Native size: request → docked window (`openReadyMs`), size changes on the way (`layoutChanges`, must be 0), close → window back home (`closeHomeMs`), CPU and memory |
 | `pinned` | The same app pinned and kept ready: openings from the Stage, closes to it, Stage creation time |
 | `preview` | Preview only: request → live preview, first frame on screen |
+| `fullscreen` | Pinned, opened over a scratch image shown full screen in Preview (Live mode), with "When the pointer leaves" dismissal. Each opening also moves the pointer into the app, clicks it and moves back out; the overlay must stay open, the pointer must be handed to the Stage and come back |
 | `idle` | Overlay closed: CPU and memory |
 
 Budgets are in `docs/benchmarks/budgets.json`; a result also fails when an opening never became ready, or when a latency is more than 25 % and 40 ms slower than the previous result from the same Mac model and macOS. Runs refuse to start on a locked screen and are discarded if it locks or capture is suspended part way: a locked Mac measured on 2026-10-08 showed broken Accessibility and suspended capture, nothing like normal use. Dropy's preferences are exported first and restored after; TextEdit comes to the front while it runs.
@@ -33,6 +34,8 @@ The timings come from one log line per opening (`Dropy timing: ready mode=… ms
 | pinned | 668 / 687 ms | 0 | 98 / 118 ms | Stage ready in 422 ms |
 | preview | 231 ms (first frame 249 / 266 ms) | 0 | — | — |
 | idle | — | — | — | CPU 0.0 %, 61 MB |
+
+Full screen (2026-10-08, `3e59cc4` plus the fix below, 3 openings): open 695 / 860 ms (the first opening after launch, which brings the window from its desktop through the Stage, took 2.2 s in an earlier run), layout changes 0, close 42 / 43 ms, pointer check 3 of 3. Before the fix, Live mode closed the moment the pointer went into the app: the hand-off moves the real pointer to the Stage, which the overlay's pointer-leave watcher read as leaving, and a click in the app there counted as a click outside. The same check on that build: 0 of 2.
 
 Before the fix, a Native-size opening grew to the preset's size first and morphed again once the window list arrived (`layoutChanges` 1), and the first opening after launch could wait for the Stage.
 
