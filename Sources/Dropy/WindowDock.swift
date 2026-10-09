@@ -72,7 +72,7 @@ final class WindowDock {
     /// Called when a release could not finish yet, so recovery can retry it.
     var onDeferredRestore: ((WindowIdentity) -> Void)?
     private var observer: AXObserver?
-    private var queue: Task<Void, Never>?
+    private let operations = WindowSessionQueue()
 
     init(journal: PlacementJournal, stage: Stage?) {
         self.journal = journal
@@ -84,23 +84,12 @@ final class WindowDock {
     /// A window is on the Stage, or waits there for its own desktop to come back.
     var holdsWindows: Bool { isStaged || !returning.isEmpty }
 
-    /// Runs `body` after every operation asked for before it.
-    private func serially<T: Sendable>(_ body: @escaping @Sendable @MainActor () async throws -> T) async throws -> T {
-        let previous = queue
-        let task = Task { @MainActor in
-            _ = await previous?.value
-            return try await body()
-        }
-        queue = Task { _ = try? await task.value }
-        return try await task.value
-    }
-
     // MARK: Choosing a window
 
     /// Makes `window` the docked window. A different one docked before goes back to
     /// where the person had it. The window is not moved yet.
-    func adopt(_ window: SCWindow, identity: WindowIdentity) async throws {
-        try await serially { [self] in
+    func adopt(_ window: SCWindow, identity: WindowIdentity, session: UUID) -> Task<Void, Error> {
+        operations.adopt(session) { [self] in
             if var docked = current, docked.identity == identity {
                 docked.window = window
                 current = docked
@@ -175,8 +164,8 @@ final class WindowDock {
     /// Shows the window at `frame` (global top-left) and returns where it really went:
     /// apps can refuse a size and macOS keeps windows below the menu bar.
     @discardableResult
-    func place(at frame: CGRect) async throws -> CGRect {
-        try await serially { [self] in
+    func place(at frame: CGRect, session: UUID) async throws -> CGRect {
+        try await operations.perform(session) { [self] in
             guard var docked = current else { throw DockError.nothingDocked }
             let identity = docked.identity
             let original = try existingEntry(identity)?.original
@@ -226,8 +215,8 @@ final class WindowDock {
     /// Brings the docked window's app to the front with that window key. Returns
     /// whether the app is frontmost afterwards.
     @discardableResult
-    func activate() async -> Bool {
-        (try? await serially { [self] in
+    func activate(session: UUID) async -> Bool {
+        (try? await operations.perform(session) { [self] in
             guard let docked = current else { return false }
             let pid = docked.identity.processID
             raise(docked.element)
@@ -328,17 +317,6 @@ final class WindowDock {
 
     // MARK: Waiting on the Stage
 
-    /// Moves the window to its place on the Stage, where it waits for the next opening
-    /// out of sight and still rendered, then covers the Stage so it idles there.
-    func moveToStage() async {
-        do {
-            try await serially { [self] in try await moveToStageNow() }
-        } catch {
-            NSLog("Dropy dock: cannot stage (%@); putting the window back", String(describing: error))
-            await release()
-        }
-    }
-
     private func moveToStageNow() async throws {
         guard var docked = current else { throw DockError.nothingDocked }
         guard let stage, stage.isReady, let slot = stage.slot(for: docked.frame.size) else {
@@ -369,8 +347,8 @@ final class WindowDock {
 
     /// Live mode: the window waits on the Stage at `size` and the Stage is uncovered,
     /// so the window draws at full rate for streaming. Returns its frame there.
-    func prepareLive(size: CGSize) async throws -> CGRect {
-        try await serially { [self] in
+    func prepareLive(size: CGSize, session: UUID) async throws -> CGRect {
+        try await operations.perform(session) { [self] in
             if current?.isStaged != true { try await moveToStageNow() }
             guard var docked = current, let stage, let slot = stage.slot(for: size) else {
                 throw DockError.windowUnreachable("noStage")
@@ -397,8 +375,34 @@ final class WindowDock {
     /// Puts the window back where the person had it, on its own desktop, and forgets
     /// it. This is what closing the overlay does. If its desktop is not the one showing,
     /// it waits on the Stage until it is (`returning`).
-    func release() async {
-        _ = try? await serially { [self] in await sendHomeNow() }
+    func release() -> Task<Void, Never> {
+        let restore = operations.enqueue { [self] in await sendHomeNow() }
+        return Task { _ = try? await restore.value }
+    }
+
+    /// Snapshot and restoration are one queued operation belonging to the closing
+    /// session. Reserving it before suspension also closes an in-flight adoption.
+    func finishSession(_ session: UUID, snapshot: Bool = false, putsBack: Bool = true,
+                       keepsOnStage: @escaping @MainActor (WindowIdentity) -> Bool = { _ in false },
+                       willRestore: @escaping @MainActor (Docked) -> Void = { _ in },
+                       didRestore: @escaping @MainActor (pid_t?, Bool) -> Void = { _, _ in }) -> Task<Void, Never> {
+        operations.finish(session, ifUnowned: { didRestore(nil, false) }) { [self] in
+            guard let docked = current else { didRestore(nil, false); return }
+            var stages = false
+            if putsBack {
+                if snapshot { await refreshSnapshot(timeout: .milliseconds(150)) }
+                if let latest = current { willRestore(latest) }
+                // Pinning may change while the snapshot awaits capture IO.
+                stages = stage?.isReady == true && keepsOnStage(docked.identity)
+                if stages {
+                    do { try await moveToStageNow() }
+                    catch { await sendHomeNow() }
+                } else {
+                    await sendHomeNow()
+                }
+            }
+            didRestore(docked.identity.processID, stages && current?.isStaged == true)
+        }
     }
 
     private func sendHomeNow() async {

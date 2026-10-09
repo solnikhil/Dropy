@@ -14,6 +14,46 @@ final class PointerHandoffTests: XCTestCase {
         XCTAssertFalse(handoff.onStage)
     }
 
+    func testExpandedAspectFitMapsNewEdgesAndPreservesHandoff() {
+        var handoff = PointerHandoff(cast: cast, staged: staged)
+        _ = handoff.pointer(at: CGPoint(x: cast.midX, y: cast.midY))
+        let viewport = CGRect(x: 24, y: 38, width: 1662, height: 911)
+        handoff.updateLayout(viewport: viewport, stagedWindow: staged, mode: .fit)
+        XCTAssertTrue(handoff.onStage)
+        XCTAssertEqual(handoff.pointer(at: CGPoint(x: staged.midX, y: staged.midY)),
+                       .follow(cursor: CGPoint(x: viewport.midX, y: viewport.midY)))
+        handoff.reset()
+        let point = CGPoint(x: handoff.cast.maxX - 1, y: handoff.cast.midY)
+        guard case .enter(let stagePoint, let cursor) = handoff.pointer(at: point) else {
+            return XCTFail("The expanded part of the app must accept input")
+        }
+        XCTAssertTrue(staged.contains(stagePoint))
+        XCTAssertEqual(cursor, point)
+        handoff.reset()
+        // Letterboxing belongs to Dropy, not to the app's input rectangle.
+        XCTAssertEqual(handoff.pointer(at: CGPoint(x: viewport.minX, y: viewport.midY)), .none)
+    }
+
+    func testFillAndNativeScaleMapOnlyTheVisibleSourceCrop() {
+        let window = CGRect(x: 2000, y: 1000, width: 400, height: 200)
+        let viewport = CGRect(x: 0, y: 0, width: 300, height: 300)
+        var handoff = PointerHandoff(cast: viewport, staged: window)
+        handoff.updateLayout(viewport: viewport, stagedWindow: window, mode: .fill)
+        XCTAssertEqual(handoff.cast, viewport)
+        XCTAssertEqual(handoff.staged, CGRect(x: 2100, y: 1000, width: 200, height: 200))
+        XCTAssertEqual(handoff.pointer(at: CGPoint(x: 75, y: 150)),
+                       .enter(stage: CGPoint(x: 2150, y: 1100), cursor: CGPoint(x: 75, y: 150)))
+        handoff.reset()
+        handoff.updateLayout(viewport: viewport, stagedWindow: window, mode: .nativeScale)
+        XCTAssertEqual(handoff.cast, CGRect(x: 0, y: 50, width: 300, height: 200))
+        XCTAssertEqual(handoff.staged, CGRect(x: 2050, y: 1000, width: 300, height: 200))
+        XCTAssertEqual(handoff.pointer(at: CGPoint(x: 75, y: 150)),
+                       .enter(stage: CGPoint(x: 2125, y: 1100), cursor: CGPoint(x: 75, y: 150)))
+        handoff.reset()
+        handoff.updateLayout(viewport: viewport, stagedWindow: window, mode: .fit)
+        XCTAssertEqual(handoff.staged, window, "Returning to Fit must undo cropping")
+    }
+
     func testEnteringMovesThePointerToTheMatchingStagePoint() {
         var handoff = PointerHandoff(cast: cast, staged: staged)
         XCTAssertEqual(handoff.pointer(at: CGPoint(x: 600, y: 100)),

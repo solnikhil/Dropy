@@ -92,6 +92,12 @@ enum AnimationCommand {
         return 0
     }
 
+    private static func playbackSlowdown(_ arguments: [String]) -> Double? {
+        guard arguments.contains("--slow") else { return 1 }
+        guard let raw = option("--slow", in: arguments), let value = Double(raw) else { return nil }
+        return AnimationPlayback.slowdown(value)
+    }
+
     private static func play(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
         guard let target = arguments.first(where: { !$0.hasPrefix("--") }) else {
             return fail("Which animation? \(AnimationLibrary.command) play <file or name> [--slow <n>]", status: 2)
@@ -100,7 +106,9 @@ enum AnimationCommand {
         guard let animation = found.result.animation else {
             return fail("\(found.label) has errors; run `\(AnimationLibrary.command) check \(target)` first.")
         }
-        let slow = option("--slow", in: arguments).flatMap(Double.init) ?? 1
+        guard let slow = playbackSlowdown(arguments) else {
+            return fail("--slow requires a finite number.", status: 2)
+        }
         guard AnimationRemote.dropyIsRunning else { return fail("Dropy isn't running. Open it, then try again.") }
         let reply = AnimationRemote.send(.play, payload: AnimationFile.shareCode(for: animation), slow: slow)
         guard let reply else { return fail("Dropy didn't answer. Is it this copy of Dropy that's running?") }
@@ -117,8 +125,10 @@ enum AnimationCommand {
         let url = FileManager.default.fileExists(atPath: expanded.path) ? expanded
             : library.entry(URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent)?.url
         guard let url else { return notFound(target, library) }
+        guard let slow = playbackSlowdown(arguments) else {
+            return fail("--slow requires a finite number.", status: 2)
+        }
         guard AnimationRemote.dropyIsRunning else { return fail("Dropy isn't running. Open it, then try again.") }
-        let slow = option("--slow", in: arguments).flatMap(Double.init) ?? 1
         // Line by line, so a person or an agent reading the output sees each play at once.
         setvbuf(stdout, nil, _IOLBF, 0)
         print("Watching \(AnimationText.clean(url.lastPathComponent, limit: 100)). Save it to play it on the notch; Control-C stops.")

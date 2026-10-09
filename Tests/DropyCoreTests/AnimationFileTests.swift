@@ -10,6 +10,23 @@ final class AnimationFileTests: XCTestCase {
 
     private func paths(_ issues: [AnimationIssue]) -> [String] { issues.map(\.path) }
 
+    func testOversizedVersionsAreReportedWithoutIntegerConversion() {
+        for version in ["1e100", "1.7976931348623157e308", "9223372036854775808", "2.5", "-1e100"] {
+            let result = read("{\"dropyAnimation\":\(version)}")
+            XCTAssertNil(result.animation)
+            XCTAssertEqual(paths(result.errors), ["dropyAnimation"])
+        }
+    }
+
+    func testPlaybackRejectsNonfiniteSlowdownAndClampsFiniteValues() {
+        for value in [Double.nan, Double.infinity, -Double.infinity] {
+            XCTAssertNil(AnimationPlayback.slowdown(value))
+        }
+        XCTAssertEqual(AnimationPlayback.slowdown(-10), 1)
+        XCTAssertEqual(AnimationPlayback.slowdown(2.5), 2.5)
+        XCTAssertEqual(AnimationPlayback.slowdown(Double.greatestFiniteMagnitude), 20)
+    }
+
     func testEveryBuiltInAndExampleRoundTripsWithoutAnIssue() throws {
         let all = MotionStyle.allCases.map(\.animation) + DropyAnimation.gallery.map(\.animation)
         for animation in all {

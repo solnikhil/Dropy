@@ -34,26 +34,36 @@ final class Probe: NSObject, SCStreamOutput {
     }
 }
 
-let seconds = Double(CommandLine.arguments.dropFirst().first ?? "8") ?? 8
+enum ProbeFailure: Error { case invalidDuration, mainDisplayUnavailable }
+
+let seconds = Double(CommandLine.arguments.dropFirst().first ?? "8") ?? .nan
 let probe = Probe()
 _ = Task {
-    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-    let display = content.displays.first { $0.displayID == CGMainDisplayID() }!
-    let config = SCStreamConfiguration()
-    config.sourceRect = CGRect(x: CGFloat(display.width) / 2 - 500, y: 0, width: 1000, height: 30)
-    config.width = 2000; config.height = 60
-    config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
-    config.pixelFormat = kCVPixelFormatType_32BGRA
-    config.showsCursor = false
-    config.queueDepth = 8
-    let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: config, delegate: nil)
-    try stream.addStreamOutput(probe, type: .screen, sampleHandlerQueue: DispatchQueue(label: "probe"))
-    try await stream.startCapture()
-    print("probe: capturing"); fflush(stdout)
-    try await Task.sleep(for: .seconds(seconds))
-    try await stream.stopCapture()
-    print("probe: frames=\(probe.frames) gapFrames=\(probe.gaps)")
-    probe.events.forEach { print("  " + $0) }
-    exit(0)
+    do {
+        guard seconds.isFinite, seconds > 0, seconds <= 3600 else { throw ProbeFailure.invalidDuration }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
+            throw ProbeFailure.mainDisplayUnavailable
+        }
+        let config = SCStreamConfiguration()
+        config.sourceRect = CGRect(x: CGFloat(display.width) / 2 - 500, y: 0, width: 1000, height: 30)
+        config.width = 2000; config.height = 60
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.showsCursor = false
+        config.queueDepth = 8
+        let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: config, delegate: nil)
+        try stream.addStreamOutput(probe, type: .screen, sampleHandlerQueue: DispatchQueue(label: "probe"))
+        try await stream.startCapture()
+        print("probe: capturing"); fflush(stdout)
+        try await Task.sleep(for: .seconds(seconds))
+        try await stream.stopCapture()
+        print("probe: frames=\(probe.frames) gapFrames=\(probe.gaps)")
+        probe.events.forEach { print("  " + $0) }
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("probe: \(error)\n".utf8))
+        exit(1)
+    }
 }
 RunLoop.main.run()

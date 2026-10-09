@@ -75,6 +75,17 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Tests/LocalWorkspaceCheck.swift" "$repo_dir/Sources/Dropy/OverlayWorkspaceView.swift"
 "$build_dir/WorkspaceChecks"
 
+# Deterministic close/reopen, interrupted adoption and Live-to-preview ownership.
+swiftc -swift-version 6 -o "$build_dir/WindowSessionChecks" \
+  "$repo_dir/Tests/LocalWindowSessionCheck.swift" "$repo_dir/Sources/Dropy/WindowSessionQueue.swift"
+"$build_dir/WindowSessionChecks"
+
+# The production Live caster with controlled IO (no recording request).
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/LiveCasterChecks" \
+  "$repo_dir/Tests/LocalLiveCasterCheck.swift" "$repo_dir/Sources/Dropy/LiveCaster.swift"
+"$build_dir/LiveCasterChecks"
+
 
 # The animation command line, in a throwaway animations folder: every built-in style and
 # example checks clean, a new file round-trips, a broken one fails, and the repository's
@@ -91,6 +102,19 @@ done
 [[ -s "$animations_dir/check.png" ]] || { print -u2 "animation render wrote nothing"; exit 1; }
 print '{ "open": 1 }' > "$animations_dir/broken.json"
 if "$app_binary" animation check broken >/dev/null 2>&1; then print -u2 "a broken animation passed its check"; exit 1; fi
+print '{ "dropyAnimation": 1e100 }' > "$animations_dir/oversized-version.json"
+if "$app_binary" animation check oversized-version >"$animations_dir/version-check.txt" 2>&1; then
+  print -u2 "an oversized format version passed its check"; exit 1
+fi
+grep -q 'newer Dropy' "$animations_dir/version-check.txt" || { print -u2 "an oversized version was not diagnosed"; exit 1; }
+for verb in play watch; do
+  for slow in nan inf -inf nope; do
+    if "$app_binary" animation "$verb" check-drop --slow "$slow" >"$animations_dir/slow-check.txt" 2>&1; then
+      print -u2 "animation $verb accepted --slow $slow"; exit 1
+    fi
+    grep -q 'finite number' "$animations_dir/slow-check.txt" || { print -u2 "--slow $slow was not diagnosed"; exit 1; }
+  done
+done
 [[ -f "$animations_dir/README.md" && -f "$animations_dir/AGENTS.md" && -f "$animations_dir/Examples/pop.json" ]] \
   || { print -u2 "the animations folder was not prepared"; exit 1; }
 "$app_binary" animation docs --generic | diff -q - "$repo_dir/docs/ANIMATIONS.md" >/dev/null \

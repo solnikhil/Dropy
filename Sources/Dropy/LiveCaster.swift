@@ -15,13 +15,19 @@ final class LiveCaster {
     private var stream: SCStream?
     private var mailbox: FrameMailbox?
     private var recorder: CaptureMetricsRecorder?
+    private var observer: StreamStopObserver?
+    private var requestID = UUID()
 
     /// Streams `region` (points, relative to the Stage's top-left) into `renderer`.
     func start(stage: CGDirectDisplayID, region: CGRect, windowID: UInt32, renderer: MetalFrameView,
-               refreshRate: Int) async throws {
-        await stop(reason: "replaced")
+               refreshRate: Int, onUnexpectedStop: @escaping @MainActor (Error) -> Void) async throws {
+        let stopping = stop(reason: "replaced")
+        let request = requestID
+        await stopping.value
+        guard request == requestID else { throw CancellationError() }
         let requestedAt = HostClock.nowMilliseconds()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard request == requestID else { throw CancellationError() }
         guard let display = content.displays.first(where: { $0.displayID == stage }) else {
             throw Failure.stageNotCapturable
         }
@@ -44,38 +50,66 @@ final class LiveCaster {
         let mailbox = FrameMailbox(renderer: renderer, metrics: recorder) { _, _ in }
         mailbox.setGeometry(CaptureGeometry(windowID: windowID, windowSize: region.size,
                                             pixelSize: CGSize(width: configuration.width, height: configuration.height)))
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        let observer = StreamStopObserver { [weak self] error in
+            Task { @MainActor [weak self] in
+                guard let self, self.requestID == request, self.stream != nil else { return }
+                // Invalidate frames before disabling input and restoring the source.
+                let stopping = self.stop(reason: "unexpected(\((error as NSError).code))")
+                onUnexpectedStop(error)
+                await stopping.value
+            }
+        }
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: observer)
         try stream.addStreamOutput(mailbox, type: .screen,
                                    sampleHandlerQueue: DispatchQueue(label: "org.dropy.live.frames"))
         self.stream = stream
         self.mailbox = mailbox
         self.recorder = recorder
+        self.observer = observer
         do {
             try await stream.startCapture()
+            guard request == requestID, self.stream === stream else {
+                // A stop while startCapture was awaiting must also stop a capture
+                // which finishes starting after that earlier stop returned.
+                try? await stream.stopCapture()
+                throw CancellationError()
+            }
             recorder.startReturned()
             NSLog("Dropy live: streaming %.0fx%.0f from the Stage", region.width, region.height)
         } catch {
             mailbox.invalidate()
             recorder.finish(reason: "startFailed(\((error as NSError).code))")
-            self.stream = nil
-            self.mailbox = nil
-            self.recorder = nil
+            if self.stream === stream {
+                self.stream = nil
+                self.mailbox = nil
+                self.recorder = nil
+                self.observer = nil
+            }
             throw error
         }
     }
 
-    func stop(reason: String = "closed") async {
-        guard let stream else { return }
+    /// Detach synchronously: a delayed stop task must never stop a newer stream.
+    @discardableResult
+    func stop(reason: String = "closed") -> Task<Void, Never> {
+        requestID = UUID()
+        guard let stream else { return Task {} }
         mailbox?.invalidate()
         self.stream = nil
         mailbox = nil
         let recorder = self.recorder
         self.recorder = nil
-        do {
-            try await stream.stopCapture()
-            recorder?.finish(reason: reason)
-        } catch {
-            recorder?.finish(reason: "stopFailed(\((error as NSError).code))")
+        let observer = self.observer
+        self.observer = nil
+        return Task {
+            do {
+                try await stream.stopCapture()
+                recorder?.finish(reason: reason)
+            } catch {
+                recorder?.finish(reason: "stopFailed(\((error as NSError).code))")
+            }
+            // Keep the delegate alive until ScreenCaptureKit has acknowledged stop.
+            withExtendedLifetime(observer) {}
         }
     }
 }

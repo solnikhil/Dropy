@@ -35,6 +35,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fmt, summarize, type Summary } from "./stats";
+import { startProbe } from "./probe-process";
 
 const repo = resolve(import.meta.dir, "../..");
 const app = join(repo, ".build/local/Dropy.app");
@@ -216,55 +217,61 @@ async function runScenario(scenario: Scenario, base: Record<string, unknown>, cy
        ...(animation ? ["--env", `DROPY_ANIMATION=${animation}`] : [])];
   // Started first so it sees the first opening too.
   const probe = scenario === "native"
-    ? Bun.spawn([await topEdgeProbe(), String(seconds + 2)], { stdout: "pipe", stderr: "ignore" })
+    ? startProbe([await topEdgeProbe(), String(seconds + 2)], (seconds + 12) * 1000)
     : undefined;
-  if (probe) await Bun.sleep(800);
-  await $`open -n --stderr ${log} ${env} ${app}`.quiet();
-  let pid = 0;
-  for (let i = 0; i < 40 && !pid; i++) {
-    await Bun.sleep(100);
-    pid = (await dropyPIDs()).at(-1) ?? 0;
+  try {
+    if (probe) await Bun.sleep(800);
+    await $`open -n --stderr ${log} ${env} ${app}`.quiet();
+    let pid = 0;
+    for (let i = 0; i < 40 && !pid; i++) {
+      await Bun.sleep(100);
+      pid = (await dropyPIDs()).at(-1) ?? 0;
+    }
+    // The idle scenario samples after launch has settled; the others throughout.
+    if (idle) await Bun.sleep(3000);
+    const usage = pid ? await sample(pid, Date.now() + (seconds + 4) * 1000) : { cpu: [], memory: [] };
+    for (let i = 0; i < 40 && (await dropyPIDs()).length; i++) await Bun.sleep(250);
+    if (scenario === "fullscreen") await leaveFullScreen(work);
+    const probeResult = probe ? await probe.result : undefined;
+    const probeOutput = probeResult?.stdout ?? "";
+    const text = await Bun.file(log).text().catch(() => "");
+    if (await screenLocked()) throw new InvalidRun(`the screen locked during the ${scenario} scenario`);
+    if (/status=\[[^\]]*suspended/.test(text)) {
+      throw new InvalidRun(`capture was suspended during the ${scenario} scenario (screen locked or display asleep)`);
+    }
+    const ready = numbers(text, /Dropy timing: ready mode=\w+ ms=([\d.]+)/g);
+    const result: ScenarioResult = {
+      cycles: idle ? 0 : cycles,
+      readyCycles: ready.length,
+      cpuPercent: summarize(usage.cpu),
+      memoryMB: summarize(usage.memory),
+    };
+    if (probe) {
+      const gaps = probeOutput.match(/gapFrames=(\d+)/);
+      if (gaps && probeResult?.exitCode === 0 && !probeResult.timedOut) result.topGapFrames = summarize([Number(gaps[1])]);
+      else console.log(`  (top-edge probe unavailable: ${probeResult?.timedOut ? "timed out" : probeResult?.stderr.trim() || `exit ${probeResult?.exitCode}`})`);
+    }
+    if (scenario === "fullscreen") {
+      const live = numbers(text, /Dropy timing: ready mode=(live)/g).length;
+      result.liveCycles = live;
+      const checks = [...text.matchAll(/Dropy debug live pointer: handedOver=(\w+) kept=(\w+) returned=(\w+)/g)];
+      result.pointerChecks = checks.length;
+      result.pointerPassed = checks.filter((m) => m[1] === "yes" && m[2] === "yes" && m[3] === "yes").length;
+    }
+    if (!idle) {
+      result.openReadyMs = summarize(ready);
+      result.layoutChanges = summarize(numbers(text, /Dropy timing: ready .*layoutChanges=(\d+)/g));
+    }
+    if (scenario === "native" || scenario === "pinned" || scenario === "fullscreen") {
+      result.closeHomeMs = summarize(numbers(text, /Dropy timing: closed home=([\d.]+)ms/g));
+    }
+    if (pinned) result.stageReadyMs = summarize(numbers(text, /Dropy stage: ready .* in (\d+)ms/g));
+    if (scenario === "preview") result.firstFrameMs = summarize(numbers(text, /Dropy reveal: firstFrame=([\d.]+)ms/g));
+    return result;
+  } finally {
+    probe?.stop();
+    if (probe) await probe.result;
   }
-  // The idle scenario samples after launch has settled; the others throughout.
-  if (idle) await Bun.sleep(3000);
-  const usage = pid ? await sample(pid, Date.now() + (seconds + 4) * 1000) : { cpu: [], memory: [] };
-  for (let i = 0; i < 40 && (await dropyPIDs()).length; i++) await Bun.sleep(250);
-  if (scenario === "fullscreen") await leaveFullScreen(work);
-  const probeOutput = probe ? await new Response(probe.stdout).text() : "";
-  const text = await Bun.file(log).text().catch(() => "");
-  if (await screenLocked()) throw new InvalidRun(`the screen locked during the ${scenario} scenario`);
-  if (/status=\[[^\]]*suspended/.test(text)) {
-    throw new InvalidRun(`capture was suspended during the ${scenario} scenario (screen locked or display asleep)`);
-  }
-  const ready = numbers(text, /Dropy timing: ready mode=\w+ ms=([\d.]+)/g);
-  const result: ScenarioResult = {
-    cycles: idle ? 0 : cycles,
-    readyCycles: ready.length,
-    cpuPercent: summarize(usage.cpu),
-    memoryMB: summarize(usage.memory),
-  };
-  if (probe) {
-    const gaps = probeOutput.match(/gapFrames=(\d+)/);
-    if (gaps) result.topGapFrames = summarize([Number(gaps[1])]);
-    else console.log("  (top-edge probe did not run: give the terminal Screen Recording permission)");
-  }
-  if (scenario === "fullscreen") {
-    const live = numbers(text, /Dropy timing: ready mode=(live)/g).length;
-    result.liveCycles = live;
-    const checks = [...text.matchAll(/Dropy debug live pointer: handedOver=(\w+) kept=(\w+) returned=(\w+)/g)];
-    result.pointerChecks = checks.length;
-    result.pointerPassed = checks.filter((m) => m[1] === "yes" && m[2] === "yes" && m[3] === "yes").length;
-  }
-  if (!idle) {
-    result.openReadyMs = summarize(ready);
-    result.layoutChanges = summarize(numbers(text, /Dropy timing: ready .*layoutChanges=(\d+)/g));
-  }
-  if (scenario === "native" || scenario === "pinned" || scenario === "fullscreen") {
-    result.closeHomeMs = summarize(numbers(text, /Dropy timing: closed home=([\d.]+)ms/g));
-  }
-  if (pinned) result.stageReadyMs = summarize(numbers(text, /Dropy stage: ready .* in (\d+)ms/g));
-  if (scenario === "preview") result.firstFrameMs = summarize(numbers(text, /Dropy reveal: firstFrame=([\d.]+)ms/g));
-  return result;
 }
 
 // MARK: Commands

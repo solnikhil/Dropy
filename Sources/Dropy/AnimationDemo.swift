@@ -20,11 +20,11 @@ final class AnimationDemo {
     /// takes in seconds.
     @discardableResult
     func play(_ animation: DropyAnimation, slowdown: Double = 1) -> TimeInterval {
+        guard let slowdown = AnimationPlayback.slowdown(slowdown) else { return 0 }
         stop()
         guard let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else { return 0 }
         let token = UUID()
         generation = token
-        let slowdown = min(max(slowdown, 1), 20)
         let notch = OverlayController.notchSize(on: screen)
         let margin = NotchMorph.overshootMargin(for: Self.secondSize, reach: animation.morph.reach)
         let size = CGSize(width: Self.secondSize.width + 2 * margin, height: Self.secondSize.height + margin)

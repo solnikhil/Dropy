@@ -686,11 +686,13 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         workspace.layer?.mask = nil
         let generation = UUID()
         layoutGeneration = generation
+        let sessionGeneration = self.generation
         let oldOrigin = panel.frame.origin
         let oldBody = (backdrop?.visibleShape?.body ?? workspace.frame).offsetBy(dx: oldOrigin.x, dy: oldOrigin.y)
         func canvas(around body: CGRect) -> CGRect { canvasFrame(around: body, on: screen) }
         let layout = (preview: preview, size: newBody.size)
         let animate = animated && !OverlayMotion.reduced && backdrop?.visibleShape != nil
+        if animate, state == .live { live?.suspendInputForLayout() }
         let frame = animate ? canvas(around: oldBody).union(canvas(around: newBody)) : canvas(around: newBody)
         let startShape = backdrop?.visibleShape?.offsetBy(dx: oldOrigin.x - frame.minX, dy: oldOrigin.y - frame.minY)
         place(panel: panel, root: root, workspace: workspace, frame: frame, body: newBody, preview: layout.preview)
@@ -702,15 +704,17 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             // Once settled, shrink the panel to fit; nothing moves on screen.
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
-                guard let self, self.layoutGeneration == generation, let panel = self.panel,
+                guard let self, self.layoutGeneration == generation, self.generation == sessionGeneration, let panel = self.panel,
                       let root = panel.contentView, let workspace = self.workspace else { return }
                 self.place(panel: panel, root: root, workspace: workspace, frame: canvas(around: newBody),
                            body: newBody, preview: layout.preview)
                 self.backdrop?.settle(.open(body: workspace.frame))
+                if self.state == .live { self.live?.resumeInputAfterLayout() }
             }
         } else {
             backdrop?.settle(endShape)
             settlesAt = Date().addingTimeInterval(DismissBehavior.pointerLeaveGrace)
+            if state == .live { live?.resumeInputAfterLayout() }
         }
         // A docked window's menus and sheets reach outside the overlay; pointer-leave
         // does not apply to it.
@@ -733,11 +737,15 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         workspace.layoutSubtreeIfNeeded()
         backdrop?.frame = root.bounds
         if state == .docked { native.updateHole() }
+        if state == .live {
+            live?.updateLayout(body: workspace.frame.offsetBy(dx: actual.minX, dy: actual.minY),
+                               viewport: workspace.previewRect.offsetBy(dx: workspace.frame.minX + actual.minX,
+                                                                       dy: workspace.frame.minY + actual.minY))
+        }
     }
 
     @objc private func expandClicked() {
         expandedPreview.toggle()
-        // The live-window watcher updates capture resolution without restarting it.
         layoutSelectedWindow()
     }
 
@@ -852,11 +860,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     }
 
     private func fallThroughToPreview(_ selected: CapturableWindow, _ request: UUID, _ conditions: SessionConditions) {
-        guard let renderer else { return }
-        native.end()
-        live?.end()
-        if let note = SessionModePolicy.previewNote(for: conditions) { showNote(note) }
-        preview.start(selected.identity, request: request, renderer: renderer)
+        let note = SessionModePolicy.previewNote(for: conditions)
+        showPreviewInstead(of: selected.identity, request: request, note: note ?? "")
     }
 
     /// What decides how a chosen window is shown: Live over another app's full-screen
@@ -871,12 +876,30 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// Docking is not possible for this window; show the live preview instead.
     func showPreviewInstead(of identity: WindowIdentity, request: UUID, note: String) {
-        guard let renderer else { return }
+        guard request == generation, let renderer else { return }
         native.end()
         live?.end()
-        workspace?.previewShell.layer?.cornerRadius = 12
-        preview.start(identity, request: request, renderer: renderer)
-        showNote(note)
+        // Reserve restoration before suspension. Closing or choosing another window
+        // while it runs cannot leave this window on the Stage or restore the new one.
+        let restoration = native.restoreForPreview()
+        setState(.starting(applicationName: selectedApplicationName))
+        Task { [weak self] in
+            await restoration.value
+            guard let self, self.generation == request, self.state != .closed else { return }
+            self.workspace?.previewShell.layer?.cornerRadius = 12
+            self.preview.start(identity, request: request, renderer: renderer)
+            if !note.isEmpty { self.showNote(note) }
+        }
+    }
+
+    func relinquishSourceFocus(processID: pid_t) {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == processID else { return }
+        if let previousApplication, !previousApplication.isTerminated,
+           previousApplication.processIdentifier != processID {
+            WindowDock.activateApplication(previousApplication.processIdentifier)
+        } else {
+            NSApp.activate()
+        }
     }
 
     @objc private func applicationTerminated(_ notification: Notification) {

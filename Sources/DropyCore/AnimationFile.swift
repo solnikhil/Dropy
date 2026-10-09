@@ -272,7 +272,7 @@ private final class Reader {
                   ? "Missing. Put \"\(AnimationFile.formatKey)\": 1 at the top: it marks the file as a Dropy animation."
                   : "Must be the number 1.")
         case let version? where version > Double(AnimationFile.version):
-            error(AnimationFile.formatKey, "This file is for a newer Dropy (format \(Int(version))); this one reads format \(AnimationFile.version).")
+            error(AnimationFile.formatKey, "This file is for a newer Dropy (format \(version)); this one reads format \(AnimationFile.version).")
         case let version? where version != Double(AnimationFile.version):
             error(AnimationFile.formatKey, "Must be \(AnimationFile.version).")
         default: break

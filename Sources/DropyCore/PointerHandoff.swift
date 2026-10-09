@@ -30,6 +30,20 @@ public struct PointerHandoff: Equatable, Sendable {
         self.staged = staged
     }
 
+    /// Match the renderer's visible image, including letterboxing and cropping.
+    /// `stagedWindow` is the entire captured region, never the previous crop.
+    public mutating func updateLayout(viewport: CGRect, stagedWindow: CGRect, mode: ContentMode) {
+        let image = ContentTransform(sourceRect: stagedWindow, destinationRect: viewport, mode: mode).imageRect
+        let visible = image.intersection(viewport)
+        guard !visible.isNull, visible.width > 0, visible.height > 0 else {
+            cast = .zero; staged = .zero; reset(); return
+        }
+        cast = visible
+        let topLeft = StageGeometry.map(visible.origin, from: image, to: stagedWindow)
+        staged = CGRect(origin: topLeft, size: CGSize(width: visible.width * stagedWindow.width / image.width,
+                                                     height: visible.height * stagedWindow.height / image.height))
+    }
+
     /// The next step for a pointer that moved to `location`.
     public mutating func pointer(at location: CGPoint) -> Command {
         if onStage {

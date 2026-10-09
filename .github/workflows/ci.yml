@@ -28,6 +28,11 @@ jobs:
         run: ./Scripts/build-local.sh
       - name: Local checks
         run: ./Scripts/test-local.sh
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - name: Benchmark probe checks
+        run: bun test Tests/BenchProbeTests.test.ts
       - name: Validate bundle
         run: |
           plutil -lint .build/local/Dropy.app/Contents/Info.plist

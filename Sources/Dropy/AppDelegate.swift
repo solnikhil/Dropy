@@ -594,6 +594,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier {
             overlay.pinnedAppChanged()
+            startStageIfUseful()
             // An open overlay still choosing a window shows the newly pinned app now.
             if new.pinnedBundleIdentifier != nil, overlay.state == .selecting { overlay.refreshWindows() }
         }
@@ -669,6 +670,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Plays an animation on the notch, closing the overlay first if it is open.
     @discardableResult
     func playOnNotch(_ animation: DropyAnimation, slowdown: Double) -> TimeInterval {
+        guard let slowdown = AnimationPlayback.slowdown(slowdown) else { return 0 }
         guard overlay.state != .closed else { return demo.play(animation, slowdown: slowdown) }
         overlay.close()
         let wait = OverlayMotion.wall(OverlayMotion.morph.close.duration) + 0.1
@@ -694,6 +696,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func remotePlay(_ note: Notification) {
         guard let id = note.object as? String, let code = note.userInfo?["payload"] as? String else { return }
         let slow = (note.userInfo?["slow"] as? NSNumber)?.doubleValue ?? 1
+        guard let slow = AnimationPlayback.slowdown(slow) else {
+            return AnimationRemote.answer(id, "Slowdown must be a finite number.")
+        }
         guard let animation = AnimationFile.read(shareCode: code).animation else {
             return AnimationRemote.answer(id, "Dropy could not read that animation.")
         }
