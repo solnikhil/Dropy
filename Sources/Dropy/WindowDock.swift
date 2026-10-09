@@ -81,6 +81,8 @@ final class WindowDock {
 
     /// Whether the managed window is waiting on the Stage.
     var isStaged: Bool { current?.isStaged ?? false }
+    /// A window is on the Stage, or waits there for its own desktop to come back.
+    var holdsWindows: Bool { isStaged || !returning.isEmpty }
 
     /// Runs `body` after every operation asked for before it.
     private func serially<T: Sendable>(_ body: @escaping @Sendable @MainActor () async throws -> T) async throws -> T {

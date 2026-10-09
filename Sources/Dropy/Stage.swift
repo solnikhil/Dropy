@@ -145,22 +145,26 @@ final class Stage {
     /// windows Dropy just moved off it have landed before the Stage goes away. Removing
     /// it while a move is still in flight let macOS "rescue" the window onto desktop 1.
     func waitUntilEmpty(timeout: TimeInterval = 1) {
-        guard let bounds else { return }
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
-                as? [[String: Any]] ?? []
-            let occupied = rows.contains { row in
-                guard (row[kCGWindowOwnerPID as String] as? pid_t) != getpid(),
-                      (row[kCGWindowLayer as String] as? Int) == 0,
-                      let frame = (row[kCGWindowBounds as String] as? NSDictionary)
-                          .flatMap(CGRect.init(dictionaryRepresentation:)) else { return false }
-                return frame.intersects(bounds)
-            }
-            if !occupied { return }
+            if !isOccupied { return }
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
         NSLog("Dropy stage: a window was still on the Stage when it was removed")
+    }
+
+    /// Whether another app has a window on the Stage.
+    var isOccupied: Bool {
+        guard let bounds else { return false }
+        let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        return rows.contains { row in
+            guard (row[kCGWindowOwnerPID as String] as? pid_t) != getpid(),
+                  (row[kCGWindowLayer as String] as? Int) == 0,
+                  let frame = (row[kCGWindowBounds as String] as? NSDictionary)
+                      .flatMap(CGRect.init(dictionaryRepresentation:)) else { return false }
+            return frame.intersects(bounds)
+        }
     }
 
     func stop() {

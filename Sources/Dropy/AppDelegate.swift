@@ -238,9 +238,42 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The Stage is created ahead of the first opening, so pinned apps open at once. It
     /// needs Full App interaction and Accessibility; it is never created otherwise.
     private func startStageIfUseful() {
-        guard let stage, preferences.value.interaction == .fullApp, preferences.value.keepsPinnedAppReady,
-              WindowPlacer.isTrusted else { return }
+        startStageRetirement()
+        guard let stage, keepsStage, WindowPlacer.isTrusted else { return }
         Task { await stage.start() }
+    }
+
+    /// Keep the Stage between openings: only for a pinned app kept ready.
+    private var keepsStage: Bool {
+        let value = preferences.value
+        return value.interaction == .fullApp && value.keepsPinnedAppReady && value.pinnedBundleIdentifier != nil
+    }
+
+    private var stageRetirement: Timer?
+    private var stageIdleSince: Date?
+
+    /// macOS treats the Stage as a real display, so a full-screen screenshot (⇧⌘3)
+    /// saves a black picture of it as well. Unless a pinned app is kept ready there, the
+    /// Stage is created only when an opening needs it (Live mode, or a window from another
+    /// desktop) and removed once Dropy has been closed a few seconds with nothing on it.
+    private func startStageRetirement() {
+        guard stageRetirement == nil, stage != nil else { return }
+        stageRetirement = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.retireStageIfIdle() }
+        }
+    }
+
+    private func retireStageIfIdle() {
+        guard let stage, stage.isReady, !keepsStage, !overlay.needsStage, !stage.isOccupied else {
+            stageIdleSince = nil
+            return
+        }
+        let since = stageIdleSince ?? Date()
+        stageIdleSince = since
+        guard Date().timeIntervalSince(since) >= 6 else { return }
+        stageIdleSince = nil
+        NSLog("Dropy stage: removed after being unused (it is created again when needed)")
+        stage.stop()
     }
 
     /// Development-only drivers for repeatable measurements without input automation.

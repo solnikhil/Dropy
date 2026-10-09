@@ -971,4 +971,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// The Stage ended unexpectedly.
     func stageLost() { native.stageLost() }
+
+    /// Whether the Stage is needed right now: the overlay is open, or a window is on the
+    /// Stage or waiting there to go home.
+    var needsStage: Bool { state != .closed || native.dock.holdsWindows }
 }

@@ -96,7 +96,7 @@ private struct SettingsTopic: Identifiable {
                       keywords: "full app interactive click scroll typing keyboard shortcuts preview window"),
         SettingsTopic(id: "ready", pane: .interaction, title: "Keep Pinned App Ready",
                       detail: "The pinned app waits on a hidden display and opens on any desktop.",
-                      keywords: "stage hidden display virtual desktop spaces full screen instant"),
+                      keywords: "stage hidden display virtual desktop spaces full screen instant screenshot black extra"),
         SettingsTopic(id: "crossing", pane: .interaction, title: "Keep the Pointer Beside the Notch",
                       detail: "Experimental hold on sideways movement across the notch.",
                       keywords: "cursor pointer experimental accessibility option"),
@@ -440,7 +440,7 @@ struct SettingsView: View {
                     ])
                 }
                 SettingsToggleRow("Keep Pinned App Ready",
-                                  detail: "Its window waits on a hidden display between openings, so it opens on any desktop.",
+                                  detail: "Its window waits on a hidden display between openings, so it opens at once on any desktop. macOS counts that display, so a full-screen screenshot (⇧⌘3) also saves a black picture of it. Off, the hidden display exists only while Dropy needs it.",
                                   isOn: model.binding(\.keepsPinnedAppReady))
                     .disabled(model.preferences.interaction != .fullApp)
                 if model.preferences.interaction == .fullApp, !model.accessibilityGranted {
