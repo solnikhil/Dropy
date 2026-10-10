@@ -1,9 +1,9 @@
 import CoreGraphics
 import Foundation
 
-/// Ways Dropy can try to keep a source window out of sight while previewing it.
-/// Each is an M2 experiment until the placement matrix shows it keeps capture alive
-/// without leaking UI; none is a product feature yet.
+/// Ways Dropy moves a source window. `docked` is the product's: the real window
+/// sits inside the notch overlay. The others are M2 experiments for keeping a
+/// previewed window out of sight.
 public enum PlacementMode: String, Codable, CaseIterable, Sendable {
     /// Move the window beyond every display.
     case offscreen
@@ -14,9 +14,17 @@ public enum PlacementMode: String, Codable, CaseIterable, Sendable {
     /// Move off-screen, then cover whatever strip AppKit keeps visible with a small
     /// Dropy tab. Covered windows keep capturing, so the source stays live.
     case parked
+    /// The window is in Dropy's notch overlay, or sent home from it (its app hidden,
+    /// or the window parked). It is moved and resized, so a restore puts back both.
+    case docked
+    /// A pinned app's window waiting on Dropy's Stage display between openings.
+    case staged
 
     /// Modes that move the window rather than minimizing or hiding it.
-    public var movesWindow: Bool { self == .offscreen || self == .parked }
+    public var movesWindow: Bool { self == .offscreen || self == .parked || self == .docked || self == .staged }
+
+    /// Modes that also resize the window, so a restore puts its size back too.
+    public var resizesWindow: Bool { self == .docked || self == .staged }
 }
 
 /// The source window facts needed to put it back. Frames use global display

@@ -19,7 +19,7 @@ public enum CaptureFailure: Equatable, Sendable {
     public var message: String {
         switch self {
         case .permissionDenied:
-            "Screen Recording is off for Dropy. Allow it in System Settings, then Refresh."
+            "Screen Recording is off for Dropy. Allow it in System Settings, then choose a window again."
         case .sourceWindowClosed(let app):
             "The selected \(app) window closed. Choose another window."
         case .targetQuit(let app):
@@ -29,7 +29,7 @@ public enum CaptureFailure: Equatable, Sendable {
         case .streamInterrupted(let code):
             "Capture was interrupted (code \(code)). Choose the window again to retry."
         case .windowListUnavailable(let code):
-            "Window list unavailable (code \(code)). Refresh to retry."
+            "Window list unavailable (code \(code)). Open the window menu to retry."
         }
     }
 
@@ -47,6 +47,45 @@ public enum CaptureFailure: Equatable, Sendable {
 
     /// Only a permission failure can be fixed in System Settings.
     public var opensPrivacySettings: Bool { self == .permissionDenied }
+
+    /// The failure for an error from starting or running a stream.
+    public static func stream(domain: String, code: Int) -> CaptureFailure {
+        switch CaptureErrorKind.classify(domain: domain, code: code) {
+        case .permissionDenied: .permissionDenied
+        case .stoppedFromSystemControls: .stoppedFromSystemControls
+        case .windowListUnavailable: .windowListUnavailable(code: code)
+        case .sourceMissing, .interrupted: .streamInterrupted(code: code)
+        }
+    }
+
+    /// The failure for an error reading the window list: only a revoked permission is
+    /// told apart from the list being unavailable.
+    public static func catalog(domain: String, code: Int) -> CaptureFailure {
+        CaptureErrorKind.classify(domain: domain, code: code) == .permissionDenied
+            ? .permissionDenied : .windowListUnavailable(code: code)
+    }
+}
+
+/// Visibility facts must not conflate another display with a hidden/minimized app.
+public enum SourceVisibility: Equatable, Sendable {
+    case available
+    case hidden
+    case notReportedOnScreen
+    case unknown
+
+    public static func resolve(appHidden: Bool, serverOnScreen: Bool?, captureOnScreen: Bool) -> SourceVisibility {
+        if appHidden { return .hidden }
+        if let serverOnScreen { return serverOnScreen ? .available : .notReportedOnScreen }
+        return captureOnScreen ? .available : .unknown
+    }
+    public func message(applicationName app: String) -> String {
+        switch self {
+        case .available: return ""
+        case .hidden: return "\(app) is hidden"
+        case .notReportedOnScreen: return "\(app) window is not reported on the active desktop"
+        case .unknown: return "\(app) window visibility could not be confirmed"
+        }
+    }
 }
 
 /// Overlay lifecycle. A failure keeps its reason until the person makes a new choice.
@@ -58,12 +97,31 @@ public enum CapturePhase: Equatable, Sendable {
     /// The window exists but is minimized, hidden or on another Space, so
     /// ScreenCaptureKit is not delivering new frames.
     case paused(applicationName: String)
+    case sourceVisibility(applicationName: String, visibility: SourceVisibility)
+    /// Moving the real window into the overlay; a snapshot covers it until it is in place.
+    case docking(applicationName: String)
+    /// The real window is in the overlay and its app is in front.
+    case docked
+    /// The window stays on Dropy's Stage and is streamed into the overlay, with the
+    /// pointer handed over to it and its app in front (over a full-screen app).
+    case live
+    /// The window is on another desktop or in full screen, where Dropy cannot bring
+    /// it; its snapshot is shown with a way to go there.
+    case dockedElsewhere(applicationName: String)
     case failed(CaptureFailure)
 
     /// A stream is starting or running for the current selection.
     public var isCapturing: Bool {
         switch self {
-        case .starting, .viewing, .paused: true
+        case .starting, .viewing, .paused, .sourceVisibility: true
+        default: false
+        }
+    }
+
+    /// The real window is being docked, or is docked, instead of captured.
+    public var isDocking: Bool {
+        switch self {
+        case .docking, .docked, .dockedElsewhere, .live: true
         default: false
         }
     }
@@ -81,6 +139,11 @@ public enum CapturePhase: Equatable, Sendable {
         case .starting: "starting"
         case .viewing: "viewing"
         case .paused: "paused"
+        case .sourceVisibility: "sourceVisibility"
+        case .docking: "docking"
+        case .docked: "docked"
+        case .live: "live"
+        case .dockedElsewhere: "dockedElsewhere"
         case .failed(let failure): "failed.\(failure.diagnosticName)"
         }
     }
@@ -89,9 +152,14 @@ public enum CapturePhase: Equatable, Sendable {
         switch self {
         case .closed, .selecting: nil
         case .starting(let app): "Starting preview: \(app)…"
-        case .viewing: "Live preview · interaction bridge not enabled yet"
+        case .viewing: "Live preview"
         case .paused(let app):
-            "\(app) window is minimized, hidden or on another Space · preview paused"
+            "Waiting for captured frames from \(app)"
+        case .sourceVisibility(let app, let visibility):
+            visibility.message(applicationName: app)
+        case .docking(let app): "Opening \(app)…"
+        case .docked, .live: nil
+        case .dockedElsewhere(let app): "\(app) is on another desktop or in full screen."
         case .failed(let failure): failure.message
         }
     }

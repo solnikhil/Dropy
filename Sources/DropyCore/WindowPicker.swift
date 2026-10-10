@@ -77,3 +77,34 @@ public enum WindowPicker {
         window.title.isEmpty ? window.applicationName : "\(window.applicationName) — \(window.title)"
     }
 }
+
+/// Choosing from the window list with the keyboard: arrows move the highlight,
+/// Return opens it, 1–9 open a row directly.
+public enum PickerKey: Equatable, Sendable {
+    case move(Int)
+    case choose
+    case row(Int)
+
+    /// The key as a picker action, or nil to let it through. Command, Control and
+    /// Option combinations always pass (menu shortcuts, Option-Space).
+    public init?(keyCode: UInt16, characters: String?, commandControlOrOption: Bool) {
+        guard !commandControlOrOption else { return nil }
+        switch keyCode {
+        case 125: self = .move(1)
+        case 126: self = .move(-1)
+        case 36, 76: self = .choose
+        default:
+            guard let characters, characters.count == 1, let digit = Int(characters), (1...9).contains(digit)
+            else { return nil }
+            self = .row(digit - 1)
+        }
+    }
+
+    /// The highlighted row after `move`, staying within the list; a list with
+    /// nothing highlighted starts at the first row (down) or the last (up).
+    public static func highlight(_ current: Int?, moving step: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        guard let current, (0..<count).contains(current) else { return step >= 0 ? 0 : count - 1 }
+        return min(max(current + step, 0), count - 1)
+    }
+}

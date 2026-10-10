@@ -13,7 +13,24 @@ Milestones are **evidence gates**, not calendar promises. Work may move between 
 | M4 · Product experience and performance | Direct/last/picker opening, app pinning, size and region controls, dismissal, shortcut and notchless entry, accessibility, multi-display/full-screen behavior, benchmark suite | End-to-end journeys pass on target hardware; latency and resource budgets are measured and met for supported workflows |
 | M5 · Release candidate | Compatibility matrix, signed/notarized packaging, update and rollback policy, documentation, privacy review, regression testing | Reproducible release with honest app/workflow support and no unresolved data-loss, security or source-window restoration failure |
 
-## Now: M3 compatibility and reliability gates
+## Interaction decision (2026-10-07) and status (2026-10-08)
+
+The M3 input bridge is replaced by using the real window (see [ARCHITECTURE](ARCHITECTURE.md#interaction-the-real-window-in-the-overlay-decision-2026-10-07) and the [interaction plan](docs/design/2026-10-07-interaction-engine-plan.md)). Built: docking (Native), the hidden Stage display for pinned apps, and Live mode over full-screen apps, each smoke-tested once on device with TextEdit and Safari. Open:
+
+- **Manual testing by a person:** how the Live pointer hand-off feels, dragging from a Live window to another app, menus that extend past the window (the stream is clipped to the window's region), resizing or moving a window while Live.
+- **Measurements:** extend `benchmark-phases.sh` with the Stage states (closed with a staged app, Native, Live) and make the plan's budgets release gates.
+- **Not handled yet:** Stage Manager, several displays, more than one pinned app, a crash that leaves a staged window on desktop 1 (macOS rescues it there; the journal restores its frame but not its desktop).
+- **Distribution:** `CGVirtualDisplay` is private; Dropy is Developer ID only (it cannot be sandboxed anyway).
+
+## Animations (2026-10-09)
+
+Built: the animation format and its limits, the Animation Studio (springs, keyframes, drawing the curve, content timing, undo, autosave), the gallery, share codes, playing on the notch, and the agent workflow (guide in the folder, a prompt in Settings, `Dropy animation` commands). See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). Open:
+
+- **Where the overlay opens from:** the notch today; corners and screen edges next, with the same animation format (an edge is the top-edge shape rotated; a corner needs its own shape).
+- **Manual testing by a person:** how editing feels in the Studio (keyframe dragging, the spring handle, the pen), and custom animations in daily use.
+- **Measurements:** `bun run bench -- --animation <file>` measures a build with a custom animation; no budgets for custom animations yet beyond the limits in the format.
+
+## Earlier: M3 compatibility and reliability gates
 
 Status after the 2026-09-30 session, judged against the written [M3 workflow contract](docs/COMPATIBILITY.md#m3-workflow-contract). **M3 is not complete** (see the exit evaluation there). New keyboard features stay deferred; parking stays experimental.
 
@@ -30,7 +47,7 @@ Status after the 2026-09-30 session, judged against the written [M3 workflow con
 
 Remaining gates need a person's decision (details in [FEASIBILITY](docs/FEASIBILITY.md#remaining-m3-gates-isolation-assessment-2026-09-30-0800)): no installed Electron app can be isolated from the person's own copy (shared updater, dotfiles, accounts), and the only account-free media player exposes no controls. The isolation mechanism for such an app (disposable copy with its own identifiers, own HOME, before/after fingerprint of everything shared) is built and tested; running it needs a copy and the person's approval (9.6 GiB free on 2026-09-30 13:23; the copy helper requires 5 GB left after copying).
 
-**Device checks resumed for M4 performance work and PR #31 routing review on 2026-09-30 at the person's request.** The earlier 13:22 pause is superseded for these checks. The [PR #31 follow-up review](docs/device-checks/2026-09-30-pr31-review.md) records 30 passing native router regressions. Third-party app isolation, the slowed-source label, and hand-off typing still lack device validation; M3 remains incomplete. Terminal-launched capture may re-raise the screen-capture prompt; session and HID guards remain enforced.
+**Device checks are paused by the person's decision (2026-09-30 13:22).** No HID or device scripts, no capture launched from a terminal, no Screen Recording request, no switch to a development-signed build, and no third-party download, until the person explicitly changes this. Only local code review, unit tests, research and documentation continue. M3 stays incomplete; nothing measured on the device since 07:43 is claimed. Device runs from a terminal also re-raise a screen-capture prompt each time; a signed, LaunchServices-launched test build is the fix.
 
 Barriers to M3, in order: (1) apps throttle a fully hidden window, so "out of sight" and "live" conflict for animating content; (2) no Chromium third-party app exposes clicks and scroll reliably enough through the tested routes (next: pressable workbench controls in VS Code judged by their own state, and window-targeted wheel events judged from the editor's visible range); (3) media apps expose no controls to Accessibility; (4) typing outside AppKit needs the hand-off design in FEASIBILITY, which gives up containment while typing.
 

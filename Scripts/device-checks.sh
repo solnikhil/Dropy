@@ -433,7 +433,7 @@ source_space_recovery() {
         stop_dropy; record "$bundle" "other desktop ($crash crash)" - - "NOT RUN: cannot switch desktop"; return
       fi
     fi
-    if ! "$tool" snapshot "$pid" "$window" | python3 -c 'import json,sys; d=json.load(sys.stdin); w=next((w for w in d.get("serverWindows",[]) if w["id"]==int(sys.argv[1])),{}); a=set(d.get("activeSpaces",[])); b=set(w.get("spaces",[])); sys.exit(0 if a and b and a.isdisjoint(b) else 1)' "$window"; then
+    if ! "$tool" snapshot "$pid" "$window" | bun "$repo_dir/Scripts/bench/space-check.ts" "$window"; then
       stop_dropy
       [[ "$bundle" == org.dropy.electronfixture ]] && print space:home >> "$work_dir/electron-commands.txt"
       return_test_desktop

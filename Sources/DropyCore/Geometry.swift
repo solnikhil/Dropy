@@ -2,6 +2,16 @@ import Foundation
 import CoreGraphics
 
 public enum OverlayGeometry {
+    /// Expand to device-pixel boundaries so the window does not round an intended
+    /// screen-edge anchor differently from the layer coordinates inside it.
+    public static func pixelAligned(_ rect: CGRect, scale: CGFloat) -> CGRect {
+        let density = max(1, scale)
+        let x = floor(rect.minX * density) / density
+        let y = floor(rect.minY * density) / density
+        return CGRect(x: x, y: y, width: ceil(rect.maxX * density) / density - x,
+                      height: ceil(rect.maxY * density) / density - y)
+    }
+
     /// AppKit screen coordinates are bottom-origin. The overlay stays flush with the screen top.
     public static func frame(on screen: CGRect, preferredSize: CGSize) -> CGRect {
         let width = min(max(preferredSize.width, 320), screen.width)
@@ -36,11 +46,10 @@ public struct ContentTransform: Sendable {
         self.mode = mode
     }
 
-    public func sourcePoint(for destinationPoint: CGPoint) -> CGPoint? {
+    /// Full rendered image, including portions cropped by Fill or native scale.
+    public var imageRect: CGRect {
         guard sourceRect.width > 0, sourceRect.height > 0,
-              destinationRect.width > 0, destinationRect.height > 0,
-              destinationRect.contains(destinationPoint) else { return nil }
-
+              destinationRect.width > 0, destinationRect.height > 0 else { return .zero }
         let widthRatio = destinationRect.width / sourceRect.width
         let heightRatio = destinationRect.height / sourceRect.height
         let scale: CGFloat
@@ -54,8 +63,14 @@ public struct ContentTransform: Sendable {
         let imageHeight = sourceRect.height * scale
         let imageX = destinationRect.midX - imageWidth / 2
         let imageY = destinationRect.midY - imageHeight / 2
-        let mapped = CGPoint(x: sourceRect.minX + (destinationPoint.x - imageX) / scale,
-                             y: sourceRect.minY + (destinationPoint.y - imageY) / scale)
+        return CGRect(x: imageX, y: imageY, width: imageWidth, height: imageHeight)
+    }
+
+    public func sourcePoint(for destinationPoint: CGPoint) -> CGPoint? {
+        let image = imageRect
+        guard image.width > 0, image.height > 0, destinationRect.contains(destinationPoint) else { return nil }
+        let mapped = CGPoint(x: sourceRect.minX + (destinationPoint.x - image.minX) * sourceRect.width / image.width,
+                             y: sourceRect.minY + (destinationPoint.y - image.minY) * sourceRect.height / image.height)
         return sourceRect.contains(mapped) ? mapped : nil
     }
 }

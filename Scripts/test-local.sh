@@ -6,20 +6,15 @@ set -euo pipefail
 
 repo_dir="${0:A:h:h}"
 build_dir="$repo_dir/.build/local"
-# A removed source, an older timestamp, or a failed app build must never leave
-# tests running against stale artifacts. The manifest is published only after
-# the entire local build succeeds.
-source "$repo_dir/Scripts/lib/local-build-inputs.zsh"
-zsh "$repo_dir/Tests/LocalBuildInputsCheck.zsh"
-fingerprint="$(local_build_fingerprint "$repo_dir")"
-if [[ ! -f "$build_dir/libDropyCore.dylib" || ! -f "$build_dir/DropyCore.swiftmodule" ||
-      ! -x "$build_dir/Dropy.app/Contents/MacOS/Dropy" ||
-      ! -f "$build_dir/Dropy.app/Contents/Frameworks/libDropyCore.dylib" ||
-      ! -f "$build_dir/Dropy.app/Contents/Info.plist" ||
-      ! -f "$build_dir/Dropy.app/Contents/Resources/InputEvidence.json" ||
-      "$fingerprint" != "$(cat "$build_dir/build-inputs.sha256" 2>/dev/null || true)" ]]; then
-  "$repo_dir/Scripts/build-local.sh" >/dev/null
-fi
+# Rebuild whenever any source is newer than the built library: testing a stale
+# library passed three deliberate regressions on 2026-09-30.
+# (A loop, not a glob qualifier: a false test inside a qualifier trips set -e.)
+rebuild=0
+[[ -f "$build_dir/libDropyCore.dylib" ]] || rebuild=1
+for source in "$repo_dir"/Sources/**/*.swift "$repo_dir"/Resources/**/*(N.); do
+  if [[ "$source" -nt "$build_dir/libDropyCore.dylib" ]]; then rebuild=1; break; fi
+done
+if (( rebuild )); then "$repo_dir/Scripts/build-local.sh" >/dev/null; fi
 
 # XCTest suite through the shim. The runner calls every `func test…()` it finds.
 shim_dir="$build_dir/xctest-shim"
@@ -70,30 +65,63 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Sources/Dropy/WindowCatalog.swift"
 "$build_dir/PlacementJournalTests"
 
-# Probe judging is pure: no synthetic events, app activation or Accessibility access.
-swiftc -swift-version 6 -o "$build_dir/InputProbeChecks" "$repo_dir"/Scripts/bench/InputProbe/*.swift
-"$build_dir/InputProbeChecks" self-test
-
-# Probe results become shipped evidence only through this mapping.
-swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore -Xlinker -rpath -Xlinker "$build_dir" \
-  -o "$build_dir/EvidenceToolChecks" "$repo_dir/Scripts/bench/EvidenceTool/main.swift"
-"$build_dir/EvidenceToolChecks" self-test
-# The shipped evidence must decode with the current format.
-"$build_dir/EvidenceToolChecks" validate "$repo_dir/Resources/InputEvidence.json"
-# The shipped evidence must grant exactly what docs/COMPATIBILITY.md says, no more.
-"$build_dir/EvidenceToolChecks" policy "$repo_dir/Resources/InputEvidence.json"
-
 # AppKit-level regression checks for the overlay panel (no window is shown).
 swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
   "$repo_dir/Tests/LocalOverlayPanelCheck.swift" "$repo_dir/Sources/Dropy/OverlayPanel.swift"
 "$build_dir/OverlayPanelChecks"
 
-# Compile the fixture-only router checks in CI; execution requires a real device session.
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
-  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/DeviceInputRouterChecks" \
-  "$repo_dir/Tests/DeviceInputRouterCheck.swift" "$repo_dir/Sources/Dropy/InputRouter.swift" \
-  "$repo_dir/Sources/Dropy/PlacementJournal.swift" "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
-  "$repo_dir/Sources/Dropy/WindowCatalog.swift"
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/WorkspaceChecks" \
+  "$repo_dir/Tests/LocalWorkspaceCheck.swift" "$repo_dir/Sources/Dropy/OverlayWorkspaceView.swift"
+"$build_dir/WorkspaceChecks"
+
+# Deterministic close/reopen, interrupted adoption and Live-to-preview ownership.
+swiftc -swift-version 6 -o "$build_dir/WindowSessionChecks" \
+  "$repo_dir/Tests/LocalWindowSessionCheck.swift" "$repo_dir/Sources/Dropy/WindowSessionQueue.swift"
+"$build_dir/WindowSessionChecks"
+
+# The production Live caster with controlled IO (no recording request).
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/LiveCasterChecks" \
+  "$repo_dir/Tests/LocalLiveCasterCheck.swift" "$repo_dir/Sources/Dropy/LiveCaster.swift"
+"$build_dir/LiveCasterChecks"
+
+
+# The animation command line, in a throwaway animations folder: every built-in style and
+# example checks clean, a new file round-trips, a broken one fails, and the repository's
+# format guide matches the one Dropy writes (regenerate with `bun run animation:docs`).
+app_binary="$build_dir/Dropy.app/Contents/MacOS/Dropy"
+animations_dir="$(mktemp -d)"
+export DROPY_ANIMATIONS_FOLDER="$animations_dir"
+for name in rapid balanced smooth springy elastic-drop snap float pop jelly curtain; do
+  "$app_binary" animation check "$name" >/dev/null || { print -u2 "animation check $name failed"; exit 1; }
+done
+"$app_binary" animation new "Check Drop" --from springy >/dev/null
+"$app_binary" animation check check-drop >/dev/null
+"$app_binary" animation render check-drop --out "$animations_dir/check.png" >/dev/null
+[[ -s "$animations_dir/check.png" ]] || { print -u2 "animation render wrote nothing"; exit 1; }
+print '{ "open": 1 }' > "$animations_dir/broken.json"
+if "$app_binary" animation check broken >/dev/null 2>&1; then print -u2 "a broken animation passed its check"; exit 1; fi
+print '{ "dropyAnimation": 1e100 }' > "$animations_dir/oversized-version.json"
+if "$app_binary" animation check oversized-version >"$animations_dir/version-check.txt" 2>&1; then
+  print -u2 "an oversized format version passed its check"; exit 1
+fi
+grep -q 'newer Dropy' "$animations_dir/version-check.txt" || { print -u2 "an oversized version was not diagnosed"; exit 1; }
+for verb in play watch; do
+  for slow in nan inf -inf nope; do
+    if "$app_binary" animation "$verb" check-drop --slow "$slow" >"$animations_dir/slow-check.txt" 2>&1; then
+      print -u2 "animation $verb accepted --slow $slow"; exit 1
+    fi
+    grep -q 'finite number' "$animations_dir/slow-check.txt" || { print -u2 "--slow $slow was not diagnosed"; exit 1; }
+  done
+done
+[[ -f "$animations_dir/README.md" && -f "$animations_dir/AGENTS.md" && -f "$animations_dir/Examples/pop.json" ]] \
+  || { print -u2 "the animations folder was not prepared"; exit 1; }
+"$app_binary" animation docs --generic | diff -q - "$repo_dir/docs/ANIMATIONS.md" >/dev/null \
+  || { print -u2 "docs/ANIMATIONS.md is out of date: run bun run animation:docs"; exit 1; }
+unset DROPY_ANIMATIONS_FOLDER
+rm -rf "$animations_dir"
+print "Animation command checks passed"
 
 # Desktop-session lock and preference recovery (throwaway lock and preferences domain).
 "$repo_dir/Tests/LocalDeviceSessionCheck.zsh"

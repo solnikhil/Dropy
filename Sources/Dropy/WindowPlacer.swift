@@ -84,7 +84,7 @@ enum WindowPlacer {
         guard let original = try observe() else { throw PlacementError.processGone }
         var expected = original
         switch mode {
-        case .offscreen, .parked:
+        case .offscreen, .parked, .docked, .staged:
             expected.frame = PlacementGeometry.offscreenFrame(for: original.frame, displays: displayBounds())
         case .minimize: expected.isMinimized = true
         case .hideApp: expected.isAppHidden = true
@@ -93,7 +93,7 @@ enum WindowPlacer {
                                    applied: expected, createdAt: Date(), applicationConfirmed: false)
         try journal.upsert(entry)
         switch mode {
-        case .offscreen, .parked:
+        case .offscreen, .parked, .docked, .staged:
             guard let window else { throw PlacementError.accessibilityNotTrusted }
             try setPosition(expected.frame.origin, of: window)
         case .minimize:
@@ -103,7 +103,7 @@ enum WindowPlacer {
             NSRunningApplication(processIdentifier: identity.processID)?.hide()
         }
         switch mode {
-        case .offscreen, .parked:
+        case .offscreen, .parked, .docked, .staged:
             // AppKit may clamp the position; record where the window really went so
             // a restore compares against reality rather than the request.
             if let observed = try? observe() {
@@ -138,6 +138,20 @@ enum WindowPlacer {
     @discardableResult
     static func restore(_ entry: PlacementEntry, journal: PlacementJournal) -> RestoreOutcome {
         if entry.mode != .hideApp, !isTrusted { return .deferred(.accessibilityNotTrusted) }
+        var entry = entry
+        // A docked window waiting with its app hidden can be missing from Accessibility
+        // until the app is shown. Dropy hid it, so Dropy shows it, then judges the
+        // window as if it had never been hidden: a move the person made still wins.
+        if entry.mode == .docked, entry.applied.isAppHidden,
+           let application = NSRunningApplication(processIdentifier: entry.identity.processID),
+           application.isHidden, WindowCatalog.isRunning(entry.identity) {
+            application.unhide()
+            for _ in 0..<20 {
+                if case .found = (try? find(entry.identity)) ?? .missing(.processGone) { break }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            entry.applied.isAppHidden = false
+        }
         let (read, window) = readForRestore(entry)
         let plan = RestorePlan.make(for: entry, read: read, displays: displayBounds())
         let decision: RestoreDecision
@@ -214,7 +228,7 @@ enum WindowPlacer {
         return try readState(window, identity: identity)
     }
 
-    private static func readState(_ window: AXUIElement, identity: WindowIdentity) throws -> WindowPlacementState {
+    static func readState(_ window: AXUIElement, identity: WindowIdentity) throws -> WindowPlacementState {
         let position = try pointValue(window, kAXPositionAttribute)
         let size = try sizeValue(window, kAXSizeAttribute)
         var minimized: CFTypeRef?
@@ -256,6 +270,26 @@ enum WindowPlacer {
     /// active Space, so the main and focused windows, which the app reports on any
     /// Space, are candidates too; each must still match the exact window ID.
     /// On a miss, the facts are gathered once and diagnosed, and the result is logged.
+    /// The CGWindowID behind an Accessibility window element, if the lookup exists.
+    static func windowID(of element: AXUIElement) -> UInt32? {
+        var id: CGWindowID = 0
+        guard let getWindow, getWindow(element, &id) == .success else { return nil }
+        return id
+    }
+
+    /// The app's main (or focused) window: the one a person means by "this app".
+    static func mainWindow(of processID: pid_t) -> AXUIElement? {
+        let application = AXUIElementCreateApplication(processID)
+        for attribute in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(application, attribute as CFString, &value) == .success,
+               let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+                return (value as! AXUIElement)
+            }
+        }
+        return nil
+    }
+
     static func find(_ identity: WindowIdentity) throws -> Lookup {
         guard let getWindow else { throw PlacementError.exactWindowLookupUnavailable }
         guard isTrusted else { return .missing(.accessibilityNotTrusted) }
@@ -314,7 +348,7 @@ enum WindowPlacer {
 
     // MARK: Accessibility values
 
-    private static func pointValue(_ element: AXUIElement, _ attribute: String) throws -> CGPoint {
+    static func pointValue(_ element: AXUIElement, _ attribute: String) throws -> CGPoint {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         var point = CGPoint.zero
@@ -325,7 +359,7 @@ enum WindowPlacer {
         return point
     }
 
-    private static func sizeValue(_ element: AXUIElement, _ attribute: String) throws -> CGSize {
+    static func sizeValue(_ element: AXUIElement, _ attribute: String) throws -> CGSize {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         var size = CGSize.zero
@@ -336,14 +370,14 @@ enum WindowPlacer {
         return size
     }
 
-    private static func setPosition(_ point: CGPoint, of window: AXUIElement) throws {
+    static func setPosition(_ point: CGPoint, of window: AXUIElement) throws {
         var point = point
         guard let value = AXValueCreate(.cgPoint, &point) else { return }
         let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
         guard result == .success else { throw PlacementError.attribute(kAXPositionAttribute, result) }
     }
 
-    private static func setFrame(_ frame: CGRect, of window: AXUIElement, resize: Bool) throws {
+    static func setFrame(_ frame: CGRect, of window: AXUIElement, resize: Bool) throws {
         try setPosition(frame.origin, of: window)
         guard resize else { return }
         var size = frame.size
@@ -352,7 +386,7 @@ enum WindowPlacer {
         guard result == .success else { throw PlacementError.attribute(kAXSizeAttribute, result) }
     }
 
-    private static func setMinimized(_ minimized: Bool, window: AXUIElement) throws {
+    static func setMinimized(_ minimized: Bool, window: AXUIElement) throws {
         let result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString,
                                                   minimized as CFBoolean)
         guard result == .success else { throw PlacementError.attribute(kAXMinimizedAttribute, result) }
@@ -378,6 +412,47 @@ enum Spaces {
               let spaces = copy(connection, 0x7, [NSNumber(value: windowID)] as CFArray)?
                 .takeRetainedValue() as? [NSNumber] else { return nil }
         return spaces.map(\.uint64Value)
+    }
+
+    /// Whether the display's current Space is another app's full screen, which an
+    /// ordinary window cannot join. False when unknown.
+    static func currentIsFullScreen(on display: CGDirectDisplayID) -> Bool {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopyManagedDisplaySpaces", as: CopyDisplaySpaces.self),
+              let displays = copy(connection)?.takeRetainedValue() as? [[String: Any]] else { return false }
+        let uuid = CGDisplayCreateUUIDFromDisplayID(display)
+            .map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String }
+        let entry = displays.first { $0["Display Identifier"] as? String == uuid }
+            ?? (CGDisplayIsMain(display) != 0 ? displays.first { $0["Display Identifier"] as? String == "Main" } : nil)
+        // Space type 4 is a full-screen app (0 is an ordinary desktop).
+        return (entry?["Current Space"] as? [String: Any])?["type"] as? Int == 4
+    }
+
+    /// The display's current Space, or nil when unknown.
+    static func current(on display: CGDirectDisplayID) -> UInt64? {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopyManagedDisplaySpaces", as: CopyDisplaySpaces.self),
+              let displays = copy(connection)?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let uuid = CGDisplayCreateUUIDFromDisplayID(display)
+            .map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String }
+        let entry = displays.first { $0["Display Identifier"] as? String == uuid }
+            ?? (CGDisplayIsMain(display) != 0 ? displays.first { $0["Display Identifier"] as? String == "Main" } : nil)
+        return (entry?["Current Space"] as? [String: Any])?["id64"] as? UInt64
+    }
+
+    /// Whether every display shares one set of desktops ("Displays have separate Spaces"
+    /// off). The Stage then has no desktop of its own and cannot help.
+    static var displaysShareSpaces: Bool {
+        UserDefaults(suiteName: "com.apple.spaces")?.bool(forKey: "spans-displays") ?? false
+    }
+
+    /// Every Space of every display (desktops and full-screen spaces).
+    static func all() -> [UInt64]? {
+        guard let connection = symbol("CGSMainConnectionID", as: MainConnection.self)?(),
+              let copy = symbol("CGSCopyManagedDisplaySpaces", as: CopyDisplaySpaces.self),
+              let displays = copy(connection)?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let spaces = displays.flatMap { ($0["Spaces"] as? [[String: Any]] ?? []).compactMap { $0["id64"] as? UInt64 } }
+        return spaces.isEmpty ? nil : spaces
     }
 
     /// The current Space of each display.

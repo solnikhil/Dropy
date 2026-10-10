@@ -1,0 +1,14 @@
+{
+  "name": "dropy-tools",
+  "private": true,
+  "type": "module",
+  "description": "Dropy's development tooling (benchmarks and checks), run with Bun.",
+  "scripts": {
+    "bench": "bun Scripts/bench/bench.ts run",
+    "bench:check": "bun Scripts/bench/bench.ts check",
+    "bench:compare": "bun Scripts/bench/bench.ts compare",
+    "bench:list": "bun Scripts/bench/bench.ts list",
+    "latency-summary": "bun Scripts/bench/latency-summary.ts",
+    "animation:docs": "./.build/local/Dropy.app/Contents/MacOS/Dropy animation docs --generic > docs/ANIMATIONS.md"
+  }
+}

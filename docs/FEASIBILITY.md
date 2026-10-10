@@ -172,7 +172,7 @@ An isolated target needs a copy that shares nothing with an installed app: a sep
 
 **Media app.** QuickTime Player is the only media player installed without an account (Music, TV and Spotify hold personal libraries). Its window exposes no playback controls to Accessibility; they appear only on hover, which Dropy refuses. It has no scroll area. Its playback state can be read only through Apple Events, which needs an Automation permission. So click and scroll cannot be verified, and QuickTime stays view-only. A player that keeps its controls in the Accessibility tree (for example an open-source player downloaded at a pinned version) would need the same approval as above.
 
-**Device checks resumed for M4 performance and PR #31 routing review (2026-09-30, the person's request).** This supersedes the earlier 13:22 pause for those checks. The [follow-up review](device-checks/2026-09-30-pr31-review.md) records 30 passing native router regressions. The third-party isolation path remains tested locally only; the slowed-source monitor and hand-off decision models are not wired into the app. These remaining M3 gates are still open.
+**Device checks are paused (2026-09-30 13:22, the person's decision).** The current build is kept. Until the person says otherwise there will be no HID or device scripts, no terminal-launched capture, no Screen Recording request, no development-signed build, and no downloads. The isolation path for a third-party app is implemented and tested locally only; it has never run on the device.
 
 **Device runs were blocked at 08:00.** The "zsh … bypass the private window picker" prompt reappeared during the 07:41 run (cause above), and device sessions refuse to start while it is on screen.
 

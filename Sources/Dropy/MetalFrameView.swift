@@ -33,20 +33,6 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         }
     }
 
-    // MARK: Interaction (M3 prototype)
-    //
-    // Set only while interactive preview is on; otherwise the view ignores input as before.
-    // Points are in view coordinates with a top-left origin, like the source window.
-
-    /// A click (mouse down and up without dragging) at a point.
-    var onClick: ((CGPoint) -> Void)?
-    /// A scroll at a point, with AppKit's deltas (positive y scrolls toward the top).
-    var onScroll: ((CGPoint, CGSize) -> Void)?
-    /// Input the preview cannot send yet, such as a drag or a right-click.
-    var onUnsupported: ((InputKind) -> Void)?
-    private var pressPoint: CGPoint?
-    private var dragged = false
-
     /// Pixel size of the frame on screen, or nil before the first frame.
     var presentedPixelSize: CGSize? {
         currentPixelBuffer.map { CGSize(width: CVPixelBufferGetWidth($0), height: CVPixelBufferGetHeight($0)) }
@@ -56,60 +42,9 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     private var drawnPixelSize: CGSize?
     private var lastPresentedSequence = -1
 
-    /// The frame on screen and the geometry it was captured with, for preview input.
+    /// The frame on screen and the geometry it was captured with.
     var presentedFrame: PresentedFrame? {
         drawnPixelSize.map { PresentedFrame(pixelSize: $0, geometry: presentedGeometry) }
-    }
-
-    private func topLeftPoint(_ event: NSEvent) -> CGPoint {
-        let point = convert(event.locationInWindow, from: nil)
-        return CGPoint(x: point.x, y: bounds.height - point.y)
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { onClick != nil }
-
-    override func mouseDown(with event: NSEvent) {
-        guard onClick != nil else { return super.mouseDown(with: event) }
-        if case .refuse(let kind) = PreviewPointerInput.press(clickCount: event.clickCount,
-                                                              modifiers: PreviewModifiers(event.modifierFlags)) {
-            pressPoint = nil
-            onUnsupported?(kind)
-            return
-        }
-        pressPoint = topLeftPoint(event)
-        dragged = false
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let pressPoint, onClick != nil else { return super.mouseDragged(with: event) }
-        let point = topLeftPoint(event)
-        if !dragged, PreviewPointerInput.isDrag(from: pressPoint, to: point) {
-            dragged = true
-            onUnsupported?(.drag)
-        }
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard let press = pressPoint, let onClick else { return super.mouseUp(with: event) }
-        pressPoint = nil
-        if !dragged { onClick(press) }
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        guard onClick != nil else { return super.rightMouseDown(with: event) }
-        onUnsupported?(.contextMenu)
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        guard let onScroll else { return super.scrollWheel(with: event) }
-        switch PreviewPointerInput.scroll(delta: CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY),
-                                          precise: event.hasPreciseScrollingDeltas,
-                                          momentum: !event.momentumPhase.isEmpty,
-                                          modifiers: PreviewModifiers(event.modifierFlags)) {
-        case .send(let delta): onScroll(topLeftPoint(event), delta)
-        case .refuse(let kind): onUnsupported?(kind)
-        case .ignore: break
-        }
     }
 
     static func make(frame: CGRect) throws -> MetalFrameView {
@@ -252,6 +187,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     }
 
     /// A changed viewport must reach the screen before input uses its mapping.
+    func prepareForLayoutChange() { invalidatePresentedMapping() }
+
     private func invalidatePresentedMapping() {
         visibilityGeneration = UUID()
         presentedGeometry = nil
@@ -371,14 +308,4 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         return image.sample(sampleFilter, in.uv);
     }
     """
-}
-
-extension PreviewModifiers {
-    init(_ flags: NSEvent.ModifierFlags) {
-        self = []
-        if flags.contains(.command) { insert(.command) }
-        if flags.contains(.control) { insert(.control) }
-        if flags.contains(.option) { insert(.option) }
-        if flags.contains(.shift) { insert(.shift) }
-    }
 }

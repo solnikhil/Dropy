@@ -9,6 +9,17 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(frame, CGRect(x: 100, y: 350, width: 1000, height: 400))
     }
 
+    func testFractionalCanvasKeepsScreenTopAndContainsBody() {
+        let canvas = CGRect(x: 611.125, y: 732.375, width: 487.75, height: 379.625)
+        for scale: CGFloat in [1, 2] {
+            let aligned = OverlayGeometry.pixelAligned(canvas, scale: scale)
+            XCTAssertEqual(aligned.maxY, 1112)
+            XCTAssertTrue(aligned.minX <= canvas.minX && aligned.maxX >= canvas.maxX)
+            XCTAssertTrue(aligned.minY <= canvas.minY)
+            XCTAssertEqual((aligned.minX * scale).rounded(), aligned.minX * scale)
+        }
+    }
+
     func testFitRejectsLetterboxClicks() {
         let transform = ContentTransform(sourceRect: CGRect(x: 0, y: 0, width: 400, height: 200),
                                          destinationRect: CGRect(x: 0, y: 0, width: 400, height: 400),

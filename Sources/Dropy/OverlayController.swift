@@ -1,42 +1,70 @@
 import AppKit
-import Carbon.HIToolbox
 import DropyCore
 import ScreenCaptureKit
 
+/// The overlay that grows from the notch. It owns the panel, its outline and layout,
+/// the window list and dismissal, and hands the chosen window to a session: the live
+/// preview (`PreviewSession`) or the docked real window (`NativeSession`), as
+/// `SessionModePolicy` decides.
 @MainActor
-final class OverlayController: NSObject {
-    private let preferences: PreferenceStore
-    private let inputRouter: InputRouter
-    private let capture = CaptureController()
-    /// Size in points of the window being previewed, for mapping preview input.
-    private var selectedWindowSize: CGSize?
+final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
+    let preferences: PreferenceStore
+    private let stage: Stage?
+    private var preview: PreviewSession!
+    private var native: NativeSession!
+    /// Over a full-screen app: the window stays on the Stage and is streamed.
+    private var live: LiveSession?
+    /// Where Live mode shows the app, global top-left (development drivers).
+    var liveCast: CGRect? { live?.cast }
+    private var workspaceObservers: [NSObjectProtocol] = []
+    /// Size in points of the window being shown.
+    var selectedWindowSize: CGSize?
+    /// A short note over the preview, e.g. why it is view only.
     private var interactionStatus: NSTextField?
-    private var interactionMessage: DispatchWorkItem?
-    private var panel: OverlayPanel?
+    private(set) var panel: OverlayPanel?
     private var list: NSStackView?
     private var status: NSTextField?
     private var privacyButton: NSButton?
-    private var renderer: MetalFrameView?
+    private(set) var workspace: OverlayWorkspaceView?
+    private(set) var overlayScreen: NSScreen?
+    private var expandedPreview = false
+    /// Changes with every layout change; a resize finishing later leaves a newer one alone.
+    private var layoutGeneration = UUID()
+    /// The black outline that morphs out of the notch, and the content it reveals.
+    private(set) var backdrop: MorphBackdropView?
+    private var content: NSView?
+    /// The camera housing the overlay grows from; nil on a screen without one.
+    private(set) var notchSize: CGSize?
+    /// Called when opening so notch affordances release their input ownership.
+    var onOpen: (() -> Void)?
+    /// Called whenever the overlay closes, so the notch trigger can stay quiet.
+    var onClose: (() -> Void)?
+    /// When the opening morph finishes; pointer-leave does not close before then.
+    private(set) var settlesAt = Date.distantPast
+    private(set) var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
-    private var selectedIdentity: WindowIdentity?
-    /// Key composition state (a pending dead key); reset whenever the target window is.
-    private var keyInput = PreviewKeyInput()
-    private var selectedApplicationName = ""
-    private var restartedAfterInterruption = false
-    private var identityTask: Task<Void, Never>?
-    private struct PendingStart {
-        let identity: WindowIdentity
-        let request: UUID
-        let renderer: MetalFrameView
-    }
-    private var pendingStart: PendingStart?
-    private var startInFlight = false
+    var selectedIdentity: WindowIdentity?
+    /// The window-list row Return opens; the first row until the arrows move it.
+    private var highlightedIdentity: WindowIdentity?
+    private(set) var selectedApplicationName = ""
     private var overlaySession = UUID()
     private var opensInProcess = 0
+    /// The opening was laid out ahead for this window (nil: any window of the target
+    /// app); the window list then selects it without showing the picker first.
+    private var awaitingAutoSelection = false
+    private var predictedWindowID: UInt32?
+    /// Timing for the benchmark (`bun run bench`): when this opening was asked for, and
+    /// how many times the layout changed before the window was ready.
+    private var openedAt: CFTimeInterval = 0
+    private var openReadyLogged = true
+    /// The notch display's desktop when this opening started; only a change of it
+    /// closes a docked window (adding the Stage display also posts a desktop change).
+    private var desktopAtOpen: UInt64?
+    private var layoutChangesBeforeReady = 0
     private var requestedScreenCaptureAccess = false
     /// Changes on open, close, every selection and every failure. Async work
     /// continues only while its captured generation is still current.
-    private var generation = UUID()
+    var generation = UUID()
     private(set) var state: CapturePhase = .closed
     private var sessionMonitors: [Any] = []
     private var trackingArea: NSTrackingArea?
@@ -46,18 +74,52 @@ final class OverlayController: NSObject {
 
     /// The exact window being previewed, for development drivers.
     var currentSelection: WindowIdentity? { selectedIdentity }
-    func captureCounts() -> CaptureCounts? { capture.currentCounts() }
+    func captureCounts() -> CaptureCounts? { preview.captureCounts() }
 
-    init(preferences: PreferenceStore, inputRouter: InputRouter) {
+    init(preferences: PreferenceStore, journal: PlacementJournal, stage: Stage?) {
         self.preferences = preferences
-        self.inputRouter = inputRouter
+        self.stage = stage
         super.init()
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(applicationTerminated(_:)),
-            name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        preview = PreviewSession(host: self)
+        native = NativeSession(host: self, journal: journal, stage: stage)
+        if let stage { live = LiveSession(host: self, native: native, stage: stage) }
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(applicationTerminated(_:)),
+                           name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let pid = application?.processIdentifier ?? 0
+            let bundleID = application?.bundleIdentifier
+            MainActor.assumeIsolated { self?.native.applicationActivated(pid: pid, bundleIdentifier: bundleID) }
+        })
+        // The overlay shows on every desktop, but a docked window stays on the one it
+        // was docked on: switching desktops would leave an empty frame. Close instead.
+        // Only while docking: opening Dropy itself can switch desktops (its Settings
+        // window may be on another one), and the window list or preview is fine there.
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.native.activeSpaceChanged()
+                guard self.state.isDocking, let screen = self.overlayScreen else { return }
+                // Other displays changing desktops (or the Stage appearing) leave the
+                // docked window where it is; only a switch on this display strands it.
+                let now = Spaces.current(on: Self.displayID(of: screen))
+                guard now == nil || now != self.desktopAtOpen else { return }
+                NSLog("Dropy dismiss: switched desktops")
+                self.close(returnsFocus: false)
+            }
+        })
     }
 
     deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
+
+    /// Called when a docked window's restore could not finish yet.
+    var onDeferredRestore: ((WindowIdentity) -> Void)? {
+        get { native.onDeferredRestore }
+        set { native.onDeferredRestore = newValue }
+    }
 
     func toggle() {
         state == .closed ? open() : close()
@@ -75,14 +137,32 @@ final class OverlayController: NSObject {
                 ?? NSScreen.main else { return }
         generation = UUID()
         overlaySession = UUID()
-        let full = OverlayGeometry.frame(on: screen.frame,
-                                         preferredSize: preferences.value.sizePreset.dimensions)
-        let compact = CGRect(x: screen.frame.midX - 104, y: screen.frame.maxY - 38,
-                             width: 208, height: 38)
-        let panel = OverlayPanel.make(contentRect: compact)
+        overlayScreen = screen
+        expandedPreview = false
+        notchSize = Self.notchSize(on: screen)
+        openedAt = CACurrentMediaTime()
+        openReadyLogged = false
+        desktopAtOpen = Spaces.current(on: Self.displayID(of: screen))
+        layoutChangesBeforeReady = 0
+        // Open straight to the size the chosen window will need when it is known, so
+        // the outline grows once instead of opening at the preset's size and morphing
+        // again when the window list arrives.
+        let prediction = predictOpening(on: screen)
+        let full = prediction?.body ?? OverlayGeometry.frame(on: screen.frame,
+                                                             preferredSize: preferences.value.sizePreset.dimensions)
+        // The window is final from the start, with a transparent margin for the ears
+        // and the opening overshoot; only the outline inside it moves. Resizing the
+        // window itself each frame stuttered.
+        let margin = NotchMorph.overshootMargin(for: full.size, reach: OverlayMotion.reach)
+        let canvas = OverlayGeometry.pixelAligned(CGRect(x: full.minX - margin, y: full.minY - margin,
+                            width: full.width + 2 * margin, height: full.height + margin), scale: screen.backingScaleFactor)
+        let panel = OverlayPanel.make(contentRect: canvas)
         buildContent(in: panel, size: full.size)
+        if let prediction, let root = panel.contentView, let workspace {
+            place(panel: panel, root: root, workspace: workspace, frame: canvas, body: full, preview: prediction.preview)
+        }
         opensInProcess += 1
-        let openedAt = CACurrentMediaTime()
+        let openedAt = self.openedAt
         let openNumber = opensInProcess
         // Reveal: open request to the first captured frame on screen. "Warm" means
         // this process has opened the overlay before.
@@ -95,47 +175,189 @@ final class OverlayController: NSObject {
         panel.onKey = { [weak self] event in self?.handleKey(event) ?? false }
         let frontmost = NSWorkspace.shared.frontmostApplication
         previousApplication = frontmost?.processIdentifier == getpid() ? nil : frontmost
-        installSessionWatchers(on: panel, finalFrame: full)
+        installSessionWatchers(on: panel, finalFrame: canvas)
+        morphOpen(panel)
         panel.orderFrontRegardless()
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        // Key without activating Dropy: the panel is non-activating, so the window list
+        // still gets the keyboard, but Dropy never becomes the active app and its menu
+        // bar never flashes over the app the person was in (or the one being docked).
         panel.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().setFrame(full, display: true)
+        if let prediction {
+            awaitingAutoSelection = true
+            predictedWindowID = prediction.windowID
+            setState(prediction.state)
+            if case .docking = prediction.state { native.showCachedSnapshot() }
+        } else {
+            awaitingAutoSelection = false
+            setState(.selecting)
         }
-        setState(.selecting)
+        onOpen?()
         refreshWindows()
     }
 
-    func close() {
+    private struct OpeningPrediction {
+        let body: CGRect
+        let preview: CGRect
+        let windowID: UInt32?
+        let state: CapturePhase
+    }
+
+    /// The final layout of an opening that goes straight to a known app's window.
+    private func predictOpening(on screen: NSScreen) -> OpeningPrediction? {
+        guard ProcessInfo.processInfo.environment["DROPY_DEBUG_WINDOW_ID"] == nil,
+              let bundleID = preferences.value.openTargetBundleIdentifier,
+              let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .first(where: { !$0.isTerminated }) else { return nil }
+        let name = application.localizedName ?? ""
+        switch SessionModePolicy.mode(for: sessionConditions) {
+        case .native, .live:
+            guard let predicted = native.predictedLayout(for: bundleID, on: screen) else { return nil }
+            return OpeningPrediction(body: predicted.layout.body, preview: predicted.layout.windowInBody,
+                                     windowID: predicted.windowID, state: .docking(applicationName: name))
+        case .preview:
+            // The app's frontmost window, from the window server (no permission needed).
+            let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] ?? []
+            guard let row = rows.first(where: { ($0[kCGWindowOwnerPID as String] as? pid_t) == application.processIdentifier
+                    && ($0[kCGWindowLayer as String] as? Int) == 0 }),
+                  let bounds = (row[kCGWindowBounds as String] as? NSDictionary).flatMap(CGRect.init(dictionaryRepresentation:)),
+                  bounds.width > 60 else { return nil }
+            let layout = previewLayout(for: bounds.size, on: screen)
+            let body = CGRect(x: screen.frame.midX - layout.size.width / 2, y: screen.frame.maxY - layout.size.height,
+                              width: layout.size.width, height: layout.size.height)
+            return OpeningPrediction(body: body, preview: layout.preview, windowID: row[kCGWindowNumber as String] as? UInt32,
+                                     state: .starting(applicationName: name))
+        }
+    }
+
+    /// Closes the overlay. A docked window goes back where the person had it, unless
+    /// `putsBack` is false because they already took it, hid it or closed it. Focus
+    /// goes back to the previous app only while the person is still in the docked app
+    /// or in Dropy.
+    func close(returnsFocus: Bool = true, putsBack: Bool = true) {
         guard state != .closed else { return }
+        let wasDocked = state == .docked
+        let wasDocking = state.isDocking
         generation = UUID()
         overlaySession = UUID()
         setState(.closed)
-        if let selectedIdentity { inputRouter.forget(selectedIdentity) }
-        keyInput = PreviewKeyInput()
         selectedIdentity = nil
+        highlightedIdentity = nil
         selectedWindowSize = nil
-        identityTask?.cancel()
-        identityTask = nil
+        preview.cancelMonitoring()
         removeSessionWatchers()
-        panel?.orderOut(nil)
+        native.end()
+        live?.end()
+        let closingPanel = panel, closingBackdrop = backdrop, closingContent = content, closingWorkspace = workspace
+        onClose?()
         panel = nil
+        backdrop = nil
+        content = nil
         list = nil
         status = nil
         interactionStatus = nil
-        interactionMessage?.cancel()
-        interactionMessage = nil
         privacyButton = nil
-        renderer?.clear()
+        workspace = nil
+        overlayScreen = nil
+        // The last frame stays on screen while the content fades and the outline
+        // collapses; clearing it at once blanked the preview mid-close.
+        let closingRenderer = renderer
         renderer = nil
-        Task { await capture.stop(reason: "closed") }
-        // Hand focus back to the app that was in front before the overlay opened.
-        if NSApplication.shared.isActive, let previousApplication, !previousApplication.isTerminated {
-            previousApplication.activate()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(OverlayMotion.wall(OverlayMotion.morph.close.duration)))
+            closingRenderer?.clear()
         }
+        preview.stop(reason: "closed")
+        let previous = previousApplication
         previousApplication = nil
+        guard let closingPanel else { return }
+        if wasDocking, native.close(panel: closingPanel, backdrop: closingBackdrop, content: closingContent,
+                                    workspace: closingWorkspace, wasDocked: wasDocked, putsBack: putsBack,
+                                    returnsFocus: returnsFocus, previous: previous) {
+            return
+        }
+        morphClosed(closingPanel, backdrop: closingBackdrop, content: closingContent)
+        // Hand focus back to the app that was in front before the overlay opened.
+        if NSApplication.shared.isActive, let previous, !previous.isTerminated { previous.activate() }
+    }
+
+    /// Puts a docked window back where the person had it, for quitting.
+    func shutdown() {
+        native.releaseNow()
+        close(returnsFocus: false, putsBack: false)
+    }
+
+    // MARK: Morph
+
+    static func displayID(of screen: NSScreen) -> CGDirectDisplayID {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+    }
+
+    /// The camera housing's size, from the menu-bar areas either side of it.
+    static func notchSize(on screen: NSScreen) -> CGSize? {
+        guard let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
+              right.minX > left.maxX, screen.safeAreaInsets.top > 0 else { return nil }
+        return CGSize(width: right.minX - left.maxX, height: screen.safeAreaInsets.top)
+    }
+
+    /// Where the outline starts and ends: the notch, or on a screen without one a
+    /// menu-bar-high pill that fades as it grows.
+    private func closedShape(in canvas: CGSize) -> NotchShape {
+        NotchShape.notch(size: notchSize ?? CGSize(width: 180, height: NSStatusBar.system.thickness), in: canvas)
+    }
+
+    /// Grows the outline out of the notch with a spring, then brings the content in.
+    private func morphOpen(_ panel: OverlayPanel) {
+        guard let backdrop, let content else { return }
+        let canvas = backdrop.bounds.size
+        let open = NotchShape.open(body: content.frame)
+        if OverlayMotion.reduced {
+            backdrop.set(open)
+            settlesAt = Date()
+        } else {
+            let duration = backdrop.morph(from: closedShape(in: canvas), to: open, motion: OverlayMotion.morph.open,
+                                          clipping: content)
+            settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
+        }
+        OverlayMotion.revealContent(content)
+        // Without a notch to grow from, the whole overlay also fades in.
+        if notchSize == nil || OverlayMotion.reduced {
+            panel.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = OverlayMotion.wall(OverlayMotion.reduced ? 0.2 : 0.25)
+                panel.animator().alphaValue = 1
+            }
+        }
+    }
+
+    /// Blurs the content away, collapses the outline into the notch (height first,
+    /// then width) and melts it in over the last frames. The panel
+    /// stops taking clicks at once and leaves the screen when the outline settles.
+    /// A new opening during this builds its own panel.
+    func morphClosed(_ panel: OverlayPanel, backdrop: MorphBackdropView?, content: NSView?) {
+        panel.ignoresMouseEvents = true
+        guard let backdrop, let content, !OverlayMotion.reduced else {
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.15
+                panel.animator().alphaValue = 0 }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(0.15))
+                panel.orderOut(nil)
+            }
+            return
+        }
+        let canvas = backdrop.bounds.size
+        OverlayMotion.hideContent(content)
+        // Start from where the outline is on screen, even mid-opening or mid-resize.
+        let duration = backdrop.morph(from: backdrop.visibleShape ?? .open(body: content.frame),
+                                      to: closedShape(in: canvas), motion: OverlayMotion.morph.close, clipping: content)
+        // The last stretch fades, so the outline melts into the notch; without a notch
+        // there is nothing to merge with, so it fades throughout.
+        let fadeStart = notchSize == nil ? 0 : duration * 0.55
+        OverlayMotion.fadeOut(panel, after: fadeStart, over: duration - fadeStart)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
+            panel.orderOut(nil)
+        }
     }
 
     // MARK: Dismissal while open
@@ -174,7 +396,7 @@ final class OverlayController: NSObject {
         }
     }
 
-    private func removeSessionWatchers() {
+    func removeSessionWatchers() {
         sessionMonitors.forEach(NSEvent.removeMonitor)
         sessionMonitors = []
         if let trackingArea { panel?.contentView?.removeTrackingArea(trackingArea) }
@@ -202,29 +424,39 @@ final class OverlayController: NSObject {
             self.dismiss(.pointerLeft)
         }
         pendingPointerLeave = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + DismissBehavior.pointerLeaveGrace, execute: work)
+        // Never mid-opening: an overlay that closes while it is still growing looks
+        // broken. The check then runs on where the pointer is once it has settled.
+        let wait = max(DismissBehavior.pointerLeaveGrace, settlesAt.timeIntervalSinceNow)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
     }
 
     /// Person-initiated refresh: reload the list and leave any failure state.
     func refreshWindows() {
         guard state != .closed else { return }
         let request = generation
-        let shouldAutoSelect = state == .selecting
-        if !state.isCapturing { status?.stringValue = "Finding open windows…" }
+        let shouldAutoSelect = state == .selecting || awaitingAutoSelection
+        if !hasSelection { status?.stringValue = "Finding open windows…" }
         Task {
             do {
                 let windows = try await WindowCatalog.availableWindows()
                 guard request == generation, state != .closed else { return }
                 available = windows
                 rebuildWindowList()
-                guard !state.isCapturing else { return }
-                setState(.selecting)
-                let preferredBundleID: String?
-                switch preferences.value.openBehavior {
-                case .direct: preferredBundleID = preferences.value.selectedBundleIdentifier
-                case .lastUsed: preferredBundleID = preferences.value.lastUsedBundleIdentifier
-                case .picker: preferredBundleID = nil
+                if awaitingAutoSelection {
+                    awaitingAutoSelection = false
+                    let target = preferences.value.openTargetBundleIdentifier
+                    let exact = predictedWindowID.flatMap { id in windows.firstIndex { $0.window.windowID == id } }
+                    if let index = exact ?? windows.firstIndex(where: { $0.bundleIdentifier == target }) {
+                        selectWindow(at: index)
+                        return
+                    }
+                    // The window went away since the opening was laid out: choose as usual.
+                    resetToPickerLayout()
+                } else {
+                    guard !hasSelection else { return }
                 }
+                setState(.selecting)
+                let preferredBundleID = preferences.value.openTargetBundleIdentifier
                 if shouldAutoSelect,
                    let requested = ProcessInfo.processInfo.environment["DROPY_DEBUG_WINDOW_ID"],
                    let windowID = UInt32(requested) {
@@ -233,14 +465,20 @@ final class OverlayController: NSObject {
                     } else {
                         NSLog("Dropy device check: requested exact window unavailable")
                     }
+                } else if shouldAutoSelect, let pinned = preferences.value.pinnedBundleIdentifier {
+                    showPinnedApp(pinned, request: request)
                 } else if shouldAutoSelect, let bundleID = preferredBundleID,
                    let index = windows.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
                     selectWindow(at: index)
                 }
                 if shouldAutoSelect { startDebugAlternationIfRequested() }
             } catch {
-                guard request == generation, state != .closed, !state.isCapturing else { return }
-                let failure = catalogFailure(for: error)
+                guard request == generation, state != .closed, !hasSelection || awaitingAutoSelection else { return }
+                if awaitingAutoSelection {
+                    awaitingAutoSelection = false
+                    resetToPickerLayout()
+                }
+                let failure = PreviewSession.catalogFailure(for: error)
                 setState(.failed(failure))
                 // Ask once per launch so macOS lists Dropy under Screen Recording and
                 // shows its own prompt; without a request the app never appears there.
@@ -252,9 +490,60 @@ final class OverlayController: NSObject {
         }
     }
 
+    /// Back to the window list's own size after a predicted opening could not be used.
+    private func resetToPickerLayout() {
+        guard let screen = overlayScreen else { return }
+        let body = OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions)
+        applyLayout(body: body, preview: WorkspaceLayout.preview(in: body.size, notch: notchSize ?? CGSize(width: 180, height: 32)))
+    }
+
+    /// Shows the pinned app's window, launching the app or asking it for a window
+    /// first. Stops as soon as anything else happens: a selection, a close, a refresh.
+    private func showPinnedApp(_ bundleID: String, request: UUID) {
+        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        let name = url.map { FileManager.default.displayName(atPath: $0.path) }
+            .map { $0.hasSuffix(".app") ? String($0.dropLast(4)) : $0 } ?? bundleID
+        Task {
+            var asked = false
+            let started = Date()
+            while request == generation, state == .selecting {
+                let index = available.firstIndex { $0.bundleIdentifier == bundleID }
+                switch PinnedAppPlan.next(installed: url != nil, hasWindow: index != nil, asked: asked,
+                                          waited: Date().timeIntervalSince(started)) {
+                case .select:
+                    if let index { selectWindow(at: index) }
+                    return
+                case .open:
+                    guard let url else { return }
+                    asked = true
+                    let running = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+                    status?.stringValue = running ? "Asking \(name) for a window…" : "Opening \(name)…"
+                    NSLog("Dropy pinned app: %@ running=%@", running ? "reopen" : "launch", running ? "yes" : "no")
+                    // Not activated: the overlay keeps focus. For a running app this is
+                    // the Dock-icon request, which opens a window if it has none.
+                    let configuration = NSWorkspace.OpenConfiguration()
+                    configuration.activates = false
+                    _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+                case .wait:
+                    break
+                case .giveUp(let problem):
+                    NSLog("Dropy pinned app: gave up %@", String(describing: problem))
+                    status?.stringValue = problem.message(appName: name)
+                    return
+                }
+                try? await Task.sleep(for: .seconds(PinnedAppPlan.pollInterval))
+                guard request == generation, state == .selecting,
+                      let windows = try? await WindowCatalog.availableWindows(),
+                      request == generation, state == .selecting else { return }
+                available = windows
+                rebuildWindowList()
+            }
+        }
+    }
+
     /// Repopulate the list after a failure without replacing the failure message,
     /// so the person can make an explicit new choice.
-    private func reloadListKeepingState() {
+    func reloadListKeepingState() {
         let request = generation
         Task {
             guard let windows = try? await WindowCatalog.availableWindows(),
@@ -264,135 +553,248 @@ final class OverlayController: NSObject {
         }
     }
 
-    private func setState(_ next: CapturePhase) {
+    func setState(_ next: CapturePhase) {
         if next != state { NSLog("Dropy state: %@", next.diagnosticName) }
+        let showing: Bool = switch next {
+        case .docked, .live, .viewing, .sourceVisibility, .paused: true
+        default: false
+        }
+        if !openReadyLogged, showing {
+            openReadyLogged = true
+            // One line per opening, read by the benchmark: request to usable window, and
+            // how often the outline had to change size on the way (0 is the goal).
+            NSLog("Dropy timing: ready mode=%@ ms=%.1f layoutChanges=%ld predicted=%@", next.diagnosticName,
+                  (CACurrentMediaTime() - openedAt) * 1000, layoutChangesBeforeReady,
+                  predictedWindowID != nil || awaitingAutoSelection ? "yes" : "no")
+        }
         state = next
         switch next {
         case .closed: break
         case .selecting:
             status?.stringValue = available.isEmpty
-                ? "No capturable windows. Open an app and refresh."
-                : "Choose a window · live preview only"
+                ? "No open windows. Open an app, then use the window menu."
+                : "Choose a window"
         default:
             status?.stringValue = next.message ?? ""
         }
         privacyButton?.isHidden = next.failure?.opensPrivacySettings != true
-        if !next.isCapturing { configureInteraction() }
+        // Closing keeps the layout it had: switching to the window list here flashed
+        // the list inside the outline as it collapsed.
+        if next != .closed {
+            // Live streams into the preview area; the other docking states show the real window.
+            workspace?.showsPreview = next.isCapturing || next == .live
+            workspace?.docked = next.isDocking && next != .live
+            workspace?.elsewhere.isHidden = { if case .dockedElsewhere = next { false } else { true } }()
+            renderer?.isHidden = next.isDocking && next != .live
+            status?.isHidden = next == .viewing || next == .docked || next == .live
+                || { if case .docking = next { true } else { false } }()
+        }
+        workspace?.needsLayout = true
     }
 
+    /// A window is chosen: being previewed or docked.
+    private var hasSelection: Bool { state.isCapturing || state.isDocking }
+
     private func buildContent(in panel: NSPanel, size: CGSize) {
-        let root = PointerTrackingView(frame: CGRect(origin: .zero, size: size))
+        let root = PointerTrackingView(frame: CGRect(origin: .zero, size: panel.frame.size))
         root.wantsLayer = true
-        // No rounded mask on the root: the panel is opaque, so the corners were never
-        // visible, and masking a layer tree forces an offscreen pass on every composite.
-        root.layer?.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1).cgColor
-        root.layer?.borderWidth = 1
-        root.layer?.borderColor = NSColor(calibratedWhite: 1, alpha: 0.12).cgColor
+        root.layer?.speed = Float(1 / OverlayMotion.slowdown)
         panel.contentView = root
-
-        let title = NSTextField(labelWithString: "DROPY")
-        title.frame = CGRect(x: 26, y: size.height - 64, width: 220, height: 28)
-        title.font = .boldSystemFont(ofSize: 21)
-        title.textColor = .white
-        root.addSubview(title)
-
-        let subtitle = NSTextField(labelWithString: "Your apps, near the notch")
-        subtitle.frame = CGRect(x: 27, y: size.height - 85, width: 270, height: 18)
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-        root.addSubview(subtitle)
-
-        let close = NSButton(title: "Close", target: self, action: #selector(closeClicked))
-        close.frame = CGRect(x: size.width - 90, y: size.height - 65, width: 66, height: 28)
-        root.addSubview(close)
-
-        let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshClicked))
-        refresh.frame = CGRect(x: 22, y: size.height - 124, width: 90, height: 27)
-        root.addSubview(refresh)
-
-        let privacy = NSButton(title: "Open Privacy Settings", target: self,
-                               action: #selector(privacyClicked))
-        privacy.frame = CGRect(x: 118, y: size.height - 124, width: 160, height: 27)
-        privacy.isHidden = true
-        root.addSubview(privacy)
-        privacyButton = privacy
-
-        let scroll = NSScrollView(frame: CGRect(x: 18, y: 50,
-                                                width: 252, height: size.height - 185))
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        let stack = NSStackView(frame: CGRect(x: 0, y: 0, width: 230, height: 1))
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 7
-        scroll.documentView = stack
-        root.addSubview(scroll)
-        list = stack
-
-        let previewFrame = CGRect(x: 288, y: 50,
-                                  width: max(100, size.width - 312),
-                                  height: max(100, size.height - 145))
-        let previewShell = NSView(frame: previewFrame)
-        previewShell.wantsLayer = true
-        previewShell.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
-        previewShell.layer?.cornerRadius = 16
-        root.addSubview(previewShell)
+        let backdrop = MorphBackdropView(frame: root.bounds)
+        backdrop.autoresizingMask = [.width, .height]
+        root.addSubview(backdrop)
+        self.backdrop = backdrop
+        let workspace = OverlayWorkspaceView(frame: CGRect(x: (root.bounds.width - size.width) / 2,
+            y: root.bounds.height - size.height, width: size.width, height: size.height))
+        root.addSubview(workspace)
+        self.workspace = workspace
+        content = workspace
+        list = workspace.windowList
+        status = workspace.status
+        interactionStatus = workspace.interaction
+        privacyButton = workspace.privacy
+        workspace.privacy.target = self
+        workspace.privacy.action = #selector(privacyClicked)
+        workspace.expand.target = self
+        workspace.expand.action = #selector(expandClicked)
+        workspace.elsewhere.target = native
+        workspace.elsewhere.action = #selector(NativeSession.goToDockedDesktop)
+        workspace.previewRect = WorkspaceLayout.preview(in: size, notch: notchSize ?? CGSize(width: 180, height: 32))
+        workspace.needsLayout = true
+        workspace.layoutSubtreeIfNeeded()
         do {
-            let view = try MetalFrameView.make(frame: previewShell.bounds)
+            let view = try MetalFrameView.make(frame: workspace.previewShell.bounds)
             view.autoresizingMask = [.width, .height]
             view.contentMode = preferences.value.contentMode
-            // Clip the Metal layer itself: it has no sublayers, so rounding it does
-            // not need an offscreen pass the way masking the shell's tree did.
-            view.layer?.cornerRadius = 16
+            view.layer?.cornerRadius = 12
             view.layer?.masksToBounds = true
-            previewShell.addSubview(view)
+            workspace.previewShell.addSubview(view)
+            // The docked window's snapshot draws above the (empty) live preview.
+            workspace.previewShell.addSubview(workspace.snapshot)
             renderer = view
         } catch {
-            let failure = NSTextField(labelWithString: "Metal unavailable: \(error.localizedDescription)")
-            failure.frame = CGRect(x: 15, y: 15, width: previewFrame.width - 30, height: 80)
-            failure.textColor = .systemRed
-            previewShell.addSubview(failure)
+            workspace.status.stringValue = "Metal unavailable: \(error.localizedDescription)"
         }
+        rebuildWindowList()
+        workspace.needsLayout = true
+        workspace.layoutSubtreeIfNeeded()
+    }
 
-        let rowWidth = max(100, size.width - 310)
-        let status = NSTextField(labelWithString: "Finding open windows…")
-        status.frame = CGRect(x: 288, y: 20, width: rowWidth * 0.55, height: 20)
-        status.font = .systemFont(ofSize: 11)
-        status.textColor = .secondaryLabelColor
-        status.lineBreakMode = .byTruncatingTail
-        root.addSubview(status)
-        self.status = status
+    /// Morphs the overlay to the chosen window's size: the outline springs from where
+    /// it is on screen to the new size, the new layout grows into view clipped to it,
+    /// and the panel is resized only twice (to cover both sizes, then to fit), never
+    /// every animation frame. The existing renderer survives, preserving capture
+    /// ownership.
+    func layoutSelectedWindow() {
+        guard let source = selectedWindowSize, let screen = overlayScreen, let workspace else { return }
+        let layout = previewLayout(for: source, on: screen)
+        guard workspace.frame.size != layout.size || workspace.previewRect != layout.preview else { return }
+        // Hanging from the top edge, centered.
+        applyLayout(body: CGRect(x: screen.frame.midX - layout.size.width / 2, y: screen.frame.maxY - layout.size.height,
+                                 width: layout.size.width, height: layout.size.height), preview: layout.preview)
+    }
 
-        let interaction = NSTextField(labelWithString: "")
-        interaction.frame = CGRect(x: 288 + rowWidth * 0.55, y: 20, width: rowWidth * 0.45, height: 20)
-        interaction.font = .systemFont(ofSize: 11)
-        interaction.textColor = .secondaryLabelColor
-        interaction.alignment = .right
-        interaction.lineBreakMode = .byTruncatingTail
-        root.addSubview(interaction)
-        interactionStatus = interaction
+    /// The preview's layout for a window of `source` size.
+    private func previewLayout(for source: CGSize, on screen: NSScreen) -> WorkspaceLayout {
+        let preset = preferences.value.sizePreset
+        if preferences.value.automaticWindowSize || preset == .nativeSize || expandedPreview {
+            return WorkspaceLayout.make(source: source, screen: screen.frame.size,
+                notch: notchSize ?? CGSize(width: 180, height: 32), expanded: expandedPreview,
+                maximumSize: preset.maximumSize)
+        }
+        let size = OverlayGeometry.frame(on: screen.frame, preferredSize: preset.dimensions).size
+        return WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size,
+            notch: notchSize ?? CGSize(width: 180, height: 32)))
+    }
+
+    /// The panel's frame around `body`, with room for the outline's overshoot.
+    private func canvasFrame(around body: CGRect, on screen: NSScreen) -> CGRect {
+        let margin = NotchMorph.overshootMargin(for: body.size, reach: OverlayMotion.reach)
+        return OverlayGeometry.pixelAligned(CGRect(x: body.minX - margin, y: body.minY - margin,
+                      width: body.width + 2 * margin, height: body.height + margin), scale: screen.backingScaleFactor)
+    }
+
+    /// Moves the overlay's body to `newBody` (screen coordinates) with the preview or
+    /// docked window at `preview` inside it, springing the outline there when animated.
+    func applyLayout(body newBody: CGRect, preview: CGRect, animated: Bool = true) {
+        guard let screen = overlayScreen, let panel, let workspace, let root = panel.contentView else { return }
+        let currentBody = workspace.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
+        guard currentBody != newBody || workspace.previewRect != preview else { return }
+        if !openReadyLogged { layoutChangesBeforeReady += 1 }
+        renderer?.prepareForLayoutChange()
+        // Do not leave an old-size animation mask clipping the new viewport.
+        workspace.layer?.mask = nil
+        let generation = UUID()
+        layoutGeneration = generation
+        let sessionGeneration = self.generation
+        let oldOrigin = panel.frame.origin
+        let oldBody = (backdrop?.visibleShape?.body ?? workspace.frame).offsetBy(dx: oldOrigin.x, dy: oldOrigin.y)
+        func canvas(around body: CGRect) -> CGRect { canvasFrame(around: body, on: screen) }
+        let layout = (preview: preview, size: newBody.size)
+        let animate = animated && !OverlayMotion.reduced && backdrop?.visibleShape != nil
+        if animate, state == .live { live?.suspendInputForLayout() }
+        let frame = animate ? canvas(around: oldBody).union(canvas(around: newBody)) : canvas(around: newBody)
+        let startShape = backdrop?.visibleShape?.offsetBy(dx: oldOrigin.x - frame.minX, dy: oldOrigin.y - frame.minY)
+        place(panel: panel, root: root, workspace: workspace, frame: frame, body: newBody, preview: layout.preview)
+        let endShape = NotchShape.open(body: workspace.frame)
+        if animate, let backdrop, let startShape {
+            let duration = backdrop.morph(from: startShape, to: endShape, motion: OverlayMotion.morph.resize, clipping: workspace)
+            OverlayMotion.relayoutContent(workspace)
+            settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
+            // Once settled, shrink the panel to fit; nothing moves on screen.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
+                guard let self, self.layoutGeneration == generation, self.generation == sessionGeneration, let panel = self.panel,
+                      let root = panel.contentView, let workspace = self.workspace else { return }
+                self.place(panel: panel, root: root, workspace: workspace, frame: canvas(around: newBody),
+                           body: newBody, preview: layout.preview)
+                self.backdrop?.settle(.open(body: workspace.frame))
+                if self.state == .live { self.live?.resumeInputAfterLayout() }
+            }
+        } else {
+            backdrop?.settle(endShape)
+            settlesAt = Date().addingTimeInterval(DismissBehavior.pointerLeaveGrace)
+            if state == .live { live?.resumeInputAfterLayout() }
+        }
+        // A docked window's menus and sheets reach outside the overlay; pointer-leave
+        // does not apply to it.
+        guard state != .docked else { return }
+        pendingPointerLeave?.cancel()
+        pendingPointerLeave = nil
+        pointerHasEntered = pointerHasEntered || frame.contains(NSEvent.mouseLocation)
+        if pointerHasEntered, !frame.contains(NSEvent.mouseLocation) { pointerExited() }
+    }
+
+    /// Puts the panel at `frame` (screen) with the workspace at `body` (screen).
+    private func place(panel: NSPanel, root: NSView, workspace: OverlayWorkspaceView, frame: CGRect,
+                       body: CGRect, preview: CGRect) {
+        panel.setFrame(frame, display: false)
+        let actual = panel.frame
+        root.frame = CGRect(origin: .zero, size: actual.size)
+        workspace.frame = body.offsetBy(dx: -actual.minX, dy: -actual.minY)
+        workspace.previewRect = preview
+        workspace.needsLayout = true
+        workspace.layoutSubtreeIfNeeded()
+        backdrop?.frame = root.bounds
+        if state == .docked { native.updateHole() }
+        if state == .live {
+            live?.updateLayout(body: workspace.frame.offsetBy(dx: actual.minX, dy: actual.minY),
+                               viewport: workspace.previewRect.offsetBy(dx: workspace.frame.minX + actual.minX,
+                                                                       dy: workspace.frame.minY + actual.minY))
+        }
+    }
+
+    @objc private func expandClicked() {
+        expandedPreview.toggle()
+        layoutSelectedWindow()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { refreshWindows() }
+
+    @objc private func menuWindowClicked(_ item: NSMenuItem) {
+        guard let identity = item.representedObject as? WindowIdentity,
+              let index = available.firstIndex(where: { $0.identity == identity }) else { return }
+        selectWindow(at: index)
     }
 
     private func rebuildWindowList() {
-        guard let list else { return }
+        guard let list, let workspace else { return }
         for view in list.arrangedSubviews { list.removeArrangedSubview(view); view.removeFromSuperview() }
-        for (index, window) in available.enumerated() {
-            let button = NSButton(title: window.displayName, target: self,
-                                  action: #selector(windowClicked(_:)))
-            button.frame = CGRect(x: 0, y: 0, width: 226, height: 42)
-            button.tag = index
+        let menu = workspace.apps.menu ?? NSMenu()
+        menu.removeAllItems()
+        menu.delegate = self
+        let label = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        label.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "Choose a window")
+        if let selectedIdentity, let icon = NSRunningApplication(processIdentifier: selectedIdentity.processID)?.icon?.copy() as? NSImage {
+            icon.size = CGSize(width: 16, height: 16)
+            label.image = icon
+        }
+        menu.addItem(label)
+        for window in available {
+            let button = WindowChoiceButton(title: window.displayName, target: self, action: #selector(windowClicked))
+            button.frame = CGRect(x: 0, y: 0, width: max(1, workspace.bounds.width - 32), height: 42)
+            button.identity = window.identity
             button.alignment = .left
             button.lineBreakMode = .byTruncatingTail
             list.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 42).isActive = true
+            let item = NSMenuItem(title: window.displayName, action: #selector(menuWindowClicked), keyEquivalent: "")
+            item.target = self
+            item.representedObject = window.identity
+            item.state = selectedIdentity == window.identity ? .on : .off
+            menu.addItem(item)
         }
-        list.frame.size.height = max(CGFloat(available.count) * 49, 1)
+        menu.addItem(.separator())
+        let close = NSMenuItem(title: "Close Dropy", action: #selector(closeClicked), keyEquivalent: "w")
+        close.target = self
+        menu.addItem(close)
+        workspace.apps.menu = menu
+        workspace.needsLayout = true
+        applyHighlight()
     }
 
-    /// Development-only stress driver for rapid A/B switching without input automation:
-    /// `DROPY_DEBUG_ALTERNATE=<bundle-id>[,<switches>[,<max-interval-ms>[,close]]]` alternates between
-    /// that app's first two picker windows with random gaps up to the interval, then logs
-    /// the window that should be showing; `close` then closes the overlay after three
-    /// seconds to check that no stream survives. Logs window IDs only.
+    /// Development-only exact-window switching driver; does not send input.
     private func startDebugAlternationIfRequested() {
         guard let spec = ProcessInfo.processInfo.environment["DROPY_DEBUG_ALTERNATE"] else { return }
         let parts = spec.split(separator: ",").map(String.init)
@@ -424,16 +826,17 @@ final class OverlayController: NSObject {
     private func selectWindow(at index: Int) {
         guard available.indices.contains(index), let renderer else { return }
         let selected = available[index]
+        awaitingAutoSelection = false
+        // Choosing the window that is already in the overlay changes nothing.
+        if state.isDocking, selected.identity == selectedIdentity, native.dockedIdentity == selected.identity { return }
         let request = UUID()
         generation = request
-        identityTask?.cancel()
-        identityTask = nil
-        if let previous = selectedIdentity { inputRouter.forget(previous) }
-        keyInput = PreviewKeyInput()
+        preview.reset()
+        hideNote()
         selectedIdentity = selected.identity
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
-        restartedAfterInterruption = false
+        rebuildWindowList()
         if let bundleID = selected.bundleIdentifier {
             preferences.update {
                 $0.lastUsedBundleIdentifier = bundleID
@@ -441,334 +844,124 @@ final class OverlayController: NSObject {
             }
         }
         renderer.clear()
-        startCapture(selected.identity, request: request, renderer: renderer)
+        let conditions = sessionConditions
+        switch SessionModePolicy.mode(for: conditions) {
+        case .native:
+            preview.stop(reason: "docking")
+            live?.end()
+            native.start(selected, request: request)
+        case .live:
+            preview.stop(reason: "live")
+            native.end()
+            if let live { live.start(selected, request: request) } else { fallThroughToPreview(selected, request, conditions) }
+        case .preview:
+            fallThroughToPreview(selected, request, conditions)
+        }
     }
 
-    private func isCurrent(_ request: UUID, _ identity: WindowIdentity) -> Bool {
-        request == generation && state.isCapturing && selectedIdentity == identity
+    private func fallThroughToPreview(_ selected: CapturableWindow, _ request: UUID, _ conditions: SessionConditions) {
+        let note = SessionModePolicy.previewNote(for: conditions)
+        showPreviewInstead(of: selected.identity, request: request, note: note ?? "")
     }
 
-    /// Latest selection wins, and at most one resolve-and-start runs at a time.
-    /// Starting every superseded selection queued dozens of window-list fetches
-    /// during rapid switching and delayed the final preview by seconds.
-    private func startCapture(_ identity: WindowIdentity, request: UUID, renderer: MetalFrameView) {
+    /// What decides how a chosen window is shown: Live over another app's full-screen
+    /// space (with the Stage), the real window otherwise.
+    private var sessionConditions: SessionConditions {
+        let display = (overlayScreen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+            .uint32Value ?? CGMainDisplayID()
+        return SessionConditions(interaction: preferences.value.interaction, accessibilityTrusted: WindowPlacer.isTrusted,
+                                 fullScreenInFront: Spaces.currentIsFullScreen(on: display),
+                                 stageAvailable: stage != nil && !Spaces.displaysShareSpaces)
+    }
+
+    /// Docking is not possible for this window; show the live preview instead.
+    func showPreviewInstead(of identity: WindowIdentity, request: UUID, note: String) {
+        guard request == generation, let renderer else { return }
+        native.end()
+        live?.end()
+        // Reserve restoration before suspension. Closing or choosing another window
+        // while it runs cannot leave this window on the Stage or restore the new one.
+        let restoration = native.restoreForPreview()
         setState(.starting(applicationName: selectedApplicationName))
-        pendingStart = PendingStart(identity: identity, request: request, renderer: renderer)
-        guard !startInFlight else { return }
-        startInFlight = true
-        Task {
-            while let next = pendingStart {
-                pendingStart = nil
-                guard isCurrent(next.request, next.identity) else { continue }
-                await performStart(next.identity, request: next.request, renderer: next.renderer)
-            }
-            startInFlight = false
+        Task { [weak self] in
+            await restoration.value
+            guard let self, self.generation == request, self.state != .closed else { return }
+            self.workspace?.previewShell.layer?.cornerRadius = 12
+            self.preview.start(identity, request: request, renderer: renderer)
+            if !note.isEmpty { self.showNote(note) }
         }
     }
 
-    private func performStart(_ identity: WindowIdentity, request: UUID,
-                              renderer: MetalFrameView) async {
-        let onStop: @MainActor (Error) -> Void = { [weak self] error in
-            self?.captureStopped(error, identity: identity, request: request, renderer: renderer)
+    func relinquishSourceFocus(processID: pid_t) {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == processID else { return }
+        if let previousApplication, !previousApplication.isTerminated,
+           previousApplication.processIdentifier != processID {
+            WindowDock.activateApplication(previousApplication.processIdentifier)
+        } else {
+            NSApp.activate()
         }
-        let resolution: WindowResolution
-        do {
-            resolution = try await WindowCatalog.resolve(identity)
-        } catch {
-            guard isCurrent(request, identity) else { return }
-            await fail(catalogFailure(for: error), request: request)
-            return
-        }
-        guard isCurrent(request, identity) else { return }
-        guard case .available(let window) = resolution else {
-            await fail(unavailable(resolution), request: request)
-            return
-        }
-        do {
-            let started = try await capture.start(window: window, renderer: renderer,
-                                                  onUnexpectedStop: onStop)
-            guard started, isCurrent(request, identity) else { return }
-            showVisibility(of: window)
-            monitorWindow(identity, request: request, renderer: renderer)
-        } catch {
-            guard isCurrent(request, identity) else { return }
-            let captureFailure = await startFailure(for: error, identity: identity)
-            guard isCurrent(request, identity) else { return }
-            await fail(captureFailure, request: request)
-        }
-    }
-
-    /// Minimized, hidden and other-Space windows stop producing frames; say so
-    /// instead of presenting a frozen image as live.
-    private func showVisibility(of window: SCWindow) {
-        selectedWindowSize = window.frame.size
-        setState(window.isOnScreen ? .viewing : .paused(applicationName: selectedApplicationName))
-        configureInteraction()
-    }
-
-    private func monitorWindow(_ identity: WindowIdentity, request: UUID,
-                               renderer: MetalFrameView) {
-        identityTask?.cancel()
-        identityTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled, let self, self.isCurrent(request, identity) else { return }
-                do {
-                    let resolution = try await WindowCatalog.resolve(identity)
-                    guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
-                    guard case .available(let window) = resolution else {
-                        await self.fail(self.unavailable(resolution), request: request)
-                        return
-                    }
-                    try await self.capture.updateWindow(window, renderer: renderer)
-                    guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
-                    self.showVisibility(of: window)
-                } catch {
-                    guard !Task.isCancelled, self.isCurrent(request, identity) else { return }
-                    // A failed catalog read does not stop a healthy stream; the
-                    // stream delegate reports real stops. Revoked permission does.
-                    if case .permissionDenied = self.catalogFailure(for: error) {
-                        await self.fail(.permissionDenied, request: request)
-                        return
-                    }
-                    NSLog("Dropy window check failed: code=%ld", (error as NSError).code)
-                }
-            }
-        }
-    }
-
-    /// The stream ended without Dropy asking. Re-resolve the exact window to
-    /// explain why, and restart once if the same window is still available.
-    private func captureStopped(_ error: Error, identity: WindowIdentity, request: UUID,
-                                renderer: MetalFrameView) {
-        guard isCurrent(request, identity) else { return }
-        let nsError = error as NSError
-        let kind = CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code)
-        Task {
-            switch kind {
-            case .permissionDenied:
-                await fail(.permissionDenied, request: request)
-            case .stoppedFromSystemControls:
-                await fail(.stoppedFromSystemControls, request: request)
-            case .windowListUnavailable:
-                await fail(.windowListUnavailable(code: nsError.code), request: request)
-            case .sourceMissing, .interrupted:
-                let resolution: WindowResolution
-                do {
-                    resolution = try await WindowCatalog.resolve(identity)
-                } catch {
-                    guard isCurrent(request, identity) else { return }
-                    await fail(catalogFailure(for: error), request: request)
-                    return
-                }
-                guard isCurrent(request, identity) else { return }
-                switch resolution {
-                case .available:
-                    guard !restartedAfterInterruption else {
-                        await fail(.streamInterrupted(code: nsError.code), request: request)
-                        return
-                    }
-                    restartedAfterInterruption = true
-                    identityTask?.cancel()
-                    identityTask = nil
-                    startCapture(identity, request: request, renderer: renderer)
-                case let gone:
-                    await fail(unavailable(gone), request: request)
-                }
-            }
-        }
-    }
-
-    private func unavailable(_ resolution: WindowResolution) -> CaptureFailure {
-        switch resolution {
-        case .processExited: .targetQuit(applicationName: selectedApplicationName)
-        case .windowClosed, .available: .sourceWindowClosed(applicationName: selectedApplicationName)
-        }
-    }
-
-    private func failure(for error: Error) -> CaptureFailure {
-        let nsError = error as NSError
-        switch CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) {
-        case .permissionDenied: return .permissionDenied
-        case .stoppedFromSystemControls: return .stoppedFromSystemControls
-        case .windowListUnavailable: return .windowListUnavailable(code: nsError.code)
-        case .sourceMissing, .interrupted: return .streamInterrupted(code: nsError.code)
-        }
-    }
-
-    private func catalogFailure(for error: Error) -> CaptureFailure {
-        let nsError = error as NSError
-        if CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) == .permissionDenied {
-            return .permissionDenied
-        }
-        return .windowListUnavailable(code: nsError.code)
-    }
-
-    private func startFailure(for error: Error, identity: WindowIdentity) async -> CaptureFailure {
-        let nsError = error as NSError
-        guard CaptureErrorKind.classify(domain: nsError.domain, code: nsError.code) == .sourceMissing else {
-            return failure(for: error)
-        }
-        do {
-            let resolution = try await WindowCatalog.resolve(identity)
-            if case .available = resolution { return .streamInterrupted(code: nsError.code) }
-            return unavailable(resolution)
-        } catch {
-            return catalogFailure(for: error)
-        }
-    }
-
-    /// Every capture failure ends here: invalidate in-flight work, stop the stream,
-    /// clear the preview and keep the reason visible. The source app is never
-    /// moved or hidden, so it stays reachable through normal macOS controls.
-    private func fail(_ failure: CaptureFailure, request: UUID) async {
-        guard request == generation, state.isCapturing else { return }
-        generation = UUID()
-        let failedGeneration = generation
-        if let selectedIdentity { inputRouter.forget(selectedIdentity) }
-        keyInput = PreviewKeyInput()
-        selectedIdentity = nil
-        identityTask?.cancel()
-        identityTask = nil
-        renderer?.clear()
-        setState(.failed(failure))
-        await capture.stop(reason: failure.diagnosticName)
-        guard generation == failedGeneration else { return }
-        renderer?.clear()
-        if !failure.opensPrivacySettings { reloadListKeepingState() }
     }
 
     @objc private func applicationTerminated(_ notification: Notification) {
         guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                as? NSRunningApplication,
-              let identity = selectedIdentity,
+                as? NSRunningApplication else { return }
+        // A docked app that quits takes its window with it; there is nothing to put back.
+        if native.applicationTerminated(pid: application.processIdentifier) { return }
+        guard let identity = selectedIdentity,
               application.processIdentifier == identity.processID,
               application.launchDate == identity.processLaunchDate,
               application.bundleIdentifier == identity.bundleIdentifier else { return }
-        let request = generation
-        Task { await fail(.targetQuit(applicationName: selectedApplicationName), request: request) }
+        preview.targetQuit()
     }
 
-    // MARK: Interactive preview (M3 prototype)
-
-    /// Connects or disconnects preview input for the current source, and labels what is
-    /// verified. Runs on selection, visibility changes and every identity check, because
-    /// the source's condition (parked, minimized, other desktop) can change.
-    func configureInteraction() {
-        guard let renderer else { return }
-        let enabled = preferences.value.interactivePreview
-        let trusted = WindowPlacer.isTrusted
-        guard enabled, trusted, state.isCapturing, let identity = selectedIdentity else {
-            renderer.onClick = nil
-            renderer.onScroll = nil
-            renderer.onUnsupported = nil
-            if interactionMessage == nil {
-                interactionStatus?.stringValue = state.isCapturing
-                    ? InteractionLabel.text(for: .viewOnly, enabled: enabled, trusted: trusted) : ""
-            }
-            return
-        }
-        let support = inputRouter.support(for: identity)
-        inputRouter.prepare(identity)
-        if renderer.onClick == nil, let window = renderer.window {
-            // Where the preview is, for device checks: global top-left points.
-            let frame = window.convertToScreen(renderer.convert(renderer.bounds, to: nil))
-            let top = (NSScreen.screens.first?.frame.maxY ?? frame.maxY) - frame.maxY
-            NSLog("Dropy input: preview=%.0f,%.0f,%.0f,%.0f support=%@", frame.minX, top, frame.width, frame.height,
-                  InteractionLabel.text(for: support, enabled: true, trusted: true))
-        }
-        if interactionMessage == nil {
-            // An app that updated past its evidence says so instead of a generic "untested".
-            let reason = support == .viewOnly ? InteractionLabel.viewOnlyReason(inputRouter.evidenceMatch(for: identity)) : nil
-            interactionStatus?.stringValue = reason ?? InteractionLabel.text(for: support, enabled: true, trusted: true)
-        }
-        // Each event re-checks that the drawn frame is this selection's window at its
-        // current size; the router then confirms that size against the live window.
-        renderer.onClick = { [weak self] point in
-            guard let self, let mapping = self.mapping(for: identity, kind: .pointerClick),
-                  let target = mapping.windowPoint(for: point) else { return }
-            self.report(self.inputRouter.click(identity, at: target, expectedWindowSize: mapping.windowSize), kind: .pointerClick)
-        }
-        renderer.onScroll = { [weak self] point, delta in
-            guard let self, let mapping = self.mapping(for: identity, kind: .scroll),
-                  let target = mapping.windowPoint(for: point) else { return }
-            self.report(self.inputRouter.scroll(identity, at: target, delta: mapping.windowDelta(for: delta),
-                                                expectedWindowSize: mapping.windowSize), kind: .scroll)
-        }
-        renderer.onUnsupported = { [weak self] kind in self?.flash(InteractionLabel.text(for: .notVerified, kind: kind)) }
-    }
-
-    /// The mapping through the frame actually drawn, or nil (with a visible reason)
-    /// when that frame cannot be tied to this selection's window at its current size:
-    /// after a switch, before the first frame, or while the source is being resized.
-    private func mapping(for identity: WindowIdentity, kind: InputKind) -> PreviewPointMapping? {
-        guard let renderer else { return nil }
-        let frame = renderer.presentedFrame
-        switch PreviewInputGate.check(handler: identity, selected: selectedIdentity, frame: frame,
-                                      sourceWindowSize: selectedWindowSize) {
-        case .failure(let refusal):
-            NSLog("Dropy input: kind=%@ gate=%@", kind.rawValue, String(describing: refusal))
-            flash(refusal == .sourceChanged || refusal == .frameFromOtherWindow
-                  ? "Switching windows · input not sent" : "Preview updating · input not sent")
-            return nil
-        case .success(let windowSize):
-            guard let pixels = frame?.pixelSize else { return nil }
-            return PreviewPointMapping(viewSize: renderer.bounds.size,
-                                       backingScale: renderer.window?.backingScaleFactor ?? 2,
-                                       capturePixelSize: pixels, windowSize: windowSize,
-                                       mode: preferences.value.contentMode)
-        }
-    }
-
-    /// Typing in the preview: committed characters only. Shortcuts, editing keys and
-    /// input methods are refused and labelled rather than approximated.
+    /// Keys while the window list is showing.
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard preferences.value.interactivePreview, WindowPlacer.isTrusted, state.isCapturing,
-              let identity = selectedIdentity else { return false }
-        switch keyInput.classify(characters: event.characters,
-                                 charactersIgnoringModifiers: event.charactersIgnoringModifiers,
-                                 modifiers: PreviewModifiers(event.modifierFlags),
-                                 inputMethodActive: Self.inputMethodIsActive()) {
-        case .text(let characters): report(inputRouter.type(identity, text: characters), kind: .text)
-        case .refuse(let kind): flash(InteractionLabel.text(for: .notVerified, kind: kind))
-        case .unsupportedKey: flash("This key is not supported in the preview yet")
+        guard state == .selecting else { return false }
+        return handlePickerKey(event)
+    }
+
+    /// The window list from the keyboard: arrows, Return, 1–9.
+    private func handlePickerKey(_ event: NSEvent) -> Bool {
+        guard !available.isEmpty,
+              let key = PickerKey(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers,
+                                  commandControlOrOption: !event.modifierFlags.intersection([.command, .control, .option]).isEmpty)
+        else { return false }
+        let current = available.firstIndex { $0.identity == highlightedIdentity }
+        switch key {
+        case .move(let step):
+            guard let next = PickerKey.highlight(current, moving: step, count: available.count) else { return true }
+            highlightedIdentity = available[next].identity
+            applyHighlight(scrolling: true)
+        case .choose:
+            selectWindow(at: current ?? 0)
+        case .row(let index):
+            guard available.indices.contains(index) else { return true }
+            selectWindow(at: index)
         }
         return true
     }
 
-    /// True when the current keyboard input source composes text (e.g. Japanese, Chinese).
-    private static func inputMethodIsActive() -> Bool {
-        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let pointer = TISGetInputSourceProperty(source, kTISPropertyInputSourceType) else { return false }
-        let type = Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
-        return type != (kTISTypeKeyboardLayout as String)
-    }
-
-    private func report(_ outcome: InputRouter.Outcome, kind: InputKind) {
-        switch outcome {
-        case .sent:
-            // The latency trace measures from here to the first frame showing the result.
-            if FrameStamp.tracing { LatencyMarks.shared.markInput() }
-        case .refused(let refusal): flash(InteractionLabel.text(for: refusal, kind: kind))
-        case .notApplicable(let reason):
-            flash(reason.contains("windowGeometryChanged") ? "Preview resizing · try again in a moment"
-                  : reason.contains("noTextElementChosen") ? "Click a text field in the preview first"
-                  : reason.contains("nothingPressable") ? "Nothing to click there" : "Not sent here")
+    /// Tints the highlighted row (the first when none is) and keeps it in view.
+    private func applyHighlight(scrolling: Bool = false) {
+        guard let list else { return }
+        let rows = list.arrangedSubviews.compactMap { $0 as? WindowChoiceButton }
+        if !rows.contains(where: { $0.identity == highlightedIdentity }) { highlightedIdentity = rows.first?.identity }
+        for row in rows {
+            let highlighted = row.identity == highlightedIdentity
+            row.bezelColor = highlighted ? .controlAccentColor : nil
+            if highlighted, scrolling { row.scrollToVisible(row.bounds) }
         }
     }
 
-    /// Shows a short message in place of the interaction label, then restores the label.
-    private func flash(_ message: String) {
-        // Logged so device checks can confirm every refusal is shown, not silent.
-        NSLog("Dropy input: shown=\"%@\"", message)
-        interactionMessage?.cancel()
+    /// A note over the preview until the next selection.
+    func showNote(_ message: String) {
         interactionStatus?.stringValue = message
-        let work = DispatchWorkItem { [weak self] in
-            self?.interactionMessage = nil
-            self?.configureInteraction()
-        }
-        interactionMessage = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+        interactionStatus?.isHidden = false
+    }
+
+    private func hideNote() {
+        interactionStatus?.isHidden = true
+        interactionStatus?.stringValue = ""
     }
 
     @objc private func privacyClicked() {
@@ -783,6 +976,26 @@ final class OverlayController: NSObject {
     }
 
     @objc private func closeClicked() { close() }
-    @objc private func refreshClicked() { refreshWindows() }
-    @objc private func windowClicked(_ button: NSButton) { selectWindow(at: button.tag) }
+
+    @objc private func windowClicked(_ button: WindowChoiceButton) {
+        guard let identity = button.identity,
+              let index = available.firstIndex(where: { $0.identity == identity }) else { return }
+        selectWindow(at: index)
+    }
+
+    /// Switching to Preview only puts a docked window back.
+    func dockingPreferencesChanged() { native.preferencesChanged() }
+
+    /// The placement journal was settled elsewhere (recovery restored the window).
+    func journalChanged() { native.journalChanged() }
+
+    /// The pinned app changed.
+    func pinnedAppChanged() { native.pinnedAppChanged() }
+
+    /// The Stage ended unexpectedly.
+    func stageLost() { native.stageLost() }
+
+    /// Whether the Stage is needed right now: the overlay is open, or a window is on the
+    /// Stage or waiting there to go home.
+    var needsStage: Bool { state != .closed || native.dock.holdsWindows }
 }
