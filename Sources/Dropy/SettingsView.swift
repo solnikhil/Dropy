@@ -99,7 +99,7 @@ private struct SettingsTopic: Identifiable {
                       keywords: "stage hidden display virtual desktop spaces full screen instant screenshot black extra"),
         SettingsTopic(id: "neverCapture", pane: .interaction, title: "Never Capture the Screen",
                       detail: "No live preview and no streaming over full-screen apps.",
-                      keywords: "capture screen recording video prime netflix playback pause drm privacy stream"),
+                      keywords: "capture screen recording video netflix playback pause drm privacy stream"),
         SettingsTopic(id: "crossing", pane: .interaction, title: "Keep the Pointer Beside the Notch",
                       detail: "Experimental hold on sideways movement across the notch.",
                       keywords: "cursor pointer experimental accessibility option"),

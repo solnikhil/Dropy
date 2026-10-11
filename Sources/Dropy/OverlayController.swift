@@ -152,22 +152,6 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             MainActor.assumeIsolated { self?.screensChanged() }
         })
         missionControl.onBegin = { [weak self] in self?.dismiss(.missionControl) }
-        // A player that stops on capture opened while a stream runs: end the stream.
-        workspaceObservers.append(center.addObserver(
-            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
-            let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            let blocker = CaptureGuard.blocker(in: [(application?.bundleIdentifier, application?.localizedName)])
-            MainActor.assumeIsolated {
-                guard let self, let blocker, !self.captureAllowed,
-                      self.state.isCapturing || self.state == .live else { return }
-                NSLog("Dropy capture: stopped, a player that stops on capture launched")
-                // Live: the normal close, which brings the window back from the Stage.
-                guard self.state != .live else { self.close(returnsFocus: false); return }
-                self.generation = UUID()
-                self.preview.stop(reason: "captureStopsPlayback")
-                self.setState(.failed(.captureStopsPlayback(applicationName: blocker)))
-            }
-        })
     }
 
     deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
@@ -1001,16 +985,10 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         }
     }
 
-    /// A running app that stops playback when the screen is captured, by name.
-    static var captureBlocker: String? {
-        CaptureGuard.blocker(in: NSWorkspace.shared.runningApplications.map { ($0.bundleIdentifier, $0.localizedName) })
-    }
-
     /// Before a stream starts: shows why the screen should not be captured now and
     /// returns true, keeping `retry` for Show Anyway. False when capture may start.
     private func refuseCapture(retry: @escaping () -> Void) -> Bool {
         let refusal = CaptureGuard.refusal(neverCaptures: preferences.value.neverCapturesScreen,
-                                           stopsPlayback: captureAllowed ? nil : Self.captureBlocker,
                                            playing: captureAllowed ? nil : DisplayAwake.application())
         guard let refusal else { return false }
         NSLog("Dropy capture: not started (%@)", refusal.diagnosticName)

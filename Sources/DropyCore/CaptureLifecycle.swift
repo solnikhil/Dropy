@@ -15,9 +15,6 @@ public enum CaptureFailure: Equatable, Sendable {
     case streamInterrupted(code: Int)
     /// The window list could not be read.
     case windowListUnavailable(code: Int)
-    /// Showing the window would mean capturing the screen, and a running app (a video
-    /// player) stops playback when anything captures it.
-    case captureStopsPlayback(applicationName: String)
     /// Showing the window would mean capturing the screen while an app keeps the
     /// display awake, as video players do while they play.
     case videoPlaying(applicationName: String)
@@ -38,8 +35,6 @@ public enum CaptureFailure: Equatable, Sendable {
             "Capture was interrupted (code \(code)). Choose the window again to retry."
         case .windowListUnavailable(let code):
             "Window list unavailable (code \(code)). Open the window menu to retry."
-        case .captureStopsPlayback(let app):
-            "\(app) stops playing when the screen is captured, and showing this window here captures it."
         case .videoPlaying(let app):
             "\(app) may be playing a video. Showing this window here captures the screen, which pauses some players."
         case .captureTurnedOff:
@@ -56,7 +51,6 @@ public enum CaptureFailure: Equatable, Sendable {
         case .stoppedFromSystemControls: "stoppedFromSystemControls"
         case .streamInterrupted(let code): "streamInterrupted(\(code))"
         case .windowListUnavailable(let code): "windowListUnavailable(\(code))"
-        case .captureStopsPlayback: "captureStopsPlayback"
         case .videoPlaying: "videoPlaying"
         case .captureTurnedOff: "captureTurnedOff"
         }
@@ -67,10 +61,8 @@ public enum CaptureFailure: Equatable, Sendable {
 
     /// A refusal to capture that the person can overrule for this opening.
     public var canCaptureAnyway: Bool {
-        switch self {
-        case .captureStopsPlayback, .videoPlaying: true
-        default: false
-        }
+        if case .videoPlaying = self { return true }
+        return false
     }
 
     /// The failure's button, if it has one.

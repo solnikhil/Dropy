@@ -2,18 +2,11 @@ import XCTest
 import DropyCore
 
 final class CaptureGuardTests: XCTestCase {
-    func testPrimeVideoBlocksCaptureAndOtherAppsDoNot() {
-        XCTAssertEqual(CaptureGuard.blocker(in: [("com.apple.TextEdit", "TextEdit"),
-                                                 ("com.amazon.aiv.AIVApp", "Prime Video")]), "Prime Video")
-        XCTAssertNil(CaptureGuard.blocker(in: [("com.apple.Safari", "Safari"), (nil, nil)]))
-        XCTAssertEqual(CaptureGuard.blocker(in: [("com.amazon.aiv.AIVApp", nil)]), "A video app")
-    }
-
-    func testTheRefusalSaysWhyAndIsNotAPermissionProblem() {
-        let failure = CaptureFailure.captureStopsPlayback(applicationName: "Prime Video")
-        XCTAssertTrue(failure.message.contains("Prime Video"))
+    func testTheRefusalSaysWhyAndCanBeOverruled() {
+        let failure = CaptureFailure.videoPlaying(applicationName: "Safari")
+        XCTAssertTrue(failure.message.contains("Safari"))
         XCTAssertFalse(failure.opensPrivacySettings)
-        XCTAssertFalse(failure.diagnosticName.contains("Prime"), "log names carry no app names")
+        XCTAssertFalse(failure.diagnosticName.contains("Safari"), "log names carry no app names")
         XCTAssertEqual(failure.actionTitle, "Show Anyway")
         XCTAssertEqual(CaptureFailure.permissionDenied.actionTitle, "Open Privacy Settings")
         XCTAssertNil(CaptureFailure.captureTurnedOff.actionTitle, "the person's own setting is not overruled")
@@ -32,14 +25,11 @@ final class CaptureGuardTests: XCTestCase {
         XCTAssertEqual(CaptureGuard.displayAwakeProcesses([:]), [])
     }
 
-    func testTheSettingWinsThenKnownPlayersThenAnythingPlaying() {
-        XCTAssertEqual(CaptureGuard.refusal(neverCaptures: true, stopsPlayback: "Prime Video", playing: "Safari"),
-                       .captureTurnedOff)
-        XCTAssertEqual(CaptureGuard.refusal(neverCaptures: false, stopsPlayback: "Prime Video", playing: "Safari"),
-                       .captureStopsPlayback(applicationName: "Prime Video"))
-        XCTAssertEqual(CaptureGuard.refusal(neverCaptures: false, stopsPlayback: nil, playing: "Safari"),
+    func testTheSettingWinsOverAnythingPlaying() {
+        XCTAssertEqual(CaptureGuard.refusal(neverCaptures: true, playing: "Safari"), .captureTurnedOff)
+        XCTAssertEqual(CaptureGuard.refusal(neverCaptures: false, playing: "Safari"),
                        .videoPlaying(applicationName: "Safari"))
-        XCTAssertNil(CaptureGuard.refusal(neverCaptures: false, stopsPlayback: nil, playing: nil))
+        XCTAssertNil(CaptureGuard.refusal(neverCaptures: false, playing: nil))
     }
 
     func testCaptureIsAllowedUnlessTurnedOff() throws {

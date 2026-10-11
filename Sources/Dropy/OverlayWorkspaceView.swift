@@ -89,7 +89,7 @@ final class OverlayWorkspaceView: NSView {
 /// What stands in for a docked window while it moves in or out: the app's icon on the
 /// overlay's dark. Dropy takes no picture of the window, because any screen capture,
 /// even of one window, tells every app on the Mac that the screen is being recorded,
-/// and video players such as Prime Video stop playing when they hear it.
+/// and some video players stop playing when they hear it.
 @MainActor
 final class WindowCover: NSView {
     private let icon = NSImageView()
