@@ -135,3 +135,33 @@ public enum OverlayPosition: String, Codable, CaseIterable, Sendable {
     /// and the side edges (reading order), bottom first in a corner.
     public var cascadesFromBottom: Bool { isCorner }
 }
+
+/// The screen edge the Dock sits on, as the Dock's own "orientation" setting names it.
+public enum DockSide: String, Sendable {
+    case bottom
+    case left
+    case right
+
+    /// Unknown or missing values are the Dock's default, the bottom.
+    public init(orientation: String?) {
+        self = orientation.flatMap(DockSide.init(rawValue:)) ?? .bottom
+    }
+}
+
+extension OverlayPosition {
+    /// Whether the overlay sits on the Dock's edge, where the Dock would be drawn
+    /// over a docked app. A side edge with the Dock at the bottom stays between them.
+    public func sharesEdge(with dock: DockSide) -> Bool {
+        switch (self, dock) {
+        case (.bottomLeft, .bottom), (.bottomRight, .bottom), (.left, .left), (.bottomLeft, .left),
+             (.right, .right), (.bottomRight, .right): true
+        default: false
+        }
+    }
+
+    /// Whether Dropy should keep the Dock hidden: the person asked for it and the
+    /// overlay sits on the Dock's edge.
+    public func hidesDock(preference: Bool, dock: DockSide) -> Bool {
+        preference && sharesEdge(with: dock)
+    }
+}

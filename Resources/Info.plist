@@ -15,5 +15,6 @@
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>Free and MIT-licensed.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Dropy hides the Dock while its overlay opens on the Dock's edge, when you turn that on, and shows it again afterwards.</string>
     <key>NSScreenCaptureDescription</key><string>Dropy shows windows you choose inside its temporary overlay.</string>
 </dict></plist>

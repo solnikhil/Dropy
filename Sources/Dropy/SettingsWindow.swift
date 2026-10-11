@@ -18,6 +18,10 @@ final class SettingsModel: ObservableObject {
     @Published var cursorRestrictionStatus = "Off"
     @Published private(set) var isRecordingShortcut = false
     @Published private(set) var shortcutProblem: String?
+    /// Why the Dock could not be hidden, if it could not.
+    @Published private(set) var dockProblem: String?
+    /// The Dock's edge, read when Settings shows the position choice.
+    var dockSide: DockSide { DockAutoHide.side }
     @Published var isChoosingApp = false
     @Published private(set) var catalog: [CatalogApp] = []
     @Published private(set) var isLoadingApps = false
@@ -324,6 +328,7 @@ final class SettingsModel: ObservableObject {
     }
 
     func shortcutRejected(_ problem: String) { shortcutProblem = problem }
+    func dockProblemChanged(_ problem: String?) { dockProblem = problem }
 
     private func recorded(_ event: NSEvent) {
         if event.keyCode == 53 {

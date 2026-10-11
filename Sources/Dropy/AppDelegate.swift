@@ -14,6 +14,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The hidden display where pinned apps wait between openings.
     private let stage: Stage? = Stage.isSupported ? Stage() : nil
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
+    /// Hides the Dock while the overlay opens on its edge, when the person asks.
+    private let dockAutoHide = DockAutoHide()
     /// The person's animation files, watched for changes.
     let animations = AnimationLibrary()
     /// Plays an animation on the notch for the Studio and `Dropy animation play`.
@@ -84,6 +86,11 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings = SettingsWindowController(model: SettingsModel(
             preferences: preferences.value, change: { [weak self] edit in self?.change(edit) }))
         settings.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        // Checks launched with --show never touch the person's Dock.
+        if !Self.launchedByCheck {
+            dockAutoHide.onProblem = { [weak self] problem in self?.settings?.model.dockProblemChanged(problem) }
+            dockAutoHide.update(preferences.value)
+        }
         settings.model.animations = animations
         settings.model.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
         settings.model.openStudio = { [weak self] id in self?.studio.open(id) }
@@ -327,6 +334,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         studio.model?.saveNow()
         demo.stop()
         overlay.shutdown()
+        dockAutoHide.restoreNow()
         trigger?.stop()
         hotKey?.unregister()
         recovery.stop()
@@ -580,6 +588,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlay.open()
         }
         if new.showInDock != old.showInDock { updateActivationPolicy() }
+        if new.position != old.position || new.hidesDock != old.hidesDock, !Self.launchedByCheck {
+            dockAutoHide.update(new)
+        }
         // The next motion uses the new animation; one already playing finishes as it began.
         if new.motionStyle != old.motionStyle || new.customAnimation != old.customAnimation { applyAnimation() }
         if new.shortcut != old.shortcut, !registerShortcut() {

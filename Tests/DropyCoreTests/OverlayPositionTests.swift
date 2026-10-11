@@ -238,11 +238,28 @@ final class OverlayPositionTests: XCTestCase {
                                            position: .notch, visible: visible))
     }
 
+    // MARK: Hiding the Dock
+
+    func testOnlyPositionsOnTheDocksEdgeHideIt() {
+        XCTAssertEqual(DockSide(orientation: nil), .bottom)
+        XCTAssertEqual(DockSide(orientation: "left"), .left)
+        XCTAssertEqual(DockSide(orientation: "top"), .bottom, "unknown values are the default")
+        let bottom = OverlayPosition.allCases.filter { $0.sharesEdge(with: .bottom) }
+        XCTAssertEqual(bottom, [.bottomLeft, .bottomRight])
+        XCTAssertEqual(OverlayPosition.allCases.filter { $0.sharesEdge(with: .left) }, [.left, .bottomLeft])
+        XCTAssertEqual(OverlayPosition.allCases.filter { $0.sharesEdge(with: .right) }, [.right, .bottomRight])
+        XCTAssertFalse(OverlayPosition.notch.sharesEdge(with: .bottom))
+        XCTAssertTrue(OverlayPosition.bottomRight.hidesDock(preference: true, dock: .bottom))
+        XCTAssertFalse(OverlayPosition.bottomRight.hidesDock(preference: false, dock: .bottom))
+        XCTAssertFalse(OverlayPosition.right.hidesDock(preference: true, dock: .bottom))
+    }
+
     // MARK: Preferences
 
     func testSavedSettingsWithoutAPositionOpenAtTheNotch() throws {
         let old = try JSONDecoder().decode(DropyPreferences.self, from: Data(#"{"sizePreset":"wide"}"#.utf8))
         XCTAssertEqual(old.position, .notch)
+        XCTAssertFalse(old.hidesDock, "the Dock is never hidden unless asked")
         XCTAssertEqual(old.sizePreset, .wide)
         let unknown = try JSONDecoder().decode(DropyPreferences.self, from: Data(#"{"position":"top"}"#.utf8))
         XCTAssertEqual(unknown.position, .notch, "a position from a newer build falls back")

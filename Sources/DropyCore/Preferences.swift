@@ -146,6 +146,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var shortcut: KeyShortcut
     /// Where on the screen the overlay opens from.
     public var position: OverlayPosition
+    /// While the overlay opens on the Dock's edge, turn on the system's "Automatically
+    /// hide and show the Dock" (and restore the person's setting when that ends).
+    public var hidesDock: Bool
 
     public init(
         trigger: Trigger = .notchHover,
@@ -164,7 +167,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
         shortcut: KeyShortcut = .default,
-        position: OverlayPosition = .notch
+        position: OverlayPosition = .notch,
+        hidesDock: Bool = false
     ) {
         self.trigger = trigger
         self.openBehavior = openBehavior
@@ -183,6 +187,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
         self.shortcut = shortcut
         self.position = position
+        self.hidesDock = hidesDock
     }
 
     /// The app whose window an opening selects by itself, if any. A pinned app wins
@@ -199,7 +204,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
         case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, motionStyle, customAnimation, showInDock
-        case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize, position
+        case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize, position, hidesDock
     }
 
     /// Settings saved before a field existed keep every other choice; a new field takes
@@ -229,5 +234,6 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)
         shortcut = savedShortcut == KeyShortcut.previousDefault ? defaults.shortcut : savedShortcut ?? defaults.shortcut
         position = (try? container.decodeIfPresent(OverlayPosition.self, forKey: .position)) ?? defaults.position
+        hidesDock = try container.decodeIfPresent(Bool.self, forKey: .hidesDock) ?? defaults.hidesDock
     }
 }
