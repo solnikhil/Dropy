@@ -97,6 +97,9 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "ready", pane: .interaction, title: "Keep Pinned App Ready",
                       detail: "The pinned app waits on a hidden display and opens on any desktop.",
                       keywords: "stage hidden display virtual desktop spaces full screen instant screenshot black extra"),
+        SettingsTopic(id: "neverCapture", pane: .interaction, title: "Never Capture the Screen",
+                      detail: "No live preview and no streaming over full-screen apps.",
+                      keywords: "capture screen recording video prime netflix playback pause drm privacy stream"),
         SettingsTopic(id: "crossing", pane: .interaction, title: "Keep the Pointer Beside the Notch",
                       detail: "Experimental hold on sideways movement across the notch.",
                       keywords: "cursor pointer experimental accessibility option"),
@@ -467,6 +470,9 @@ struct SettingsView: View {
                                   detail: "Its window waits on a hidden display between openings, so it opens at once on any desktop. macOS counts that display, so a full-screen screenshot (⇧⌘3) also saves a black picture of it. Off, the hidden display exists only while Dropy needs it.",
                                   isOn: model.binding(\.keepsPinnedAppReady))
                     .disabled(model.preferences.interaction != .fullApp)
+                SettingsToggleRow("Never Capture the Screen",
+                                  detail: "Any screen capture tells every app that the screen is being recorded, and some video players stop playing then. Dropy already asks first while a video is playing. On, it never captures: no live preview, and over a full-screen app the window can't be shown.",
+                                  isOn: model.binding(\.neverCapturesScreen))
                 if model.preferences.interaction == .fullApp, !model.accessibilityGranted {
                     SettingsNotice(symbol: "hand.raised", title: "Accessibility access required",
                                    detail: "Allow Dropy to move the app's window into the overlay. Until then it is a preview.") {
@@ -496,7 +502,7 @@ struct SettingsView: View {
     }
 
     private var interactionFooter: String {
-        "With Full App, the app's own window moves into the overlay and its app comes to the front. Over a full-screen app, Dropy streams the window instead, so macOS shows its screen-recording indicator while it is open. A window you pick that isn't pinned goes back where it was."
+        "With Full App, the app's own window moves into the overlay and its app comes to the front, and nothing is captured. Over a full-screen app, Dropy streams the window instead, so macOS shows its screen-recording indicator while it is open. A window you pick that isn't pinned goes back where it was."
     }
 
     private var crossingStatus: String {

@@ -18,6 +18,11 @@ public enum CaptureFailure: Equatable, Sendable {
     /// Showing the window would mean capturing the screen, and a running app (a video
     /// player) stops playback when anything captures it.
     case captureStopsPlayback(applicationName: String)
+    /// Showing the window would mean capturing the screen while an app keeps the
+    /// display awake, as video players do while they play.
+    case videoPlaying(applicationName: String)
+    /// Showing the window would mean capturing the screen, which the person turned off.
+    case captureTurnedOff
 
     public var message: String {
         switch self {
@@ -34,7 +39,11 @@ public enum CaptureFailure: Equatable, Sendable {
         case .windowListUnavailable(let code):
             "Window list unavailable (code \(code)). Open the window menu to retry."
         case .captureStopsPlayback(let app):
-            "Not shown while \(app) is open: it stops playing when the screen is captured. Leave full screen to bring the app in here instead."
+            "\(app) stops playing when the screen is captured, and showing this window here captures it."
+        case .videoPlaying(let app):
+            "\(app) may be playing a video. Showing this window here captures the screen, which pauses some players."
+        case .captureTurnedOff:
+            "Showing this window here would capture the screen, which is turned off in Settings › Interaction."
         }
     }
 
@@ -48,11 +57,27 @@ public enum CaptureFailure: Equatable, Sendable {
         case .streamInterrupted(let code): "streamInterrupted(\(code))"
         case .windowListUnavailable(let code): "windowListUnavailable(\(code))"
         case .captureStopsPlayback: "captureStopsPlayback"
+        case .videoPlaying: "videoPlaying"
+        case .captureTurnedOff: "captureTurnedOff"
         }
     }
 
     /// Only a permission failure can be fixed in System Settings.
     public var opensPrivacySettings: Bool { self == .permissionDenied }
+
+    /// A refusal to capture that the person can overrule for this opening.
+    public var canCaptureAnyway: Bool {
+        switch self {
+        case .captureStopsPlayback, .videoPlaying: true
+        default: false
+        }
+    }
+
+    /// The failure's button, if it has one.
+    public var actionTitle: String? {
+        if opensPrivacySettings { return "Open Privacy Settings" }
+        return canCaptureAnyway ? "Show Anyway" : nil
+    }
 
     /// The failure for an error from starting or running a stream.
     public static func stream(domain: String, code: Int) -> CaptureFailure {
@@ -104,7 +129,7 @@ public enum CapturePhase: Equatable, Sendable {
     /// ScreenCaptureKit is not delivering new frames.
     case paused(applicationName: String)
     case sourceVisibility(applicationName: String, visibility: SourceVisibility)
-    /// Moving the real window into the overlay; a snapshot covers it until it is in place.
+    /// Moving the real window into the overlay; a cover hides it until it is in place.
     case docking(applicationName: String)
     /// The real window is in the overlay and its app is in front.
     case docked
@@ -112,7 +137,7 @@ public enum CapturePhase: Equatable, Sendable {
     /// pointer handed over to it and its app in front (over a full-screen app).
     case live
     /// The window is on another desktop or in full screen, where Dropy cannot bring
-    /// it; its snapshot is shown with a way to go there.
+    /// it; a way to go there is shown.
     case dockedElsewhere(applicationName: String)
     case failed(CaptureFailure)
 

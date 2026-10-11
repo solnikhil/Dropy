@@ -15,13 +15,13 @@ final class OverlayWorkspaceView: NSView {
     let privacy = NSButton(title: "Open Privacy Settings", target: nil, action: nil)
     /// Shows a docked window that cannot come here (another desktop, full screen).
     let elsewhere = NSButton(title: "Go to Its Desktop", target: nil, action: nil)
-    /// The docked window's snapshot, covering the real window while it moves in or out.
-    let snapshot = NSView()
+    /// Covers the real window's place, with its app's icon, while it moves in or out.
+    let cover = WindowCover()
     var previewRect = CGRect.zero
     var showsPreview = false { didSet { needsLayout = true } }
     /// The real window is in the overlay: no window list and no live preview.
     var docked = false { didSet { needsLayout = true } }
-    /// While docked, whether the snapshot covers the window's place.
+    /// While docked, whether the cover hides the window's place.
     var coversWindow = true { didSet { needsLayout = true } }
 
     override init(frame: CGRect) {
@@ -55,10 +55,7 @@ final class OverlayWorkspaceView: NSView {
         privacy.isHidden = true
         elsewhere.isHidden = true
         elsewhere.bezelStyle = .rounded
-        snapshot.wantsLayer = true
-        snapshot.layer?.contentsGravity = .resizeAspectFill
-        snapshot.layer?.masksToBounds = true
-        previewShell.addSubview(snapshot)
+        previewShell.addSubview(cover)
         for view in [apps, expand, scroll, previewShell, status, interaction, privacy, elsewhere] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -73,7 +70,7 @@ final class OverlayWorkspaceView: NSView {
         // old size during a detached or hidden shell’s layout transition.
         for child in previewShell.subviews { child.frame = previewShell.bounds }
         previewShell.isHidden = docked ? !coversWindow : !showsPreview
-        snapshot.isHidden = !docked
+        cover.isHidden = !docked
         scroll.frame = CGRect(x: 12, y: 76, width: max(1, bounds.width - 24), height: max(1, bounds.height - 126))
         scroll.isHidden = showsPreview || docked
         interaction.frame = CGRect(x: 12, y: previewRect.minY + 8,
@@ -86,6 +83,35 @@ final class OverlayWorkspaceView: NSView {
         let rowWidth = max(1, scroll.contentSize.width - 8)
         for row in windowList.arrangedSubviews { row.frame.size.width = rowWidth }
         windowList.frame.size = CGSize(width: rowWidth, height: max(1, CGFloat(windowList.arrangedSubviews.count) * 48))
+    }
+}
+
+/// What stands in for a docked window while it moves in or out: the app's icon on the
+/// overlay's dark. Dropy takes no picture of the window, because any screen capture,
+/// even of one window, tells every app on the Mac that the screen is being recorded,
+/// and video players such as Prime Video stop playing when they hear it.
+@MainActor
+final class WindowCover: NSView {
+    private let icon = NSImageView()
+    private static let iconSide: CGFloat = 64
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        addSubview(icon)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Shows the icon of the app with `processID`, or no icon.
+    func show(processID: pid_t?) {
+        icon.image = processID.flatMap { NSRunningApplication(processIdentifier: $0)?.icon }
+    }
+
+    override func layout() {
+        super.layout()
+        let side = min(Self.iconSide, bounds.width / 2, bounds.height / 2)
+        icon.frame = CGRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side)
     }
 }
 

@@ -68,15 +68,6 @@ final class DockTests: XCTestCase {
                        CGRect(x: 10, y: 682, width: 300, height: 200))
     }
 
-    func testCornerRadiusFromSnapshotAlpha() {
-        // A 16 pt corner at 2× leaves about 9.4 transparent pixels along the diagonal.
-        let alpha: [UInt8] = Array(repeating: 0, count: 9) + [200, 255, 255]
-        let radius = try? XCTUnwrap(DockGeometry.cornerRadius(diagonalAlpha: alpha, scale: 2))
-        XCTAssertEqual(radius ?? 0, 15.4, accuracy: 0.2)
-        XCTAssertNil(DockGeometry.cornerRadius(diagonalAlpha: [255, 255], scale: 2), "a square window has no radius")
-        XCTAssertNil(DockGeometry.cornerRadius(diagonalAlpha: [0, 0, 0], scale: 2), "a blank snapshot says nothing")
-    }
-
     // MARK: Clicks
 
     private let own: Int32 = 1, source: Int32 = 2, other: Int32 = 3

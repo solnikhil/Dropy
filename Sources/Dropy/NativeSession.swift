@@ -2,9 +2,9 @@ import AppKit
 import DropyCore
 
 /// Full App interaction: the chosen app's real window moves into the overlay and its
-/// app comes to the front, so the person uses it exactly as usual. A snapshot covers
-/// the window's place while it moves in and out, so the swap does not show. Nothing
-/// streams while the window is in use. Closing puts a pinned app's window on the
+/// app comes to the front, so the person uses it exactly as usual. A cover with the
+/// app's icon hides the window's place while it moves in and out. Nothing is captured,
+/// not even a picture of the window (see `WindowCover`). Closing puts a pinned app's window on the
 /// Stage, ready for the next opening from any desktop, and any other window back
 /// where it was.
 @MainActor
@@ -93,12 +93,11 @@ final class NativeSession: NSObject {
         return (targetLayout(windowSize: size, on: screen), WindowPlacer.windowID(of: window))
     }
 
-    /// Covers the window's place with the last picture of the window Dropy manages,
-    /// for an opening laid out before the window list arrives.
-    func showCachedSnapshot() {
-        guard let docked = dock.current else { return }
+    /// Covers the window's place with the icon of the app with `processID`, for an
+    /// opening laid out before the window list arrives.
+    func showCover(processID: pid_t) {
         host.workspace?.coversWindow = true
-        setSnapshot(docked.snapshot, radius: docked.cornerRadius)
+        setCover(processID, radius: dock.current?.cornerRadius ?? DockGeometry.defaultCornerRadius)
     }
 
     // MARK: Opening
@@ -127,7 +126,7 @@ final class NativeSession: NSObject {
         host.backdrop?.hole = nil
         host.panel?.ignoresMouseEvents = false
         host.workspace?.coversWindow = true
-        setSnapshot(nil)
+        setCover(selected.identity.processID)
         host.setState(.docking(applicationName: selected.applicationName))
         let adoption = adopt(selected, request: request)
         Task {
@@ -153,7 +152,7 @@ final class NativeSession: NSObject {
                 showElsewhere(docked)
                 return
             }
-            setSnapshot(docked.snapshot, radius: docked.cornerRadius)
+            setCover(docked.identity.processID, radius: docked.cornerRadius)
             let target = targetLayout(for: docked, on: screen)
             host.applyLayout(body: target.body, preview: target.windowInBody, animated: true)
             await finish(request: request, target: target, on: screen)
@@ -197,9 +196,9 @@ final class NativeSession: NSObject {
         host.setState(.docked)
         updateHole()
         installWatchers()
-        // The snapshot fades over the identical real window.
+        // The cover fades away over the real window.
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = OverlayMotion.reduced ? 0 : 0.12
+            context.duration = OverlayMotion.reduced ? 0 : Self.coverFade
             workspace.previewShell.animator().alphaValue = 0
         }, completionHandler: { [weak workspace] in
             MainActor.assumeIsolated {
@@ -220,19 +219,19 @@ final class NativeSession: NSObject {
                                docked.cornerRadius)
     }
 
-    private func setSnapshot(_ image: CGImage?, radius: CGFloat = DockGeometry.defaultCornerRadius) {
+    /// How long the cover takes to fade away after an opening, or in before a closing.
+    static let coverFade: TimeInterval = 0.15
+
+    private func setCover(_ processID: pid_t?, radius: CGFloat = DockGeometry.defaultCornerRadius) {
         guard let workspace = host.workspace else { return }
-        workspace.snapshot.layer?.contents = image
-        workspace.snapshot.layer?.contentsScale = host.overlayScreen?.backingScaleFactor ?? 2
+        workspace.cover.show(processID: processID)
         workspace.previewShell.layer?.cornerRadius = radius
     }
 
-    /// The window is on another desktop or behind a full-screen app: show what it
-    /// last looked like and offer to go there.
+    /// The window is on another desktop or behind a full-screen app: offer to go there.
     private func showElsewhere(_ docked: WindowDock.Docked) {
-        setSnapshot(docked.snapshot, radius: docked.cornerRadius)
         host.setState(.dockedElsewhere(applicationName: host.selectedApplicationName))
-        host.workspace?.coversWindow = docked.snapshot != nil
+        host.workspace?.coversWindow = false
     }
 
     @objc func goToDockedDesktop() {
@@ -254,7 +253,7 @@ final class NativeSession: NSObject {
         dockLayout = nil
     }
 
-    /// Finishes closing an overlay that was docking: a fresh picture covers the
+    /// Finishes closing an overlay that was docking: the cover fades in over the
     /// window's place, the window goes to the Stage (a pinned app) or back where it was
     /// (unless the person already took it), the outline collapses, and focus returns to
     /// the previous app only while the person is still in the docked app or in Dropy.
@@ -268,15 +267,27 @@ final class NativeSession: NSObject {
         let preferences = host.preferences
         let closeStarted = CACurrentMediaTime()
         let closingGeneration = host.generation
-        _ = dock.finishSession(session, snapshot: wasDocked, putsBack: putsBack, keepsOnStage: { identity in
+        let fade = wasDocked && !OverlayMotion.reduced ? Self.coverFade : 0
+        _ = dock.finishSession(session, coverFade: fade, putsBack: putsBack, keepsOnStage: { identity in
             let value = preferences.value
             guard value.interaction == .fullApp, value.keepsPinnedAppReady,
                   let pinned = value.pinnedBundleIdentifier else { return false }
             return pinned == identity.bundleIdentifier
         }, willRestore: { docked in
-            workspace?.snapshot.layer?.contents = docked.snapshot
-            workspace?.coversWindow = true
-            workspace?.layoutSubtreeIfNeeded()
+            guard let workspace else { return }
+            workspace.cover.show(processID: docked.identity.processID)
+            workspace.previewShell.layer?.cornerRadius = docked.cornerRadius
+            let shown = workspace.coversWindow
+            workspace.coversWindow = true
+            workspace.layoutSubtreeIfNeeded()
+            // The window is still in place under the cover, so the app dissolves into
+            // its icon before it moves away.
+            guard !shown, fade > 0 else { return }
+            workspace.previewShell.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = fade
+                workspace.previewShell.animator().alphaValue = 1
+            }
         }, didRestore: { [weak self] source, stages in
             guard let self else { return }
             backdrop?.hole = nil

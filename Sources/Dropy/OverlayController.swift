@@ -24,7 +24,12 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private(set) var panel: OverlayPanel?
     private var list: NSStackView?
     private var status: NSTextField?
+    /// The failure's button: Screen Recording settings, or Show Anyway.
     private var privacyButton: NSButton?
+    /// The person chose Show Anyway: this opening may capture despite a video player.
+    private var captureAllowed = false
+    /// What Show Anyway starts: the capture that was refused.
+    private var refusedCapture: (() -> Void)?
     private(set) var workspace: OverlayWorkspaceView?
     private(set) var overlayScreen: NSScreen?
     private var expandedPreview = false
@@ -153,7 +158,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             let blocker = CaptureGuard.blocker(in: [(application?.bundleIdentifier, application?.localizedName)])
             MainActor.assumeIsolated {
-                guard let self, let blocker, self.state.isCapturing || self.state == .live else { return }
+                guard let self, let blocker, !self.captureAllowed,
+                      self.state.isCapturing || self.state == .live else { return }
                 NSLog("Dropy capture: stopped, a player that stops on capture launched")
                 // Live: the normal close, which brings the window back from the Stage.
                 guard self.state != .live else { self.close(returnsFocus: false); return }
@@ -213,6 +219,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         displayAtOpen = (Self.displayID(of: screen), screen.frame)
         missionControl.start()
         layoutChangesBeforeReady = 0
+        captureAllowed = false
+        refusedCapture = nil
         // Open straight to the size the chosen window will need when it is known, so
         // the outline grows once instead of opening at the preset's size and morphing
         // again when the window list arrives.
@@ -252,7 +260,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             awaitingAutoSelection = true
             predictedWindowID = prediction.windowID
             setState(prediction.state)
-            if case .docking = prediction.state { native.showCachedSnapshot() }
+            if case .docking = prediction.state { native.showCover(processID: prediction.processID) }
         } else {
             awaitingAutoSelection = false
             setState(.selecting)
@@ -266,6 +274,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         let preview: CGRect
         let windowID: UInt32?
         let state: CapturePhase
+        let processID: pid_t
     }
 
     /// The final layout of an opening that goes straight to a known app's window.
@@ -279,7 +288,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         case .native, .live:
             guard let predicted = native.predictedLayout(for: bundleID, on: screen) else { return nil }
             return OpeningPrediction(body: predicted.layout.body, preview: predicted.layout.windowInBody,
-                                     windowID: predicted.windowID, state: .docking(applicationName: name))
+                                     windowID: predicted.windowID, state: .docking(applicationName: name),
+                                     processID: application.processIdentifier)
         case .preview:
             // The app's frontmost window, from the window server (no permission needed).
             let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
@@ -291,7 +301,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             let layout = previewLayout(for: bounds.size, on: screen)
             let body = placedBody(size: layout.size, on: screen)
             return OpeningPrediction(body: body, preview: layout.preview, windowID: row[kCGWindowNumber as String] as? UInt32,
-                                     state: .starting(applicationName: name))
+                                     state: .starting(applicationName: name), processID: application.processIdentifier)
         }
     }
 
@@ -666,7 +676,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         default:
             status?.stringValue = next.message ?? ""
         }
-        privacyButton?.isHidden = next.failure?.opensPrivacySettings != true
+        privacyButton?.isHidden = next.failure?.actionTitle == nil
+        if let title = next.failure?.actionTitle { privacyButton?.title = title }
         // Closing keeps the layout it had: switching to the window list here flashed
         // the list inside the outline as it collapsed.
         if next != .closed {
@@ -719,8 +730,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             view.layer?.cornerRadius = 12
             view.layer?.masksToBounds = true
             workspace.previewShell.addSubview(view)
-            // The docked window's snapshot draws above the (empty) live preview.
-            workspace.previewShell.addSubview(workspace.snapshot)
+            // The docked window's cover draws above the (empty) live preview.
+            workspace.previewShell.addSubview(workspace.cover)
             renderer = view
         } catch {
             workspace.status.stringValue = "Metal unavailable: \(error.localizedDescription)"
@@ -941,13 +952,14 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         case .live:
             preview.stop(reason: "live")
             native.end()
-            // Live streams the window; a player that stops on capture gets the
-            // preview path, which refuses with the reason.
-            if let live, Self.captureBlocker == nil {
-                live.start(selected, request: request)
-            } else {
-                fallThroughToPreview(selected, request, conditions)
-            }
+            // Live streams the window: it waits for a video player to allow it.
+            guard let live else { fallThroughToPreview(selected, request, conditions); return }
+            let identity = selected.identity
+            if refuseCapture(retry: { [weak self] in
+                guard let self, let index = self.available.firstIndex(where: { $0.identity == identity }) else { return }
+                self.selectWindow(at: index)
+            }) { return }
+            live.start(selected, request: request)
         case .preview:
             fallThroughToPreview(selected, request, conditions)
         }
@@ -980,11 +992,9 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         Task { [weak self] in
             await restoration.value
             guard let self, self.generation == request, self.state != .closed else { return }
-            if let blocker = Self.captureBlocker {
-                NSLog("Dropy capture: not started, a running player stops on capture")
-                self.setState(.failed(.captureStopsPlayback(applicationName: blocker)))
-                return
-            }
+            if self.refuseCapture(retry: { [weak self] in
+                self?.showPreviewInstead(of: identity, request: request, note: note)
+            }) { return }
             self.workspace?.previewShell.layer?.cornerRadius = 12
             self.preview.start(identity, request: request, renderer: renderer)
             if !note.isEmpty { self.showNote(note) }
@@ -994,6 +1004,19 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// A running app that stops playback when the screen is captured, by name.
     static var captureBlocker: String? {
         CaptureGuard.blocker(in: NSWorkspace.shared.runningApplications.map { ($0.bundleIdentifier, $0.localizedName) })
+    }
+
+    /// Before a stream starts: shows why the screen should not be captured now and
+    /// returns true, keeping `retry` for Show Anyway. False when capture may start.
+    private func refuseCapture(retry: @escaping () -> Void) -> Bool {
+        let refusal = CaptureGuard.refusal(neverCaptures: preferences.value.neverCapturesScreen,
+                                           stopsPlayback: captureAllowed ? nil : Self.captureBlocker,
+                                           playing: captureAllowed ? nil : DisplayAwake.application())
+        guard let refusal else { return false }
+        NSLog("Dropy capture: not started (%@)", refusal.diagnosticName)
+        refusedCapture = retry
+        setState(.failed(refusal))
+        return true
     }
 
     func relinquishSourceFocus(processID: pid_t) {
@@ -1069,6 +1092,12 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     }
 
     @objc private func privacyClicked() {
+        if state.failure?.canCaptureAnyway == true, let retry = refusedCapture {
+            captureAllowed = true
+            refusedCapture = nil
+            retry()
+            return
+        }
         // Asking through the system registers Dropy's current signature in the
         // Screen Recording list and shows macOS's own prompt. Adding the app by
         // hand with + did not produce a grant that matched on macOS 27.

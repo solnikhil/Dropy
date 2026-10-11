@@ -48,8 +48,6 @@ final class WindowDock {
         var element: AXUIElement
         /// Where the window is, global top-left, as last placed or followed.
         var frame: CGRect
-        /// The window as it last looked, for the opening and closing animations.
-        var snapshot: CGImage?
         var cornerRadius: CGFloat
         /// Waiting on the Stage between openings (a pinned app's window).
         var isStaged = false
@@ -119,7 +117,7 @@ final class WindowDock {
             let state = try WindowPlacer.readState(element, identity: identity)
             let spaces = Spaces.of(identity.windowID) ?? []
             current = Docked(identity: identity, window: window, element: element, frame: state.frame,
-                             snapshot: nil, cornerRadius: DockGeometry.defaultCornerRadius,
+                             cornerRadius: DockGeometry.defaultCornerRadius,
                              homeSpace: spaces.count == 1 ? spaces[0] : nil)
             // A window on another desktop is pulled over through the Stage: a move to
             // another display lands on that display's current desktop, and from the
@@ -128,7 +126,6 @@ final class WindowDock {
                 try await moveToStageNow()
                 NSLog("Dropy dock: brought window=%u from another desktop through the Stage", identity.windowID)
             }
-            if onActiveSpace { await refreshSnapshot() }
         }
     }
 
@@ -189,14 +186,6 @@ final class WindowDock {
             docked.isStaged = false
             current = docked
             startObserving(docked)
-            // The capture catalog's copy of the window still has its old size; refresh it
-            // so the closing snapshot needs no lookup.
-            Task { @MainActor [weak self] in
-                guard case .available(let fresh)? = try? await WindowCatalog.resolve(identity),
-                      var latest = self?.current, latest.identity == identity else { return }
-                latest.window = fresh
-                self?.current = latest
-            }
             NSLog("Dropy dock: placed window=%u asked=%.0fx%.0f got=%.0fx%.0f at %.0f,%.0f", identity.windowID,
                   frame.width, frame.height, observed.frame.width, observed.frame.height,
                   observed.frame.minX, observed.frame.minY)
@@ -259,66 +248,6 @@ final class WindowDock {
         if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
             NSRunningApplication(processIdentifier: pid)?.activate()
         }
-    }
-
-    // MARK: Snapshots
-
-    /// Captures the window as it looks now (at most `timeout`), keeps it for the next
-    /// animation and measures its corner radius. Keeps the previous snapshot on failure.
-    func refreshSnapshot(timeout: Duration = .milliseconds(250)) async {
-        guard let docked = current else { return }
-        // Even one screenshot of this window stops some players (CaptureGuard): the
-        // window then moves under the overlay's plain cover instead.
-        guard OverlayController.captureBlocker == nil else {
-            NSLog("Dropy dock: no snapshot, a running player stops on capture")
-            return
-        }
-        let identity = docked.identity
-        var window = docked.window
-        let known = abs(window.frame.width - docked.frame.width) < 2 && abs(window.frame.height - docked.frame.height) < 2
-        if !known, case .available(let fresh)? = try? await WindowCatalog.resolve(identity) { window = fresh }
-        let scale = NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
-        let configuration = SCStreamConfiguration()
-        configuration.width = max(1, Int(docked.frame.width * scale))
-        configuration.height = max(1, Int(docked.frame.height * scale))
-        configuration.showsCursor = false
-        configuration.ignoreShadowsSingleWindow = true
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let image = await Self.captureImage(filter: filter, configuration: configuration, timeout: timeout)
-        guard let image, var latest = current, latest.identity == identity else { return }
-        latest.window = window
-        latest.snapshot = image
-        if let radius = Self.cornerRadius(of: image, scale: scale) { latest.cornerRadius = radius }
-        current = latest
-    }
-
-    /// One screenshot, or nil after `timeout` so a slow capture never holds up a close.
-    private static func captureImage(filter: SCContentFilter, configuration: SCStreamConfiguration,
-                                     timeout: Duration) async -> CGImage? {
-        let once = OneShot<CGImage?>()
-        return await withCheckedContinuation { continuation in
-            once.continuation = continuation
-            SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) { image, _ in
-                once.resume(image)
-            }
-            let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
-            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { once.resume(nil) }
-        }
-    }
-
-    private static func cornerRadius(of image: CGImage, scale: CGFloat) -> CGFloat? {
-        let side = min(image.width, image.height, Int(48 * scale))
-        guard side > 2, let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
-                                                bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-              let data = context.data else { return nil }
-        // The image's top-left corner at the context's top-left; a bitmap context's
-        // first row in memory is its top row.
-        context.draw(image, in: CGRect(x: 0, y: side - image.height, width: image.width, height: image.height))
-        let pixels = data.bindMemory(to: UInt8.self, capacity: side * side * 4)
-        let diagonal = (0..<side).map { pixels[($0 * side + $0) * 4 + 3] }
-        return DockGeometry.cornerRadius(diagonalAlpha: diagonal, scale: scale)
     }
 
     // MARK: Waiting on the Stage
@@ -386,9 +315,10 @@ final class WindowDock {
         return Task { _ = try? await restore.value }
     }
 
-    /// Snapshot and restoration are one queued operation belonging to the closing
+    /// Covering and restoration are one queued operation belonging to the closing
     /// session. Reserving it before suspension also closes an in-flight adoption.
-    func finishSession(_ session: UUID, snapshot: Bool = false, putsBack: Bool = true,
+    /// `coverFade` is how long `willRestore`'s cover takes to hide the window.
+    func finishSession(_ session: UUID, coverFade: TimeInterval = 0, putsBack: Bool = true,
                        keepsOnStage: @escaping @MainActor (WindowIdentity) -> Bool = { _ in false },
                        willRestore: @escaping @MainActor (Docked) -> Void = { _ in },
                        didRestore: @escaping @MainActor (pid_t?, Bool) -> Void = { _, _ in }) -> Task<Void, Never> {
@@ -396,9 +326,9 @@ final class WindowDock {
             guard let docked = current else { didRestore(nil, false); return }
             var stages = false
             if putsBack {
-                if snapshot { await refreshSnapshot(timeout: .milliseconds(150)) }
                 if let latest = current { willRestore(latest) }
-                // Pinning may change while the snapshot awaits capture IO.
+                if coverFade > 0 { try? await Task.sleep(for: .seconds(coverFade)) }
+                // Pinning may change while the cover fades in.
                 stages = stage?.isReady == true && keepsOnStage(docked.identity)
                 if stages {
                     do { try await moveToStageNow() }
@@ -593,19 +523,5 @@ private func dockObserverCallback(_ observer: AXObserver, _ element: AXUIElement
     MainActor.assumeIsolated {
         guard let pointer = UnsafeMutableRawPointer(bitPattern: address) else { return }
         Unmanaged<WindowDock>.fromOpaque(pointer).takeUnretainedValue().handle(name)
-    }
-}
-
-/// Resumes a continuation once, from whichever side finishes first.
-private final class OneShot<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    var continuation: CheckedContinuation<Value, Never>?
-
-    func resume(_ value: sending Value) {
-        lock.lock()
-        let pending = continuation
-        continuation = nil
-        lock.unlock()
-        pending?.resume(returning: value)
     }
 }

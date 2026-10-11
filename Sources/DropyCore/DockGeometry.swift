@@ -112,16 +112,7 @@ public enum DockGeometry {
         CGRect(x: rect.minX, y: mainDisplayHeight - rect.maxY, width: rect.width, height: rect.height)
     }
 
-    /// The window's corner radius in points, from the alpha of its snapshot along the
-    /// diagonal from the top-left corner (one value per pixel, 0–255). The rounded
-    /// corner leaves transparent pixels; where the diagonal first turns opaque is
-    /// `r × (1 − 1/√2)` from the corner. Nil when the snapshot has no transparent corner.
-    public static func cornerRadius(diagonalAlpha: [UInt8], scale: CGFloat) -> CGFloat? {
-        guard scale > 0, let first = diagonalAlpha.firstIndex(where: { $0 >= 128 }), first > 0 else { return nil }
-        let radius = CGFloat(first) / (1 - 1 / 2.squareRoot()) / scale
-        return min(radius, 40)
-    }
-
-    /// Used when the radius cannot be measured; close to macOS 26's window corners.
+    /// The docked window's corner radius: close to macOS 26's window corners. Dropy
+    /// cannot measure it without capturing the window (see `CaptureGuard`).
     public static let defaultCornerRadius: CGFloat = 16
 }
