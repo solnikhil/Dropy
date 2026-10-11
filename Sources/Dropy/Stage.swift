@@ -40,6 +40,8 @@ final class Stage {
     var allowsPointer = false
     /// Called when WindowServer ends the Stage; its windows are then on a real display.
     var onLost: (() -> Void)?
+    /// Asked before the Stage is created: false keeps it away (a video is playing).
+    var mayStart: (() -> Bool)?
 
     static var isSupported: Bool { DropyStageIsSupported() }
 
@@ -75,6 +77,10 @@ final class Stage {
     func start() async -> Bool {
         if isReady { return true }
         if let starting { return await starting.value }
+        guard mayStart?() != false else {
+            NSLog("Dropy stage: not created, a video played lately")
+            return false
+        }
         let task = Task { @MainActor in
             do {
                 try await create()

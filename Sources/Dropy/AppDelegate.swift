@@ -13,6 +13,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let parkingTabs = ParkingTabs()
     /// The hidden display where pinned apps wait between openings.
     private let stage: Stage? = Stage.isSupported ? Stage() : nil
+    private let videoActivity = VideoActivity()
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
     /// Hides the Dock while the overlay opens on its edge, when the person asks.
     private let dockAutoHide = DockAutoHide()
@@ -61,6 +62,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         listenForAnimationRequests()
         overlay = OverlayController(preferences: preferences, journal: placementJournal, stage: stage)
         stage?.onLost = { [weak self] in self?.overlay.stageLost() }
+        overlay.videoActivity = videoActivity
+        stage?.mayStart = { [weak self] in self?.overlay.allowsStage ?? true }
+        videoActivity.onPlaybackStarted = { [weak self] in self?.videoStarted() }
+        videoActivity.start()
         overlay.onDeferredRestore = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
@@ -266,6 +271,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var keepsStage: Bool {
         let value = preferences.value
         return value.interaction == .fullApp && value.keepsPinnedAppReady && value.pinnedBundleIdentifier != nil
+            && !value.protectsVideo
     }
 
     private var stageRetirement: Timer?
@@ -292,6 +298,17 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard Date().timeIntervalSince(since) >= 6 else { return }
         stageIdleSince = nil
         NSLog("Dropy stage: removed after being unused (it is created again when needed)")
+        stage.stop()
+    }
+
+    /// A video began playing (or Protect Video Playback was turned on). The Stage has no HDCP, so while it is connected protected
+    /// video refuses to play: unless an open overlay is using it, it goes now, with any
+    /// window waiting on it put back first. It comes back when an opening needs it.
+    private func videoStarted() {
+        guard let stage, stage.isReady, overlay.state == .closed else { return }
+        overlay.releaseStagedWindows()
+        stage.waitUntilEmpty()
+        NSLog("Dropy stage: removed, a video started playing")
         stage.stop()
     }
 
@@ -608,6 +625,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             registerShortcut()
             settings.model.shortcutRejected("Another app already uses \(new.shortcut.display). Choose a different one.")
         }
+        // Turned on: the Stage goes now, as when a video starts.
+        if new.protectsVideo, !old.protectsVideo { videoStarted() }
         if new.keepsPinnedAppReady != old.keepsPinnedAppReady {
             overlay.pinnedAppChanged()
             startStageIfUseful()

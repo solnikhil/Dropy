@@ -34,10 +34,24 @@ final class CaptureGuardTests: XCTestCase {
 
     func testCaptureIsAllowedUnlessTurnedOff() throws {
         let old = try JSONDecoder().decode(DropyPreferences.self, from: Data(#"{"sizePreset":"wide"}"#.utf8))
-        XCTAssertFalse(old.neverCapturesScreen)
+        XCTAssertFalse(old.protectsVideo)
         var preferences = DropyPreferences()
-        preferences.neverCapturesScreen = true
+        preferences.protectsVideo = true
         let round = try JSONDecoder().decode(DropyPreferences.self, from: JSONEncoder().encode(preferences))
-        XCTAssertTrue(round.neverCapturesScreen)
+        XCTAssertTrue(round.protectsVideo)
+    }
+
+    func testAPausedVideoCountsForAWhile() {
+        var log = VideoActivityLog()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(log.observe([], at: start), [])
+        XCTAssertNil(log.recent(at: start), "nothing has played")
+        XCTAssertEqual(log.observe([2474], at: start), [2474], "playback started")
+        XCTAssertEqual(log.observe([2474], at: start.addingTimeInterval(60)), [], "still playing")
+        // Paused an hour into the episode: it counts from the pause, not from the start.
+        log.observe([], at: start.addingTimeInterval(3600))
+        XCTAssertEqual(log.recent(at: start.addingTimeInterval(3600 + 10 * 60)), 2474)
+        XCTAssertNil(log.recent(at: start.addingTimeInterval(3600 + 16 * 60)), "long paused")
+        XCTAssertNil(log.recent(at: start.addingTimeInterval(3600)) { $0 != 2474 }, "the player quit")
     }
 }

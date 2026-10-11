@@ -15,10 +15,10 @@ public enum CaptureFailure: Equatable, Sendable {
     case streamInterrupted(code: Int)
     /// The window list could not be read.
     case windowListUnavailable(code: Int)
-    /// Showing the window would mean capturing the screen while an app keeps the
-    /// display awake, as video players do while they play.
+    /// Showing the window would mean capturing the screen or adding the hidden display
+    /// while an app played video recently.
     case videoPlaying(applicationName: String)
-    /// Showing the window would mean capturing the screen, which the person turned off.
+    /// Showing the window would need what Protect Video Playback turns off.
     case captureTurnedOff
 
     public var message: String {
@@ -36,9 +36,9 @@ public enum CaptureFailure: Equatable, Sendable {
         case .windowListUnavailable(let code):
             "Window list unavailable (code \(code)). Open the window menu to retry."
         case .videoPlaying(let app):
-            "\(app) may be playing a video. Showing this window here captures the screen, which pauses some players."
+            "Showing this window here could stop the video in \(app): it needs a screen capture and Dropy's hidden display, which protected video refuses."
         case .captureTurnedOff:
-            "Showing this window here would capture the screen, which is turned off in Settings › Interaction."
+            "Showing this window here needs a screen capture and Dropy's hidden display, which Protect Video Playback turns off in Settings › Interaction."
         }
     }
 

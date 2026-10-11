@@ -30,6 +30,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private var captureAllowed = false
     /// What Show Anyway starts: the capture that was refused.
     private var refusedCapture: (() -> Void)?
+    /// Apps that played video lately.
+    var videoActivity: VideoActivity?
     private(set) var workspace: OverlayWorkspaceView?
     private(set) var overlayScreen: NSScreen?
     private var expandedPreview = false
@@ -988,8 +990,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// Before a stream starts: shows why the screen should not be captured now and
     /// returns true, keeping `retry` for Show Anyway. False when capture may start.
     private func refuseCapture(retry: @escaping () -> Void) -> Bool {
-        let refusal = CaptureGuard.refusal(neverCaptures: preferences.value.neverCapturesScreen,
-                                           playing: captureAllowed ? nil : DisplayAwake.application())
+        let refusal = CaptureGuard.refusal(neverCaptures: preferences.value.protectsVideo,
+                                           playing: captureAllowed ? nil : videoActivity?.recentPlayer())
         guard let refusal else { return false }
         NSLog("Dropy capture: not started (%@)", refusal.diagnosticName)
         refusedCapture = retry
@@ -1109,4 +1111,18 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// Whether the Stage is needed right now: the overlay is open, or a window is on the
     /// Stage or waiting there to go home.
     var needsStage: Bool { state != .closed || native.dock.holdsWindows }
+
+    /// Whether the hidden display may be created now: not while a video played lately
+    /// (it has no HDCP), unless the person chose Show Anyway for this opening.
+    var allowsStage: Bool {
+        if preferences.value.protectsVideo { return false }
+        return captureAllowed && state != .closed || videoActivity?.recentPlayer() == nil
+    }
+
+    /// A video started playing while the overlay is closed: windows waiting on the
+    /// Stage go back where they were, so the Stage can go.
+    func releaseStagedWindows() {
+        guard state == .closed else { return }
+        native.releaseNow()
+    }
 }

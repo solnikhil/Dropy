@@ -97,9 +97,9 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "ready", pane: .interaction, title: "Keep Pinned App Ready",
                       detail: "The pinned app waits on a hidden display and opens on any desktop.",
                       keywords: "stage hidden display virtual desktop spaces full screen instant screenshot black extra"),
-        SettingsTopic(id: "neverCapture", pane: .interaction, title: "Never Capture the Screen",
-                      detail: "No live preview and no streaming over full-screen apps.",
-                      keywords: "capture screen recording video netflix playback pause drm privacy stream"),
+        SettingsTopic(id: "protectVideo", pane: .interaction, title: "Protect Video Playback",
+                      detail: "Never capture the screen or add a hidden display, so video keeps playing.",
+                      keywords: "capture screen recording video prime netflix apple tv hdcp playback pause drm privacy stream"),
         SettingsTopic(id: "crossing", pane: .interaction, title: "Keep the Pointer Beside the Notch",
                       detail: "Experimental hold on sideways movement across the notch.",
                       keywords: "cursor pointer experimental accessibility option"),
@@ -467,12 +467,12 @@ struct SettingsView: View {
                     ])
                 }
                 SettingsToggleRow("Keep Pinned App Ready",
-                                  detail: "Its window waits on a hidden display between openings, so it opens at once on any desktop. macOS counts that display, so a full-screen screenshot (⇧⌘3) also saves a black picture of it. Off, the hidden display exists only while Dropy needs it.",
+                                  detail: "Its window waits on a hidden display between openings, so it opens at once on any desktop. macOS counts that display, so a full-screen screenshot (⇧⌘3) also saves a black picture of it, and protected video can't play while it exists (it has no HDCP): Dropy removes it when a video starts. Off, the hidden display exists only while Dropy needs it.",
                                   isOn: model.binding(\.keepsPinnedAppReady))
-                    .disabled(model.preferences.interaction != .fullApp)
-                SettingsToggleRow("Never Capture the Screen",
-                                  detail: "Any screen capture tells every app that the screen is being recorded, and some video players stop playing then. Dropy already asks first while a video is playing. On, it never captures: no live preview, and over a full-screen app the window can't be shown.",
-                                  isOn: model.binding(\.neverCapturesScreen))
+                    .disabled(model.preferences.interaction != .fullApp || model.preferences.protectsVideo)
+                SettingsToggleRow("Protect Video Playback",
+                                  detail: "Over a full-screen app, Dropy streams the window from a hidden display, and a window from another desktop passes through that display. Protected video (Prime Video, Apple TV, Netflix) stops or shows an HDCP error meanwhile, so Dropy asks first when a video played in the last 15 minutes. On, it never does either: those windows stay where they are.",
+                                  isOn: model.binding(\.protectsVideo))
                 if model.preferences.interaction == .fullApp, !model.accessibilityGranted {
                     SettingsNotice(symbol: "hand.raised", title: "Accessibility access required",
                                    detail: "Allow Dropy to move the app's window into the overlay. Until then it is a preview.") {
