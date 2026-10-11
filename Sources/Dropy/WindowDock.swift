@@ -267,6 +267,12 @@ final class WindowDock {
     /// animation and measures its corner radius. Keeps the previous snapshot on failure.
     func refreshSnapshot(timeout: Duration = .milliseconds(250)) async {
         guard let docked = current else { return }
+        // Even one screenshot of this window stops some players (CaptureGuard): the
+        // window then moves under the overlay's plain cover instead.
+        guard OverlayController.captureBlocker == nil else {
+            NSLog("Dropy dock: no snapshot, a running player stops on capture")
+            return
+        }
         let identity = docked.identity
         var window = docked.window
         let known = abs(window.frame.width - docked.frame.width) < 2 && abs(window.frame.height - docked.frame.height) < 2

@@ -147,6 +147,21 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             MainActor.assumeIsolated { self?.screensChanged() }
         })
         missionControl.onBegin = { [weak self] in self?.dismiss(.missionControl) }
+        // A player that stops on capture opened while a stream runs: end the stream.
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let blocker = CaptureGuard.blocker(in: [(application?.bundleIdentifier, application?.localizedName)])
+            MainActor.assumeIsolated {
+                guard let self, let blocker, self.state.isCapturing || self.state == .live else { return }
+                NSLog("Dropy capture: stopped, a player that stops on capture launched")
+                // Live: the normal close, which brings the window back from the Stage.
+                guard self.state != .live else { self.close(returnsFocus: false); return }
+                self.generation = UUID()
+                self.preview.stop(reason: "captureStopsPlayback")
+                self.setState(.failed(.captureStopsPlayback(applicationName: blocker)))
+            }
+        })
     }
 
     deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
@@ -926,7 +941,13 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         case .live:
             preview.stop(reason: "live")
             native.end()
-            if let live { live.start(selected, request: request) } else { fallThroughToPreview(selected, request, conditions) }
+            // Live streams the window; a player that stops on capture gets the
+            // preview path, which refuses with the reason.
+            if let live, Self.captureBlocker == nil {
+                live.start(selected, request: request)
+            } else {
+                fallThroughToPreview(selected, request, conditions)
+            }
         case .preview:
             fallThroughToPreview(selected, request, conditions)
         }
@@ -959,10 +980,20 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         Task { [weak self] in
             await restoration.value
             guard let self, self.generation == request, self.state != .closed else { return }
+            if let blocker = Self.captureBlocker {
+                NSLog("Dropy capture: not started, a running player stops on capture")
+                self.setState(.failed(.captureStopsPlayback(applicationName: blocker)))
+                return
+            }
             self.workspace?.previewShell.layer?.cornerRadius = 12
             self.preview.start(identity, request: request, renderer: renderer)
             if !note.isEmpty { self.showNote(note) }
         }
+    }
+
+    /// A running app that stops playback when the screen is captured, by name.
+    static var captureBlocker: String? {
+        CaptureGuard.blocker(in: NSWorkspace.shared.runningApplications.map { ($0.bundleIdentifier, $0.localizedName) })
     }
 
     func relinquishSourceFocus(processID: pid_t) {

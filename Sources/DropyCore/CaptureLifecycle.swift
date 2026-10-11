@@ -15,6 +15,9 @@ public enum CaptureFailure: Equatable, Sendable {
     case streamInterrupted(code: Int)
     /// The window list could not be read.
     case windowListUnavailable(code: Int)
+    /// Showing the window would mean capturing the screen, and a running app (a video
+    /// player) stops playback when anything captures it.
+    case captureStopsPlayback(applicationName: String)
 
     public var message: String {
         switch self {
@@ -30,6 +33,8 @@ public enum CaptureFailure: Equatable, Sendable {
             "Capture was interrupted (code \(code)). Choose the window again to retry."
         case .windowListUnavailable(let code):
             "Window list unavailable (code \(code)). Open the window menu to retry."
+        case .captureStopsPlayback(let app):
+            "Not shown while \(app) is open: it stops playing when the screen is captured. Leave full screen to bring the app in here instead."
         }
     }
 
@@ -42,6 +47,7 @@ public enum CaptureFailure: Equatable, Sendable {
         case .stoppedFromSystemControls: "stoppedFromSystemControls"
         case .streamInterrupted(let code): "streamInterrupted(\(code))"
         case .windowListUnavailable(let code): "windowListUnavailable(\(code))"
+        case .captureStopsPlayback: "captureStopsPlayback"
         }
     }
 
