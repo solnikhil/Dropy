@@ -81,6 +81,10 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private var pointerHasEntered = false
     private var pendingPointerLeave: DispatchWorkItem?
     private var previousApplication: NSRunningApplication?
+    /// Closes the overlay when Mission Control, App Exposé or Show Desktop begins.
+    private let missionControl = MissionControlWatcher()
+    /// The overlay's display as it was at opening; a change to it closes the overlay.
+    private var displayAtOpen: (id: CGDirectDisplayID, frame: CGRect)?
 
     /// The exact window being previewed, for development drivers.
     var currentSelection: WindowIdentity? { selectedIdentity }
@@ -103,27 +107,63 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             let bundleID = application?.bundleIdentifier
             MainActor.assumeIsolated { self?.native.applicationActivated(pid: pid, bundleIdentifier: bundleID) }
         })
-        // The overlay shows on every desktop, but a docked window stays on the one it
-        // was docked on: switching desktops would leave an empty frame. Close instead.
-        // Only while docking: opening Dropy itself can switch desktops (its Settings
-        // window may be on another one), and the window list or preview is fine there.
+        // Switching desktops on the overlay's display (a swipe, Control-arrow, an app
+        // going full screen) closes it: a docked window stays on the desktop it was
+        // docked on, and the window list or preview belongs to the desktop it opened on.
         workspaceObservers.append(center.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.native.activeSpaceChanged()
-                guard self.state.isDocking, let screen = self.overlayScreen else { return }
+                guard self.state != .closed, let screen = self.overlayScreen else { return }
                 // Other displays changing desktops (or the Stage appearing) leave the
-                // docked window where it is; only a switch on this display strands it.
+                // overlay where it is; only a switch on this display takes it away.
                 let now = Spaces.current(on: Self.displayID(of: screen))
                 guard now == nil || now != self.desktopAtOpen else { return }
                 NSLog("Dropy dismiss: switched desktops")
-                self.close(returnsFocus: false)
+                self.dismiss(.desktopChanged)
             }
         })
+        // Sleep, the screen locking or its screen saver, and another user taking the
+        // screen: the overlay should not be waiting there afterwards.
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
+            workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let reason = note.name.rawValue
+                MainActor.assumeIsolated { self?.sessionEnded(reason) }
+            })
+        }
+        let distributed = DistributedNotificationCenter.default()
+        for name in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
+            workspaceObservers.append(distributed.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] note in
+                let reason = note.name.rawValue
+                MainActor.assumeIsolated { self?.sessionEnded(reason) }
+            })
+        }
+        // A display unplugged, rearranged or resized: the overlay's layout no longer
+        // fits it. Adding Dropy's own Stage display leaves the overlay's display as is.
+        workspaceObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screensChanged() }
+        })
+        missionControl.onBegin = { [weak self] in self?.dismiss(.missionControl) }
     }
 
     deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
+
+    private func sessionEnded(_ reason: String) {
+        guard state != .closed else { return }
+        NSLog("Dropy dismiss: %@", reason)
+        dismiss(.sessionEnded)
+    }
+
+    private func screensChanged() {
+        guard state != .closed, let display = displayAtOpen else { return }
+        let screen = NSScreen.screens.first { Self.displayID(of: $0) == display.id }
+        guard screen?.frame != display.frame else { return }
+        NSLog("Dropy dismiss: the overlay's display %@", screen == nil ? "went away" : "changed")
+        dismiss(.displayChanged)
+    }
 
     /// Called when a docked window's restore could not finish yet.
     var onDeferredRestore: ((WindowIdentity) -> Void)? {
@@ -138,7 +178,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// Closes the overlay if the dismiss preference treats `event` as an exit.
     func dismiss(_ event: DismissEvent) {
         guard state != .closed, preferences.value.dismissBehavior.closes(on: event) else { return }
-        close()
+        close(returnsFocus: !event.isSystemChange)
     }
 
     func open() {
@@ -155,6 +195,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         openedAt = CACurrentMediaTime()
         openReadyLogged = false
         desktopAtOpen = Spaces.current(on: Self.displayID(of: screen))
+        displayAtOpen = (Self.displayID(of: screen), screen.frame)
+        missionControl.start()
         layoutChangesBeforeReady = 0
         // Open straight to the size the chosen window will need when it is known, so
         // the outline grows once instead of opening at the preset's size and morphing
