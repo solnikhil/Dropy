@@ -34,7 +34,8 @@ final class AnimationDemo {
         // Both bodies on screen, then the panel around the larger one.
         let screenBody = { (size: CGSize) in position.body(size: size, screen: screen.frame, visible: screen.visibleFrame) }
         let frame = OverlayGeometry.pixelAligned(position.canvas(around: screenBody(Self.secondSize).union(screenBody(Self.firstSize)),
-                                                                 margin: margin, screen: screen.frame),
+                                                                 margin: margin, screen: screen.frame,
+                                                                 visible: screen.visibleFrame),
                                                  scale: screen.backingScaleFactor)
         let panel = OverlayPanel.make(contentRect: frame)
         panel.ignoresMouseEvents = true

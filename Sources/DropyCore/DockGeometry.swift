@@ -87,14 +87,15 @@ public enum DockGeometry {
         let window = CGRect(x: (body.midX - size.width / 2).rounded(), y: body.minY + bottomInset,
                             width: size.width, height: size.height)
         return layout(around: window, screen: screen, minimumBodyWidth: minimumBodyWidth,
-                      position: position, clearance: clearance)
+                      position: position, clearance: clearance, visible: visible)
     }
 
     /// The body around wherever the window really is. The window decides: an app can
     /// refuse a size (a minimum or maximum) and macOS can nudge the position, and the
     /// overlay follows rather than fighting it, reaching to its screen edges.
     public static func layout(around window: CGRect, screen: CGRect, minimumBodyWidth: CGFloat,
-                              position: OverlayPosition = .notch, clearance: CGFloat = controlBand) -> DockLayout {
+                              position: OverlayPosition = .notch, clearance: CGFloat = controlBand,
+                              visible: CGRect? = nil) -> DockLayout {
         var width = window.width + 2 * sideInset
         var minX = window.minX - sideInset
         if width < minimumBodyWidth {
@@ -103,7 +104,7 @@ public enum DockGeometry {
         }
         let minY = window.minY - bottomInset
         let around = CGRect(x: minX, y: minY, width: width, height: window.maxY + clearance - minY)
-        return DockLayout(body: position.reachingEdges(around, screen: screen), window: window)
+        return DockLayout(body: position.reachingEdges(around, screen: screen, visible: visible), window: window)
     }
 
     /// AppKit screen rectangle to global top-left coordinates, given the main display's height.

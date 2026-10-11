@@ -417,7 +417,7 @@ struct SettingsView: View {
         switch position {
         case .notch: "Grows out of the notch, or the top of a screen without one."
         case .left, .right: "Grows out of the side of the screen, centered between the menu bar and the Dock."
-        case .bottomLeft, .bottomRight: "Grows out of the corner of the screen, over the Dock if it reaches that far."
+        case .bottomLeft, .bottomRight: "Grows out of the corner of the screen, above the Dock when it is showing."
         }
     }
 

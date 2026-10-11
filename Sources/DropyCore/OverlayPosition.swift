@@ -24,48 +24,86 @@ public enum OverlayPosition: String, Codable, CaseIterable, Sendable {
 
     public var isCorner: Bool { self == .bottomLeft || self == .bottomRight }
 
-    /// The body of `size` on `screen` (AppKit coordinates). A side edge centers it in
-    /// the space between the menu bar and the Dock (`visible`) when it fits there.
+    /// What the overlay treats as the screen's edges: the screen, except that a Dock
+    /// on the bottom, left or right moves that edge to the Dock's inner side. macOS
+    /// draws the Dock above every ordinary window, so a docked app under it would be
+    /// covered. A hidden Dock leaves only a few points and is ignored. The top edge is
+    /// always the screen's.
+    public static func edges(screen: CGRect, visible: CGRect) -> CGRect {
+        let area = visible.intersection(screen)
+        guard !area.isNull else { return screen }
+        func inset(_ gap: CGFloat) -> CGFloat { gap > hiddenDockGap ? gap : 0 }
+        let minX = screen.minX + inset(area.minX - screen.minX)
+        let maxX = screen.maxX - inset(screen.maxX - area.maxX)
+        let minY = screen.minY + inset(area.minY - screen.minY)
+        return CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, screen.maxY - minY))
+    }
+
+    /// The space an overlay at this position may take: the whole screen at the notch;
+    /// beside a side edge, between the menu bar and the Dock; in a corner, everything
+    /// clear of the Dock.
+    public func room(screen: CGRect, visible: CGRect) -> CGRect {
+        let edges = Self.edges(screen: screen, visible: visible)
+        switch self {
+        case .notch: return screen
+        case .bottomLeft, .bottomRight: return edges
+        case .left, .right:
+            let area = visible.intersection(screen).isNull ? screen : visible.intersection(screen)
+            return CGRect(x: edges.minX, y: area.minY, width: edges.width, height: area.height)
+        }
+    }
+
+    /// The strip macOS keeps for a hidden Dock, at most.
+    static let hiddenDockGap: CGFloat = 8
+
+    /// The body of `size` on `screen` (AppKit coordinates), flush with this position's
+    /// edges (see `edges`). A side edge centers it in the space between the menu bar
+    /// and the Dock (`visible`) when it fits there.
     public func body(size: CGSize, screen: CGRect, visible: CGRect) -> CGRect {
-        let width = min(size.width, screen.width), height = min(size.height, screen.height)
+        let edges = Self.edges(screen: screen, visible: visible)
+        let room = room(screen: screen, visible: visible)
+        let width = min(size.width, room.width), height = min(size.height, room.height)
         let x: CGFloat
         switch self {
         case .notch: x = screen.midX - width / 2
-        case .left, .bottomLeft: x = screen.minX
-        case .right, .bottomRight: x = screen.maxX - width
+        case .left, .bottomLeft: x = edges.minX
+        case .right, .bottomRight: x = edges.maxX - width
         }
         let y: CGFloat
         switch self {
         case .notch: y = screen.maxY - height
-        case .bottomLeft, .bottomRight: y = screen.minY
+        case .bottomLeft, .bottomRight: y = edges.minY
         case .left, .right:
             let area = visible.intersection(screen).isNull ? screen : visible.intersection(screen)
             y = height <= area.height
                 ? min(max(area.midY - height / 2, area.minY), area.maxY - height)
-                : max(screen.minY, area.maxY - height)
+                : max(edges.minY, area.maxY - height)
         }
         return CGRect(x: x, y: y, width: width, height: height)
     }
 
     /// `body` grown until it is flush with this position's screen edges, for a body
     /// laid out around a window that sits wherever macOS put it.
-    public func reachingEdges(_ body: CGRect, screen: CGRect) -> CGRect {
+    public func reachingEdges(_ body: CGRect, screen: CGRect, visible: CGRect? = nil) -> CGRect {
+        let edges = Self.edges(screen: screen, visible: visible ?? screen)
         var minX = body.minX, maxX = body.maxX, minY = body.minY, maxY = body.maxY
         switch self {
         case .notch: maxY = screen.maxY
-        case .left: minX = screen.minX
-        case .right: maxX = screen.maxX
-        case .bottomLeft: minX = screen.minX; minY = screen.minY
-        case .bottomRight: maxX = screen.maxX; minY = screen.minY
+        case .left: minX = edges.minX
+        case .right: maxX = edges.maxX
+        case .bottomLeft: minX = edges.minX; minY = edges.minY
+        case .bottomRight: maxX = edges.maxX; minY = edges.minY
         }
         return CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, maxY - minY))
     }
 
     /// The overlay window around `body`, with `margin` for the outline's overshoot on
     /// every side that is not a screen edge.
-    public func canvas(around body: CGRect, margin: CGFloat, screen: CGRect) -> CGRect {
+    public func canvas(around body: CGRect, margin: CGFloat, screen: CGRect, visible: CGRect? = nil) -> CGRect {
         let grown = body.insetBy(dx: -margin, dy: -margin)
-        let clipped = grown.intersection(screen)
+        // At the notch only the top edge bounds it; elsewhere also the Dock's side.
+        let bounds = self == .notch ? screen : Self.edges(screen: screen, visible: visible ?? screen)
+        let clipped = grown.intersection(bounds)
         return clipped.isNull ? grown : clipped
     }
 

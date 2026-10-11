@@ -313,8 +313,13 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// The window list's body at the size preset, at this opening's position.
     private func pickerBody(on screen: NSScreen) -> CGRect {
-        placedBody(size: OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions).size,
+        placedBody(size: OverlayGeometry.frame(on: room(on: screen), preferredSize: preferences.value.sizePreset.dimensions).size,
                    on: screen)
+    }
+
+    /// The space the overlay may take: the screen, minus the Dock away from the notch.
+    private func room(on screen: NSScreen) -> CGRect {
+        position.room(screen: screen.frame, visible: screen.visibleFrame)
     }
 
     /// A body of `size` at this opening's position on `screen`.
@@ -674,18 +679,19 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private func previewLayout(for source: CGSize, on screen: NSScreen) -> WorkspaceLayout {
         let preset = preferences.value.sizePreset
         if preferences.value.automaticWindowSize || preset == .nativeSize || expandedPreview {
-            return WorkspaceLayout.make(source: source, screen: screen.frame.size,
+            return WorkspaceLayout.make(source: source, screen: room(on: screen).size,
                 notch: bandNotch, expanded: expandedPreview,
                 maximumSize: preset.maximumSize)
         }
-        let size = OverlayGeometry.frame(on: screen.frame, preferredSize: preset.dimensions).size
+        let size = OverlayGeometry.frame(on: room(on: screen), preferredSize: preset.dimensions).size
         return WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size, notch: bandNotch))
     }
 
     /// The panel's frame around `body`, with room for the outline's overshoot.
     private func canvasFrame(around body: CGRect, on screen: NSScreen) -> CGRect {
         let margin = NotchMorph.overshootMargin(for: body.size, reach: OverlayMotion.reach)
-        return OverlayGeometry.pixelAligned(position.canvas(around: body, margin: margin, screen: screen.frame),
+        return OverlayGeometry.pixelAligned(position.canvas(around: body, margin: margin, screen: screen.frame,
+                                                            visible: screen.visibleFrame),
                                             scale: screen.backingScaleFactor)
     }
 

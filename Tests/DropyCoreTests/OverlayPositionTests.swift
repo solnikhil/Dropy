@@ -25,15 +25,36 @@ final class OverlayPositionTests: XCTestCase {
         XCTAssertEqual(right.midY, visible.midY)
 
         let bottomLeft = OverlayPosition.bottomLeft.body(size: size, screen: screen, visible: visible)
-        XCTAssertEqual(bottomLeft.origin, screen.origin, "the screen's corner, not the Dock's top")
+        XCTAssertEqual(bottomLeft.origin, CGPoint(x: 0, y: visible.minY), "on top of the Dock, never under it")
 
         let bottomRight = OverlayPosition.bottomRight.body(size: size, screen: screen, visible: visible)
         XCTAssertEqual(bottomRight.maxX, screen.maxX)
-        XCTAssertEqual(bottomRight.minY, screen.minY)
+        XCTAssertEqual(bottomRight.minY, visible.minY)
 
         for position in OverlayPosition.allCases {
             XCTAssertEqual(position.body(size: size, screen: screen, visible: visible).size, size)
         }
+    }
+
+    func testTheDockMovesTheEdgeItSitsOn() {
+        // A hidden Dock leaves a few points: the real screen edge is kept.
+        let hidden = CGRect(x: 0, y: 4, width: 1512, height: 945)
+        XCTAssertEqual(OverlayPosition.bottomLeft.body(size: size, screen: screen, visible: hidden).origin, .zero)
+        // A Dock on the left: the left edge and the left corner move beside it, the
+        // right side and the notch do not.
+        let leftDock = CGRect(x: 64, y: 0, width: 1448, height: 949)
+        XCTAssertEqual(OverlayPosition.left.body(size: size, screen: screen, visible: leftDock).minX, 64)
+        XCTAssertEqual(OverlayPosition.bottomLeft.body(size: size, screen: screen, visible: leftDock).origin,
+                       CGPoint(x: 64, y: 0))
+        XCTAssertEqual(OverlayPosition.right.body(size: size, screen: screen, visible: leftDock).maxX, screen.maxX)
+        XCTAssertEqual(OverlayPosition.notch.body(size: size, screen: screen, visible: leftDock).midX, screen.midX)
+        // The window's room above a bottom Dock reaches the top of the screen.
+        XCTAssertEqual(OverlayPosition.edges(screen: screen, visible: visible),
+                       CGRect(x: 0, y: 70, width: 1512, height: 912))
+        // Nothing of the canvas reaches under the Dock.
+        let body = OverlayPosition.bottomRight.body(size: size, screen: screen, visible: visible)
+        XCTAssertEqual(OverlayPosition.bottomRight.canvas(around: body, margin: 30, screen: screen, visible: visible).minY,
+                       visible.minY)
     }
 
     func testATallBodyAtASideEdgeStaysBelowTheMenuBar() {
@@ -197,14 +218,14 @@ final class OverlayPositionTests: XCTestCase {
         let layout = DockGeometry.layout(windowSize: CGSize(width: 800, height: 500), screen: screen, clearance: 32,
                                          minimumBodyWidth: 104, position: .bottomRight, visible: visible)
         XCTAssertEqual(layout.body.maxX, screen.maxX)
-        XCTAssertEqual(layout.body.minY, screen.minY)
-        XCTAssertEqual(layout.window.minY, DockGeometry.bottomInset)
+        XCTAssertEqual(layout.body.minY, visible.minY, "the window sits above the Dock, which would cover it")
+        XCTAssertEqual(layout.window.minY, visible.minY + DockGeometry.bottomInset)
         XCTAssertEqual(layout.body.maxY, layout.window.maxY + 32)
         // macOS nudged the window up and in: the body still reaches the corner.
         let nudged = DockGeometry.layout(around: layout.window.offsetBy(dx: -20, dy: 12), screen: screen,
-                                         minimumBodyWidth: 104, position: .bottomRight, clearance: 32)
+                                         minimumBodyWidth: 104, position: .bottomRight, clearance: 32, visible: visible)
         XCTAssertEqual(nudged.body.maxX, screen.maxX)
-        XCTAssertEqual(nudged.body.minY, screen.minY)
+        XCTAssertEqual(nudged.body.minY, visible.minY)
         XCTAssertEqual(nudged.body.maxY, nudged.window.maxY + 32)
     }
 
