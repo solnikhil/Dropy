@@ -254,6 +254,15 @@ final class OverlayPositionTests: XCTestCase {
         XCTAssertFalse(OverlayPosition.right.hidesDock(preference: true, dock: .bottom))
     }
 
+    func testAnOpeningThatHidesTheDockLaysOutForTheEdge() {
+        let hidden = DockSide.bottom.visible(visible, screen: screen)
+        XCTAssertEqual(hidden, CGRect(x: 0, y: 0, width: 1512, height: 949))
+        XCTAssertEqual(OverlayPosition.bottomLeft.body(size: size, screen: screen, visible: hidden).origin, .zero)
+        let leftDock = CGRect(x: 64, y: 0, width: 1448, height: 949)
+        XCTAssertEqual(DockSide.left.visible(leftDock, screen: screen).minX, 0)
+        XCTAssertEqual(DockSide.right.visible(CGRect(x: 0, y: 0, width: 1448, height: 949), screen: screen).maxX, 1512)
+    }
+
     // MARK: Preferences
 
     func testSavedSettingsWithoutAPositionOpenAtTheNotch() throws {

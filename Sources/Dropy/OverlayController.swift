@@ -38,6 +38,10 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private(set) var notchSize: CGSize?
     /// Where this opening sits on the screen; read from the preferences at each opening.
     private(set) var position: OverlayPosition = .notch
+    /// The Dock this opening hides (it slides away as the overlay grows), if any.
+    private(set) var hiddenDock: DockSide?
+    /// Asked at each opening which Dock to hide, if any.
+    var dockToHide: (() -> DockSide?)?
     /// What the controls band leaves room for: the housing at the notch (or a
     /// notch-wide space on a screen without one), only the controls elsewhere.
     private var bandNotch: CGSize { notchSize ?? CGSize(width: position == .notch ? 180 : 0, height: 32) }
@@ -146,6 +150,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         overlayScreen = screen
         expandedPreview = false
         position = preferences.value.position
+        hiddenDock = dockToHide?()
         notchSize = position == .notch ? Self.notchSize(on: screen) : nil
         openedAt = CACurrentMediaTime()
         openReadyLogged = false
@@ -317,14 +322,19 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                    on: screen)
     }
 
+    /// The screen's visible frame as this opening will have it: without a Dock it hides.
+    func visibleFrame(of screen: NSScreen) -> CGRect {
+        hiddenDock?.visible(screen.visibleFrame, screen: screen.frame) ?? screen.visibleFrame
+    }
+
     /// The space the overlay may take: the screen, minus the Dock away from the notch.
     private func room(on screen: NSScreen) -> CGRect {
-        position.room(screen: screen.frame, visible: screen.visibleFrame)
+        position.room(screen: screen.frame, visible: visibleFrame(of: screen))
     }
 
     /// A body of `size` at this opening's position on `screen`.
     private func placedBody(size: CGSize, on screen: NSScreen) -> CGRect {
-        position.body(size: size, screen: screen.frame, visible: screen.visibleFrame)
+        position.body(size: size, screen: screen.frame, visible: visibleFrame(of: screen))
     }
 
     /// Grows the outline out of the notch with a spring, then brings the content in.
@@ -691,7 +701,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private func canvasFrame(around body: CGRect, on screen: NSScreen) -> CGRect {
         let margin = NotchMorph.overshootMargin(for: body.size, reach: OverlayMotion.reach)
         return OverlayGeometry.pixelAligned(position.canvas(around: body, margin: margin, screen: screen.frame,
-                                                            visible: screen.visibleFrame),
+                                                            visible: visibleFrame(of: screen)),
                                             scale: screen.backingScaleFactor)
     }
 

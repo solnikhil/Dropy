@@ -26,6 +26,8 @@ protocol OverlaySessionHost: AnyObject {
     var notchSize: CGSize? { get }
     /// Where this opening sits on the screen.
     var position: OverlayPosition { get }
+    /// The screen's visible frame as this opening has it (without a Dock it hides).
+    func visibleFrame(of screen: NSScreen) -> CGRect
     /// When the outline's current animation finishes.
     var settlesAt: Date { get }
 

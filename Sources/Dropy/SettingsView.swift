@@ -401,7 +401,7 @@ struct SettingsView: View {
                 .padding(SettingsMetrics.rowInset)
                 if model.preferences.position.sharesEdge(with: model.dockSide) {
                     SettingsToggleRow("Hide the Dock",
-                                      detail: "The Dock sits on this edge. While Dropy runs, the Dock hides until you point at it, and comes back when you choose another position or quit Dropy.",
+                                      detail: "The Dock sits on this edge. It slides away when the overlay opens and comes back when it closes.",
                                       isOn: model.binding(\.hidesDock))
                     if model.preferences.hidesDock, let problem = model.dockProblem {
                         SettingsNotice(symbol: "exclamationmark.triangle", title: "The Dock is still showing", detail: problem)

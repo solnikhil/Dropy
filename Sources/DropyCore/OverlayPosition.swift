@@ -165,3 +165,18 @@ extension OverlayPosition {
         preference && sharesEdge(with: dock)
     }
 }
+
+extension DockSide {
+    /// `visible` (the screen's visible frame) as it is once the Dock on this side has
+    /// hidden: an opening that hides the Dock lays out for the screen it is about to
+    /// have, not the one still showing the Dock as it slides away.
+    public func visible(_ visible: CGRect, screen: CGRect) -> CGRect {
+        var minX = visible.minX, maxX = visible.maxX, minY = visible.minY
+        switch self {
+        case .bottom: minY = screen.minY
+        case .left: minX = screen.minX
+        case .right: maxX = screen.maxX
+        }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: visible.maxY - minY)
+    }
+}

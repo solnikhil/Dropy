@@ -42,18 +42,18 @@ final class NativeSession: NSObject {
     /// The body around where the window really is, at this opening's position.
     func layout(around window: CGRect, on screen: NSScreen) -> DockLayout {
         DockGeometry.layout(around: window, screen: screen.frame, minimumBodyWidth: minimumDockWidth,
-                            position: host.position, clearance: clearance(on: screen), visible: screen.visibleFrame)
+                            position: host.position, clearance: clearance(on: screen), visible: host.visibleFrame(of: screen))
     }
 
     /// A window of `size` placed at this opening's position.
     func layout(windowSize size: CGSize, on screen: NSScreen) -> DockLayout {
         DockGeometry.layout(windowSize: size, screen: screen.frame, clearance: clearance(on: screen),
-                            minimumBodyWidth: minimumDockWidth, position: host.position, visible: screen.visibleFrame)
+                            minimumBodyWidth: minimumDockWidth, position: host.position, visible: host.visibleFrame(of: screen))
     }
 
     /// The space a window may take: the screen, minus the Dock away from the notch.
     private func room(on screen: NSScreen) -> CGRect {
-        host.position.room(screen: screen.frame, visible: screen.visibleFrame)
+        host.position.room(screen: screen.frame, visible: host.visibleFrame(of: screen))
     }
 
     private func clearance(on screen: NSScreen) -> CGFloat {

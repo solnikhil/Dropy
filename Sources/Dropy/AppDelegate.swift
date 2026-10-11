@@ -89,7 +89,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Checks launched with --show never touch the person's Dock.
         if !Self.launchedByCheck {
             dockAutoHide.onProblem = { [weak self] problem in self?.settings?.model.dockProblemChanged(problem) }
-            dockAutoHide.update(preferences.value)
+            dockAutoHide.settle()
         }
         settings.model.animations = animations
         settings.model.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
@@ -220,8 +220,20 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         trigger.onRestrictionStatus = { [weak self] message in self?.settings.model.cursorRestrictionStatus = message }
         trigger.start()
         self.trigger = trigger
-        overlay.onOpen = { [weak trigger] in trigger?.overlayOpened() }
-        overlay.onClose = { [weak trigger] in trigger?.overlayClosed() }
+        overlay.onOpen = { [weak self, weak trigger] in
+            trigger?.overlayOpened()
+            guard let self, !Self.launchedByCheck else { return }
+            self.dockAutoHide.overlayOpened(self.preferences.value)
+        }
+        overlay.onClose = { [weak self, weak trigger] in
+            trigger?.overlayClosed()
+            guard let self, !Self.launchedByCheck else { return }
+            self.dockAutoHide.overlayClosed(after: OverlayMotion.wall(OverlayMotion.morph.close.duration))
+        }
+        overlay.dockToHide = { [weak self] in
+            guard let self, !Self.launchedByCheck else { return nil }
+            return DockAutoHide.sideToHide(for: self.preferences.value)
+        }
         if wantsDockIcon { NSApp.activate(ignoringOtherApps: true) }
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.async { [weak self] in self?.overlay.open() }
@@ -588,9 +600,6 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlay.open()
         }
         if new.showInDock != old.showInDock { updateActivationPolicy() }
-        if new.position != old.position || new.hidesDock != old.hidesDock, !Self.launchedByCheck {
-            dockAutoHide.update(new)
-        }
         // The next motion uses the new animation; one already playing finishes as it began.
         if new.motionStyle != old.motionStyle || new.customAnimation != old.customAnimation { applyAnimation() }
         if new.shortcut != old.shortcut, !registerShortcut() {
