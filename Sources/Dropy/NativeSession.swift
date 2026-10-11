@@ -36,7 +36,24 @@ final class NativeSession: NSObject {
     private var mainDisplayHeight: CGFloat { CGDisplayBounds(CGMainDisplayID()).height }
 
     var minimumDockWidth: CGFloat {
-        DockGeometry.minimumBodyWidth(notch: host.notchSize ?? CGSize(width: 180, height: 32))
+        DockGeometry.minimumBodyWidth(notch: host.notchSize ?? (host.position == .notch ? CGSize(width: 180, height: 32) : nil))
+    }
+
+    /// The body around where the window really is, at this opening's position.
+    func layout(around window: CGRect, on screen: NSScreen) -> DockLayout {
+        DockGeometry.layout(around: window, screen: screen.frame, minimumBodyWidth: minimumDockWidth,
+                            position: host.position, clearance: clearance(on: screen))
+    }
+
+    /// A window of `size` placed at this opening's position.
+    func layout(windowSize size: CGSize, on screen: NSScreen) -> DockLayout {
+        DockGeometry.layout(windowSize: size, screen: screen.frame, clearance: clearance(on: screen),
+                            minimumBodyWidth: minimumDockWidth, position: host.position, visible: screen.visibleFrame)
+    }
+
+    private func clearance(on screen: NSScreen) -> CGFloat {
+        DockGeometry.clearance(notch: host.notchSize, menuBarHeight: screen.frame.maxY - screen.visibleFrame.maxY,
+                               position: host.position)
     }
 
     private func isCurrent(_ request: UUID) -> Bool { request == host.generation && host.state.isDocking }
@@ -48,14 +65,11 @@ final class NativeSession: NSObject {
 
     /// The same, for a window of `current` size that Dropy has not moved yet.
     func targetLayout(windowSize current: CGSize, on screen: NSScreen) -> DockLayout {
-        let clearance = DockGeometry.clearance(notch: host.notchSize,
-                                               menuBarHeight: screen.frame.maxY - screen.visibleFrame.maxY)
         let preferences = host.preferences.value
         let size = DockGeometry.windowSize(preset: preferences.sizePreset,
                                            adaptsToWindow: preferences.automaticWindowSize,
-                                           current: current, screen: screen.frame, clearance: clearance)
-        return DockGeometry.layout(windowSize: size, screen: screen.frame, clearance: clearance,
-                                   minimumBodyWidth: minimumDockWidth)
+                                           current: current, screen: screen.frame, clearance: clearance(on: screen))
+        return layout(windowSize: size, on: screen)
     }
 
     /// The layout an opening of `bundleID` will end at, worked out before the window
@@ -162,7 +176,7 @@ final class NativeSession: NSObject {
         // Closed meanwhile: the close puts the window back after this placement.
         guard isCurrent(request) else { return }
         let actual = PlacementGeometry.appKitRect(fromGlobal: placed, mainDisplayHeight: mainDisplayHeight)
-        let layout = DockGeometry.layout(around: actual, screen: screen.frame, minimumBodyWidth: minimumDockWidth)
+        let layout = layout(around: actual, on: screen)
         if layout != target { host.applyLayout(body: layout.body, preview: layout.windowInBody, animated: false) }
         dockLayout = layout
         await dock.activate(session: request)
@@ -396,7 +410,7 @@ final class NativeSession: NSObject {
         case .resized(let frame):
             guard host.state == .docked, let screen = host.overlayScreen else { return }
             let actual = PlacementGeometry.appKitRect(fromGlobal: frame, mainDisplayHeight: mainDisplayHeight)
-            let layout = DockGeometry.layout(around: actual, screen: screen.frame, minimumBodyWidth: minimumDockWidth)
+            let layout = layout(around: actual, on: screen)
             dockLayout = layout
             host.applyLayout(body: layout.body, preview: layout.windowInBody, animated: false)
             updateHole()

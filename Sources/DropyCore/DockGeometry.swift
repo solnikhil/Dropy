@@ -8,8 +8,10 @@ import Foundation
 /// The real window hangs below the notch band: macOS keeps every ordinary window
 /// below the menu bar, so the band (Dropy's own black outline) fills the space from
 /// the top of the screen to the window, and a thin border frames the other sides.
+/// Opening from a side edge or a bottom corner, the band only holds the controls and
+/// the border reaches the screen edge on the overlay's own side.
 public struct DockLayout: Equatable, Sendable {
-    /// The overlay's black body: from the top of the screen down to below the window.
+    /// The overlay's black body: from the screen edge it opens from to around the window.
     public let body: CGRect
     /// The window's frame.
     public let window: CGRect
@@ -31,15 +33,19 @@ public enum DockGeometry {
     public static let bottomInset = WorkspaceLayout.bottomInset
     /// A window narrower than this still gets a body wide enough for the notch and
     /// the controls either side of it.
-    public static func minimumBodyWidth(notch: CGSize) -> CGFloat {
-        notch.width + 2 * (WorkspaceLayout.appSwitcherWidth + WorkspaceLayout.topControlInset + 2)
+    public static func minimumBodyWidth(notch: CGSize?) -> CGFloat {
+        (notch?.width ?? 0) + 2 * (WorkspaceLayout.appSwitcherWidth + WorkspaceLayout.topControlInset + 2)
     }
 
     /// Height of the band above the window: at least the notch, the menu bar (no
-    /// ordinary window can go higher) and the controls.
-    public static func clearance(notch: CGSize?, menuBarHeight: CGFloat) -> CGFloat {
-        max(notch?.height ?? 0, menuBarHeight, 32)
+    /// ordinary window can go higher) and the controls. Away from the top edge only
+    /// the controls.
+    public static func clearance(notch: CGSize?, menuBarHeight: CGFloat, position: OverlayPosition = .notch) -> CGFloat {
+        position == .notch ? max(notch?.height ?? 0, menuBarHeight, 32) : controlBand
     }
+
+    /// The band that holds the overlay's controls.
+    public static let controlBand: CGFloat = 32
 
     /// The window size to ask for.
     /// - Parameters:
@@ -65,18 +71,30 @@ public enum DockGeometry {
                       height: max(1, min(size.height, largest.height)).rounded())
     }
 
-    /// Centers a window of `size` under the notch on `screen`.
+    /// Centers a window of `size` under the notch on `screen`, or places it in a body
+    /// at `position` (`visible` is the area between the menu bar and the Dock).
     public static func layout(windowSize size: CGSize, screen: CGRect, clearance: CGFloat,
-                              minimumBodyWidth: CGFloat) -> DockLayout {
-        let window = CGRect(x: (screen.midX - size.width / 2).rounded(), y: screen.maxY - clearance - size.height,
+                              minimumBodyWidth: CGFloat, position: OverlayPosition = .notch,
+                              visible: CGRect? = nil) -> DockLayout {
+        guard position != .notch else {
+            let window = CGRect(x: (screen.midX - size.width / 2).rounded(), y: screen.maxY - clearance - size.height,
+                                width: size.width, height: size.height)
+            return layout(around: window, screen: screen, minimumBodyWidth: minimumBodyWidth)
+        }
+        let bodySize = CGSize(width: max(minimumBodyWidth, size.width + 2 * sideInset),
+                              height: size.height + clearance + bottomInset)
+        let body = position.body(size: bodySize, screen: screen, visible: visible ?? screen)
+        let window = CGRect(x: (body.midX - size.width / 2).rounded(), y: body.minY + bottomInset,
                             width: size.width, height: size.height)
-        return layout(around: window, screen: screen, minimumBodyWidth: minimumBodyWidth)
+        return layout(around: window, screen: screen, minimumBodyWidth: minimumBodyWidth,
+                      position: position, clearance: clearance)
     }
 
     /// The body around wherever the window really is. The window decides: an app can
     /// refuse a size (a minimum or maximum) and macOS can nudge the position, and the
-    /// overlay follows rather than fighting it.
-    public static func layout(around window: CGRect, screen: CGRect, minimumBodyWidth: CGFloat) -> DockLayout {
+    /// overlay follows rather than fighting it, reaching to its screen edges.
+    public static func layout(around window: CGRect, screen: CGRect, minimumBodyWidth: CGFloat,
+                              position: OverlayPosition = .notch, clearance: CGFloat = controlBand) -> DockLayout {
         var width = window.width + 2 * sideInset
         var minX = window.minX - sideInset
         if width < minimumBodyWidth {
@@ -84,8 +102,8 @@ public enum DockGeometry {
             width = minimumBodyWidth
         }
         let minY = window.minY - bottomInset
-        let body = CGRect(x: minX, y: minY, width: width, height: max(1, screen.maxY - minY))
-        return DockLayout(body: body, window: window)
+        let around = CGRect(x: minX, y: minY, width: width, height: window.maxY + clearance - minY)
+        return DockLayout(body: position.reachingEdges(around, screen: screen), window: window)
     }
 
     /// AppKit screen rectangle to global top-left coordinates, given the main display's height.

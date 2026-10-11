@@ -26,7 +26,7 @@ The M3 input bridge is replaced by using the real window (see [ARCHITECTURE](ARC
 
 Built: the animation format and its limits, the Animation Studio (springs, keyframes, drawing the curve, content timing, undo, autosave), the gallery, share codes, playing on the notch, and the agent workflow (guide in the folder, a prompt in Settings, `Dropy animation` commands). See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). Open:
 
-- **Where the overlay opens from:** the notch today; corners and screen edges next, with the same animation format (an edge is the top-edge shape rotated; a corner needs its own shape).
+- **Where the overlay opens from (built 2026-10-11, not yet tried on device):** Settings › Overlay › Open From offers the notch, the left and right edges and the bottom corners. An edge is the top-edge outline turned; a corner has its own outline (an ear on each edge, one rounded corner). Every animation plays at every position (`width` along the edge, `height` into the screen), and `Dropy animation play` uses the chosen position. Away from the notch the outline grows from a small nub and fades in. Open: a person trying each position with the window list, the preview, Native and Live; a Dock on the same edge or reaching a bottom corner sits under the overlay and over a docked window there; the Studio's preview still shows the notch only; notch hover stays notch-only (and paused).
 - **Manual testing by a person:** how editing feels in the Studio (keyframe dragging, the spring handle, the pen), and custom animations in daily use.
 - **Measurements:** `bun run bench -- --animation <file>` measures a build with a custom animation; no budgets for custom animations yet beyond the limits in the format.
 

@@ -64,8 +64,7 @@ final class LiveSession {
                 guard isCurrent(request), let stageBounds = stage.bounds, let displayID = stage.displayID,
                       let renderer = host.renderer else { return }
                 // The app may have refused the size: lay the overlay out around what it took.
-                let layout = DockGeometry.layout(windowSize: staged.size, screen: screen.frame,
-                                                 clearance: target.band.height, minimumBodyWidth: native.minimumDockWidth)
+                let layout = native.layout(windowSize: staged.size, on: screen)
                 if layout != target { host.applyLayout(body: layout.body, preview: layout.windowInBody, animated: false) }
                 try await caster.start(stage: displayID, region: staged.offsetBy(dx: -stageBounds.minX, dy: -stageBounds.minY),
                                        windowID: docked.identity.windowID, renderer: renderer,

@@ -22,7 +22,10 @@ protocol OverlaySessionHost: AnyObject {
     var workspace: OverlayWorkspaceView? { get }
     var renderer: MetalFrameView? { get }
     var overlayScreen: NSScreen? { get }
+    /// The housing the overlay grows from; nil without one or away from the notch.
     var notchSize: CGSize? { get }
+    /// Where this opening sits on the screen.
+    var position: OverlayPosition { get }
     /// When the outline's current animation finishes.
     var settlesAt: Date { get }
 

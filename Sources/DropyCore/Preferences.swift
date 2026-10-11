@@ -144,6 +144,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var pinnedBundleIdentifier: String?
     /// Opens and closes the overlay from anywhere.
     public var shortcut: KeyShortcut
+    /// Where on the screen the overlay opens from.
+    public var position: OverlayPosition
 
     public init(
         trigger: Trigger = .notchHover,
@@ -161,7 +163,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         customAnimation: String? = nil,
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
-        shortcut: KeyShortcut = .default
+        shortcut: KeyShortcut = .default,
+        position: OverlayPosition = .notch
     ) {
         self.trigger = trigger
         self.openBehavior = openBehavior
@@ -179,6 +182,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.showInDock = showInDock
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
         self.shortcut = shortcut
+        self.position = position
     }
 
     /// The app whose window an opening selects by itself, if any. A pinned app wins
@@ -195,7 +199,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
         case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, motionStyle, customAnimation, showInDock
-        case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize
+        case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize, position
     }
 
     /// Settings saved before a field existed keep every other choice; a new field takes
@@ -224,5 +228,6 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)
         shortcut = savedShortcut == KeyShortcut.previousDefault ? defaults.shortcut : savedShortcut ?? defaults.shortcut
+        position = (try? container.decodeIfPresent(OverlayPosition.self, forKey: .position)) ?? defaults.position
     }
 }

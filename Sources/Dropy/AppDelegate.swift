@@ -671,12 +671,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     func playOnNotch(_ animation: DropyAnimation, slowdown: Double) -> TimeInterval {
         guard let slowdown = AnimationPlayback.slowdown(slowdown) else { return 0 }
-        guard overlay.state != .closed else { return demo.play(animation, slowdown: slowdown) }
+        let position = overlay.preferences.value.position
+        guard overlay.state != .closed else { return demo.play(animation, slowdown: slowdown, at: position) }
         overlay.close()
         let wait = OverlayMotion.wall(OverlayMotion.morph.close.duration) + 0.1
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(wait))
-            self?.demo.play(animation, slowdown: slowdown)
+            self?.demo.play(animation, slowdown: slowdown, at: position)
         }
         return wait + (animation.morph.open.duration + animation.morph.resize.duration + animation.morph.close.duration
                        + AnimationDemo.holdOpen + AnimationDemo.holdResized) * slowdown

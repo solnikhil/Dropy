@@ -154,11 +154,14 @@ enum OverlayMotion {
 
     // MARK: Content, on views (the overlay)
 
-    /// Brings the content in: focus, scale and opacity together, from the top center.
-    static func revealContent(_ view: NSView, motion: ContentMotion? = nil, slowdown: Double = slowdown) {
+    /// Brings the content in: focus, scale and opacity together, from the point the
+    /// overlay grows out of (the top center at the notch).
+    static func revealContent(_ view: NSView, motion: ContentMotion? = nil, slowdown: Double = slowdown,
+                              position: OverlayPosition = .notch) {
         guard let layer = view.layer else { return }
         let parts = view.subviews.compactMap { subview in subview.layer.map { ($0, subview.frame) } }
-        reveal(layer, parts: parts, bounds: view.bounds, motion: motion ?? content, slowdown: slowdown) {
+        reveal(layer, parts: parts, bounds: view.bounds, motion: motion ?? content, slowdown: slowdown,
+               position: position) {
             view.layerUsesCoreImageFilters = true
         }
     }
@@ -171,9 +174,11 @@ enum OverlayMotion {
     }
 
     /// Takes the content away before the outline closes over it.
-    static func hideContent(_ view: NSView, motion: ContentMotion? = nil) {
+    static func hideContent(_ view: NSView, motion: ContentMotion? = nil, position: OverlayPosition = .notch) {
         guard let layer = view.layer else { return }
-        hide(layer, bounds: view.bounds, motion: motion ?? content) { view.layerUsesCoreImageFilters = true }
+        hide(layer, bounds: view.bounds, motion: motion ?? content, position: position) {
+            view.layerUsesCoreImageFilters = true
+        }
     }
 
     // MARK: Content, on layers (shared with the Animation Studio's preview)
@@ -181,7 +186,7 @@ enum OverlayMotion {
     /// Reveals `layer` and, cascading from the top, each of `parts` (sublayers with their
     /// frames in `bounds`). `enableFilters` is called before a blur is attached.
     static func reveal(_ layer: CALayer, parts: [(CALayer, CGRect)], bounds: CGRect, motion: ContentMotion,
-                       slowdown: Double, enableFilters: () -> Void) {
+                       slowdown: Double, position: OverlayPosition = .notch, enableFilters: () -> Void) {
         let begin = layer.convertTime(CACurrentMediaTime(), from: nil) + (reduced ? 0 : motion.revealDelay)
         let duration = reduced ? 0.2 : motion.revealDuration
         let curve = motion.revealCurve.mediaTimingFunction
@@ -189,7 +194,7 @@ enum OverlayMotion {
             basic("opacity", from: 0, to: 1, duration: duration * 0.8, curve: CAMediaTimingFunction(name: .easeOut)),
         ]
         if !reduced {
-            animations.append(basic("transform", from: scaleFromTopCenter(motion.restScale, in: bounds),
+            animations.append(basic("transform", from: scale(motion.restScale, from: position, in: bounds),
                                     to: CATransform3DIdentity, duration: duration, curve: curve))
             if motion.blurRadius > 0, let blur = attachBlur(to: layer, enableFilters: enableFilters) {
                 animations.append(basic("filters.\(blur).inputRadius", from: motion.blurRadius, to: 0,
@@ -197,7 +202,7 @@ enum OverlayMotion {
             }
         }
         run(animations, on: layer, begin: begin, duration: duration, key: "reveal")
-        if !reduced { stagger(parts, in: bounds, begin: begin, duration: duration, motion: motion) }
+        if !reduced { stagger(parts, in: bounds, begin: begin, duration: duration, motion: motion, position: position) }
         // The filter renders offscreen; it goes as soon as the content is in focus.
         let remaining = begin - layer.convertTime(CACurrentMediaTime(), from: nil) + duration + motion.staggerSpan
         Task { @MainActor [weak layer] in
@@ -213,13 +218,14 @@ enum OverlayMotion {
             on: layer, begin: begin, duration: duration, key: "relayout")
     }
 
-    static func hide(_ layer: CALayer, bounds: CGRect, motion: ContentMotion, enableFilters: () -> Void) {
+    static func hide(_ layer: CALayer, bounds: CGRect, motion: ContentMotion, position: OverlayPosition = .notch,
+                     enableFilters: () -> Void) {
         layer.removeAnimation(forKey: "reveal")
         let now = layer.convertTime(CACurrentMediaTime(), from: nil)
         let curve = motion.hideCurve.mediaTimingFunction
         var animations: [CAAnimation] = [
             basic("opacity", from: 1, to: 0, duration: motion.hideDuration, curve: curve),
-            basic("transform", from: CATransform3DIdentity, to: scaleFromTopCenter(motion.restScale, in: bounds),
+            basic("transform", from: CATransform3DIdentity, to: scale(motion.restScale, from: position, in: bounds),
                   duration: motion.hideDuration, curve: curve),
         ]
         if motion.blurRadius > 0, let blur = attachBlur(to: layer, enableFilters: enableFilters) {
@@ -230,17 +236,20 @@ enum OverlayMotion {
         run(animations, on: layer, begin: now, duration: motion.hideDuration, key: "hide")
     }
 
-    /// Each piece fades in and drifts down into place, later the lower it sits.
+    /// Each piece fades in and drifts into place from the edge the overlay grows out
+    /// of (down from the notch), later the farther it sits from where the cascade starts.
     private static func stagger(_ parts: [(CALayer, CGRect)], in bounds: CGRect, begin: CFTimeInterval,
-                                duration: TimeInterval, motion: ContentMotion) {
+                                duration: TimeInterval, motion: ContentMotion, position: OverlayPosition) {
         let curve = motion.revealCurve.mediaTimingFunction
+        let drift = position.driftDirection
         for (layer, frame) in parts {
             guard bounds.height > 0 else { continue }
-            let depth = Double(max(0, min(1, (bounds.maxY - frame.maxY) / bounds.height)))
+            let distance = position.cascadesFromBottom ? frame.minY - bounds.minY : bounds.maxY - frame.maxY
+            let depth = Double(max(0, min(1, distance / bounds.height)))
+            let start = CATransform3DMakeTranslation(drift.dx * motion.staggerDrift, drift.dy * motion.staggerDrift, 0)
             let animations = [
                 basic("opacity", from: 0, to: 1, duration: duration * 0.7, curve: CAMediaTimingFunction(name: .easeOut)),
-                basic("transform", from: CATransform3DMakeTranslation(0, motion.staggerDrift, 0), to: CATransform3DIdentity,
-                      duration: duration, curve: curve),
+                basic("transform", from: start, to: CATransform3DIdentity, duration: duration, curve: curve),
             ]
             run(animations, on: layer, begin: begin + depth * motion.staggerSpan, duration: duration, key: "reveal")
         }
@@ -292,10 +301,11 @@ enum OverlayMotion {
         layer.add(group, forKey: key)
     }
 
-    /// AppKit anchors a view's layer at its bottom-left corner; scale around the top
-    /// center instead, where the notch is.
-    private static func scaleFromTopCenter(_ scale: CGFloat, in bounds: CGRect) -> CATransform3D {
-        let anchor = CGPoint(x: bounds.midX, y: bounds.maxY)
+    /// AppKit anchors a view's layer at its bottom-left corner; scale around the point
+    /// the overlay grows from instead (the top center, where the notch is).
+    private static func scale(_ scale: CGFloat, from position: OverlayPosition, in bounds: CGRect) -> CATransform3D {
+        let unit = position.growthAnchor
+        let anchor = CGPoint(x: bounds.minX + bounds.width * unit.x, y: bounds.minY + bounds.height * unit.y)
         var transform = CATransform3DMakeTranslation(anchor.x, anchor.y, 0)
         transform = CATransform3DScale(transform, scale, scale, 1)
         return CATransform3DTranslate(transform, -anchor.x, -anchor.y, 0)

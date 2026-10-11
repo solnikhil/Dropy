@@ -82,6 +82,8 @@ Each motion moves two parts of the outline, each along its own curve:
 - `width`: the width, and the curved "ears" where the outline meets the top edge.
 - `height`: the height, and the rounded lower corners.
 
+The person can also have the overlay open from a side edge or a bottom corner of the screen (Settings › Overlay › Open From). The same file plays there: at a side edge `width` is the length along the edge and `height` how far the outline reaches into the screen; in a corner `width` is across and `height` up. Away from the notch the outline grows from a small nub and fades in as it grows. `play` uses the position in Settings.
+
 A curve is progress over time: 0 where the motion starts, 1 where it ends. Above 1 overshoots the end (bigger than the open overlay while opening); below 0 pulls back past the start. A width that leads the height slightly is what makes it read as the notch itself growing rather than a box being scaled.
 
 ### Springs

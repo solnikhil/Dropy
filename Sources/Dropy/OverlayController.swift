@@ -33,8 +33,14 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// The black outline that morphs out of the notch, and the content it reveals.
     private(set) var backdrop: MorphBackdropView?
     private var content: NSView?
-    /// The camera housing the overlay grows from; nil on a screen without one.
+    /// The camera housing the overlay grows from; nil on a screen without one, and
+    /// when the overlay opens from a side edge or a corner.
     private(set) var notchSize: CGSize?
+    /// Where this opening sits on the screen; read from the preferences at each opening.
+    private(set) var position: OverlayPosition = .notch
+    /// What the controls band leaves room for: the housing at the notch (or a
+    /// notch-wide space on a screen without one), only the controls elsewhere.
+    private var bandNotch: CGSize { notchSize ?? CGSize(width: position == .notch ? 180 : 0, height: 32) }
     /// Called when opening so notch affordances release their input ownership.
     var onOpen: (() -> Void)?
     /// Called whenever the overlay closes, so the notch trigger can stay quiet.
@@ -139,7 +145,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         overlaySession = UUID()
         overlayScreen = screen
         expandedPreview = false
-        notchSize = Self.notchSize(on: screen)
+        position = preferences.value.position
+        notchSize = position == .notch ? Self.notchSize(on: screen) : nil
         openedAt = CACurrentMediaTime()
         openReadyLogged = false
         desktopAtOpen = Spaces.current(on: Self.displayID(of: screen))
@@ -148,16 +155,13 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         // the outline grows once instead of opening at the preset's size and morphing
         // again when the window list arrives.
         let prediction = predictOpening(on: screen)
-        let full = prediction?.body ?? OverlayGeometry.frame(on: screen.frame,
-                                                             preferredSize: preferences.value.sizePreset.dimensions)
+        let full = prediction?.body ?? pickerBody(on: screen)
         // The window is final from the start, with a transparent margin for the ears
         // and the opening overshoot; only the outline inside it moves. Resizing the
         // window itself each frame stuttered.
-        let margin = NotchMorph.overshootMargin(for: full.size, reach: OverlayMotion.reach)
-        let canvas = OverlayGeometry.pixelAligned(CGRect(x: full.minX - margin, y: full.minY - margin,
-                            width: full.width + 2 * margin, height: full.height + margin), scale: screen.backingScaleFactor)
+        let canvas = canvasFrame(around: full, on: screen)
         let panel = OverlayPanel.make(contentRect: canvas)
-        buildContent(in: panel, size: full.size)
+        buildContent(in: panel, body: full.offsetBy(dx: -canvas.minX, dy: -canvas.minY))
         if let prediction, let root = panel.contentView, let workspace {
             place(panel: panel, root: root, workspace: workspace, frame: canvas, body: full, preview: prediction.preview)
         }
@@ -223,8 +227,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                   let bounds = (row[kCGWindowBounds as String] as? NSDictionary).flatMap(CGRect.init(dictionaryRepresentation:)),
                   bounds.width > 60 else { return nil }
             let layout = previewLayout(for: bounds.size, on: screen)
-            let body = CGRect(x: screen.frame.midX - layout.size.width / 2, y: screen.frame.maxY - layout.size.height,
-                              width: layout.size.width, height: layout.size.height)
+            let body = placedBody(size: layout.size, on: screen)
             return OpeningPrediction(body: body, preview: layout.preview, windowID: row[kCGWindowNumber as String] as? UInt32,
                                      state: .starting(applicationName: name))
         }
@@ -301,25 +304,38 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     }
 
     /// Where the outline starts and ends: the notch, or on a screen without one a
-    /// menu-bar-high pill that fades as it grows.
-    private func closedShape(in canvas: CGSize) -> NotchShape {
-        NotchShape.notch(size: notchSize ?? CGSize(width: 180, height: NSStatusBar.system.thickness), in: canvas)
+    /// menu-bar-high pill that fades as it grows. Away from the notch, a small nub on
+    /// the screen edge (or in the corner) that also fades.
+    private func closedShape(in canvas: CGSize, body: CGRect) -> NotchShape {
+        guard position == .notch else { return .nub(for: body, at: position) }
+        return NotchShape.notch(size: notchSize ?? CGSize(width: 180, height: NSStatusBar.system.thickness), in: canvas)
+    }
+
+    /// The window list's body at the size preset, at this opening's position.
+    private func pickerBody(on screen: NSScreen) -> CGRect {
+        placedBody(size: OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions).size,
+                   on: screen)
+    }
+
+    /// A body of `size` at this opening's position on `screen`.
+    private func placedBody(size: CGSize, on screen: NSScreen) -> CGRect {
+        position.body(size: size, screen: screen.frame, visible: screen.visibleFrame)
     }
 
     /// Grows the outline out of the notch with a spring, then brings the content in.
     private func morphOpen(_ panel: OverlayPanel) {
         guard let backdrop, let content else { return }
         let canvas = backdrop.bounds.size
-        let open = NotchShape.open(body: content.frame)
+        let open = NotchShape.open(body: content.frame, at: position)
         if OverlayMotion.reduced {
             backdrop.set(open)
             settlesAt = Date()
         } else {
-            let duration = backdrop.morph(from: closedShape(in: canvas), to: open, motion: OverlayMotion.morph.open,
-                                          clipping: content)
+            let duration = backdrop.morph(from: closedShape(in: canvas, body: content.frame), to: open,
+                                          motion: OverlayMotion.morph.open, clipping: content)
             settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
         }
-        OverlayMotion.revealContent(content)
+        OverlayMotion.revealContent(content, position: position)
         // Without a notch to grow from, the whole overlay also fades in.
         if notchSize == nil || OverlayMotion.reduced {
             panel.alphaValue = 0
@@ -346,10 +362,11 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             return
         }
         let canvas = backdrop.bounds.size
-        OverlayMotion.hideContent(content)
+        OverlayMotion.hideContent(content, position: position)
         // Start from where the outline is on screen, even mid-opening or mid-resize.
-        let duration = backdrop.morph(from: backdrop.visibleShape ?? .open(body: content.frame),
-                                      to: closedShape(in: canvas), motion: OverlayMotion.morph.close, clipping: content)
+        let duration = backdrop.morph(from: backdrop.visibleShape ?? .open(body: content.frame, at: position),
+                                      to: closedShape(in: canvas, body: content.frame),
+                                      motion: OverlayMotion.morph.close, clipping: content)
         // The last stretch fades, so the outline melts into the notch; without a notch
         // there is nothing to merge with, so it fades throughout.
         let fadeStart = notchSize == nil ? 0 : duration * 0.55
@@ -493,8 +510,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// Back to the window list's own size after a predicted opening could not be used.
     private func resetToPickerLayout() {
         guard let screen = overlayScreen else { return }
-        let body = OverlayGeometry.frame(on: screen.frame, preferredSize: preferences.value.sizePreset.dimensions)
-        applyLayout(body: body, preview: WorkspaceLayout.preview(in: body.size, notch: notchSize ?? CGSize(width: 180, height: 32)))
+        let body = pickerBody(on: screen)
+        applyLayout(body: body, preview: WorkspaceLayout.preview(in: body.size, notch: bandNotch))
     }
 
     /// Shows the pinned app's window, launching the app or asking it for a window
@@ -595,7 +612,9 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// A window is chosen: being previewed or docked.
     private var hasSelection: Bool { state.isCapturing || state.isDocking }
 
-    private func buildContent(in panel: NSPanel, size: CGSize) {
+    /// `body` is in the panel's coordinates.
+    private func buildContent(in panel: NSPanel, body: CGRect) {
+        let size = body.size
         let root = PointerTrackingView(frame: CGRect(origin: .zero, size: panel.frame.size))
         root.wantsLayer = true
         root.layer?.speed = Float(1 / OverlayMotion.slowdown)
@@ -604,8 +623,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         backdrop.autoresizingMask = [.width, .height]
         root.addSubview(backdrop)
         self.backdrop = backdrop
-        let workspace = OverlayWorkspaceView(frame: CGRect(x: (root.bounds.width - size.width) / 2,
-            y: root.bounds.height - size.height, width: size.width, height: size.height))
+        let workspace = OverlayWorkspaceView(frame: body)
         root.addSubview(workspace)
         self.workspace = workspace
         content = workspace
@@ -619,7 +637,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         workspace.expand.action = #selector(expandClicked)
         workspace.elsewhere.target = native
         workspace.elsewhere.action = #selector(NativeSession.goToDockedDesktop)
-        workspace.previewRect = WorkspaceLayout.preview(in: size, notch: notchSize ?? CGSize(width: 180, height: 32))
+        workspace.previewRect = WorkspaceLayout.preview(in: size, notch: bandNotch)
         workspace.needsLayout = true
         workspace.layoutSubtreeIfNeeded()
         do {
@@ -649,9 +667,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         guard let source = selectedWindowSize, let screen = overlayScreen, let workspace else { return }
         let layout = previewLayout(for: source, on: screen)
         guard workspace.frame.size != layout.size || workspace.previewRect != layout.preview else { return }
-        // Hanging from the top edge, centered.
-        applyLayout(body: CGRect(x: screen.frame.midX - layout.size.width / 2, y: screen.frame.maxY - layout.size.height,
-                                 width: layout.size.width, height: layout.size.height), preview: layout.preview)
+        applyLayout(body: placedBody(size: layout.size, on: screen), preview: layout.preview)
     }
 
     /// The preview's layout for a window of `source` size.
@@ -659,19 +675,18 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         let preset = preferences.value.sizePreset
         if preferences.value.automaticWindowSize || preset == .nativeSize || expandedPreview {
             return WorkspaceLayout.make(source: source, screen: screen.frame.size,
-                notch: notchSize ?? CGSize(width: 180, height: 32), expanded: expandedPreview,
+                notch: bandNotch, expanded: expandedPreview,
                 maximumSize: preset.maximumSize)
         }
         let size = OverlayGeometry.frame(on: screen.frame, preferredSize: preset.dimensions).size
-        return WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size,
-            notch: notchSize ?? CGSize(width: 180, height: 32)))
+        return WorkspaceLayout(size: size, preview: WorkspaceLayout.preview(in: size, notch: bandNotch))
     }
 
     /// The panel's frame around `body`, with room for the outline's overshoot.
     private func canvasFrame(around body: CGRect, on screen: NSScreen) -> CGRect {
         let margin = NotchMorph.overshootMargin(for: body.size, reach: OverlayMotion.reach)
-        return OverlayGeometry.pixelAligned(CGRect(x: body.minX - margin, y: body.minY - margin,
-                      width: body.width + 2 * margin, height: body.height + margin), scale: screen.backingScaleFactor)
+        return OverlayGeometry.pixelAligned(position.canvas(around: body, margin: margin, screen: screen.frame),
+                                            scale: screen.backingScaleFactor)
     }
 
     /// Moves the overlay's body to `newBody` (screen coordinates) with the preview or
@@ -696,7 +711,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         let frame = animate ? canvas(around: oldBody).union(canvas(around: newBody)) : canvas(around: newBody)
         let startShape = backdrop?.visibleShape?.offsetBy(dx: oldOrigin.x - frame.minX, dy: oldOrigin.y - frame.minY)
         place(panel: panel, root: root, workspace: workspace, frame: frame, body: newBody, preview: layout.preview)
-        let endShape = NotchShape.open(body: workspace.frame)
+        let endShape = NotchShape.open(body: workspace.frame, at: position)
         if animate, let backdrop, let startShape {
             let duration = backdrop.morph(from: startShape, to: endShape, motion: OverlayMotion.morph.resize, clipping: workspace)
             OverlayMotion.relayoutContent(workspace)
@@ -708,7 +723,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                       let root = panel.contentView, let workspace = self.workspace else { return }
                 self.place(panel: panel, root: root, workspace: workspace, frame: canvas(around: newBody),
                            body: newBody, preview: layout.preview)
-                self.backdrop?.settle(.open(body: workspace.frame))
+                self.backdrop?.settle(.open(body: workspace.frame, at: self.position))
                 if self.state == .live { self.live?.resumeInputAfterLayout() }
             }
         } else {

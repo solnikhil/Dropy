@@ -602,7 +602,7 @@ private struct SizeArtwork: View {
         GeometryReader { proxy in
             let size = proxy.size
             ZStack(alignment: .top) {
-                background
+                TileWallpaper(selected: selected)
                 // The notch the overlay grows from.
                 UnevenRoundedRectangle(bottomLeadingRadius: 4, bottomTrailingRadius: 4)
                     .fill(.black.opacity(0.85))
@@ -632,8 +632,13 @@ private struct SizeArtwork: View {
         }
         .accessibilityHidden(true)
     }
+}
 
-    @ViewBuilder private var background: some View {
+/// The desktop picture behind the overlay in Settings' size and position tiles.
+private struct TileWallpaper: View {
+    let selected: Bool
+
+    var body: some View {
         if selected {
             ZStack {
                 LinearGradient(colors: [Color(red: 0.16, green: 0.12, blue: 0.62), Color(red: 0.36, green: 0.30, blue: 0.95)],
@@ -655,5 +660,69 @@ private struct SizeArtwork: View {
                                center: UnitPoint(x: 0.3, y: 0.8), startRadius: 0, endRadius: 80)
             }
         }
+    }
+}
+
+/// Where the overlay opens from: a tile per position, each drawing the overlay's real
+/// outline at that place on a small screen.
+struct OverlayPositionTiles: View {
+    @Binding var selection: OverlayPosition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(alignment: .top, spacing: SettingsMetrics.rowInset) {
+            ForEach(OverlayPosition.allCases, id: \.self) { position in
+                let selected = selection == position
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selection = position }
+                } label: {
+                    VStack(spacing: SettingsMetrics.controlSpacing) {
+                        PositionArtwork(position: position, selected: selected)
+                        Text(position.title)
+                            .font(selected ? SettingsMetrics.bodyEmphasis : SettingsMetrics.body)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .padding(.horizontal, 8)
+                            .frame(minHeight: SettingsMetrics.controlHeight)
+                            .background(selected ? SettingsTheme.controlHover : .clear, in: Capsule())
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(position.title)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Open from")
+    }
+}
+
+private struct PositionArtwork: View {
+    let position: OverlayPosition
+    let selected: Bool
+
+    var body: some View {
+        ZStack {
+            TileWallpaper(selected: selected)
+            Canvas { context, size in
+                let screen = CGRect(origin: .zero, size: size)
+                let body = position.body(size: CGSize(width: size.width * 0.46, height: size.height * 0.5),
+                                         screen: screen, visible: screen)
+                let shape = NotchShape(body: body, bottomRadius: 5, earRadius: 4, position: position)
+                // NotchShape draws with the origin at the bottom left; Canvas at the top left.
+                let flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
+                context.fill(Path(shape.fillPath).applying(flip),
+                             with: .color(selected ? Color(red: 0.05, green: 0.04, blue: 0.16) : .black.opacity(0.85)))
+                context.stroke(Path(shape.strokePath).applying(flip), with: .color(.white.opacity(0.14)), lineWidth: 0.5)
+            }
+        }
+        .aspectRatio(1.6, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius - 2, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius - 2, style: .continuous)
+                .strokeBorder(.white.opacity(selected ? 0.18 : 0.08), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
     }
 }
