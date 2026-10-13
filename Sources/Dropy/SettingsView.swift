@@ -144,9 +144,8 @@ struct SettingsView: View {
             SettingsSidebar(model: model)
                 .frame(width: model.sidebarWidth)
                 .frame(maxHeight: .infinity)
-                .background(SettingsSidebarGlass())
-                // Drawn over the glass's edge rather than as its own column: the window
-                // is transparent there, so a separate column showed the desktop.
+                .background(SettingsSidebarSurface())
+                // Keep the resize divider over the sidebar instead of adding a layout column.
                 .overlay(alignment: .trailing) { SettingsSidebarDivider(model: model) }
                 .zIndex(1)
 
@@ -166,6 +165,7 @@ struct SettingsView: View {
             }
             .background(SettingsTheme.background)
         }
+        .foregroundStyle(SettingsTheme.text)
         .ignoresSafeArea(.container, edges: .top)
         .onChange(of: model.settingsQuery) { _, query in
             if !query.isEmpty { model.stopRecordingShortcut() }
@@ -197,7 +197,7 @@ struct SettingsView: View {
             } else {
                 SettingsPage {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Search Results").font(.system(size: 27, weight: .bold, design: .rounded))
+                        Text("Search Results").font(.system(size: 24, weight: .semibold))
                             .accessibilityAddTraits(.isHeader)
                         Text("\(matches.count) result\(matches.count == 1 ? "" : "s") for “\(trimmedQuery)”")
                             .font(SettingsMetrics.body).foregroundStyle(.secondary)

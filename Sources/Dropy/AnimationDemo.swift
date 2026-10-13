@@ -137,7 +137,7 @@ enum PreviewContentLayout {
 
     static let bar = Kind(color: NSColor(white: 1, alpha: 0.16).cgColor, radius: 5)
     static let row = Kind(color: NSColor(white: 1, alpha: 0.1).cgColor, radius: 9)
-    static let picture = Kind(color: NSColor(srgbRed: 0.27, green: 0.42, blue: 0.68, alpha: 1).cgColor, radius: 12)
+    static let picture = Kind(color: NSColor(srgbRed: 0.17, green: 0.18, blue: 0.21, alpha: 1).cgColor, radius: 12)
     /// Top to bottom: two header pills, four rows, the picture.
     static let kinds: [Kind] = [bar, bar, row, row, row, row, picture]
 

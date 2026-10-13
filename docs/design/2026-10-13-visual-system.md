@@ -9,10 +9,10 @@ illustrations, with supporting explanations kept subordinate to the controls.
 ## Foundations
 
 - `DropyAppearance` owns semantic AppKit colors; `SettingsTheme` adapts them for SwiftUI.
-  Charcoal and warm off-white establish the surfaces. Coral identifies selected choices
+  Near-black and warm off-white establish the surfaces. Coral identifies selected choices
   and important actions. Blue is informational, and system green/red retain status meaning.
 - `SettingsMetrics` owns spacing, controls, card corners and the reading type scale.
-  Body text is 13 points, supporting text 12. Page titles are 27 points; navigation
+  Body text is 13 points, supporting text 12. Page titles are 24 points; navigation
   group labels are compact and letter-spaced.
 - Cards have an opaque, appearance-aware surface and a thin boundary. Hover changes
   the surface; selection adds an accent boundary plus a checkmark or selected trait.
@@ -70,3 +70,15 @@ preference combinations, and live picker visuals have not been manually reviewed
 Revision on 2026-10-14: General now contains neutral Application controls without the
 welcome illustration. Setup headings and menu labels are neutral. Updates has a dedicated
 page and startup checks; release-source and publishing requirements are in `docs/UPDATES.md`.
+
+Revision on 2026-10-14: the dark window surface is #0E0E10, sidebar #0A0A0C,
+cards #171719, selection #222225, primary text #F0F0F2, supporting text #A1A1AA,
+and muted coral #E87868. Sidebar and window are opaque so wallpaper cannot change
+the palette. Cards use 12-point corners, rows a 44-point minimum, and standard
+system lettering with 24-point semibold page titles. Selection uses a neutral fill,
+with accent confined to icons and actions. The default Settings window is 920 × 620
+points, resizable down to 800 × 560. The new frame key applies that compact default
+once and then preserves subsequent resizing. Overlay tile structure is unchanged;
+schematic wallpaper and animation sample content use darker, subdued surfaces.
+The signed build and workspace checks passed. General, Permissions, Overlay and
+Animation were visually reviewed in the installed app's dark appearance.

@@ -35,12 +35,12 @@ struct SettingsPageHeading: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(pane.title)
-                .font(.system(size: 27, weight: .bold, design: .rounded))
-                .tracking(-0.6)
+                .font(.system(size: 24, weight: .semibold))
+                .tracking(-0.35)
                 .accessibilityAddTraits(.isHeader)
             Text(pane.introduction)
                 .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.bottom, 2)
@@ -57,12 +57,12 @@ struct WorkspaceIllustration: View {
         GeometryReader { proxy in
             let size = proxy.size
             ZStack {
-                LinearGradient(colors: [Color(red: 0.17, green: 0.23, blue: 0.31),
-                                        Color(red: 0.30, green: 0.37, blue: 0.44),
-                                        Color(red: 0.55, green: 0.40, blue: 0.34)],
+                LinearGradient(colors: [Color(red: 0.06, green: 0.06, blue: 0.08),
+                                        Color(red: 0.12, green: 0.12, blue: 0.15),
+                                        Color(red: 0.19, green: 0.13, blue: 0.12)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 Ellipse()
-                    .fill(LinearGradient(colors: [Color(red: 0.94, green: 0.64, blue: 0.48).opacity(0.5), .clear],
+                    .fill(LinearGradient(colors: [Color(red: 0.45, green: 0.30, blue: 0.25).opacity(0.22), .clear],
                                          startPoint: .top, endPoint: .bottom))
                     .frame(width: size.width * 0.9, height: size.height * 1.8)
                     .rotationEffect(.degrees(-35))

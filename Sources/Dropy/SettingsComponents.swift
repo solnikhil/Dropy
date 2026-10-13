@@ -9,10 +9,12 @@ enum SettingsTheme {
     static let sidebar = Color(nsColor: DropyAppearance.sidebar)
     static let card = Color(nsColor: DropyAppearance.card)
     static let badge = Color(nsColor: DropyAppearance.information)
-    static let separator = Color.primary.opacity(0.09)
-    static let control = Color.primary.opacity(0.08)
-    static let controlHover = Color.primary.opacity(0.13)
-    static let selection = accent.opacity(0.13)
+    static let text = Color(nsColor: DropyAppearance.text)
+    static let secondaryText = Color(nsColor: DropyAppearance.secondaryText)
+    static let separator = Color.primary.opacity(0.06)
+    static let control = Color(nsColor: DropyAppearance.control)
+    static let controlHover = Color(nsColor: DropyAppearance.controlHover)
+    static let selection = Color(nsColor: DropyAppearance.selection)
     static let iconTile = Color(white: 0.30)
 }
 
@@ -21,7 +23,7 @@ enum SettingsTheme {
 enum SettingsMetrics {
     // Type: a 13-point body with a readable 12-point supporting line.
     static let body = Font.system(size: 13)
-    static let bodyEmphasis = Font.system(size: 13, weight: .semibold)
+    static let bodyEmphasis = Font.system(size: 13, weight: .medium)
     static let header = Font.system(size: 13, weight: .semibold)
     static let detail = Font.system(size: 12)
     static let badge = Font.system(size: 10, weight: .medium)
@@ -32,11 +34,11 @@ enum SettingsMetrics {
     static let controlSpacing: CGFloat = 8
 
     // Cards and rows.
-    static let cardRadius: CGFloat = 16
-    static let cardSpacing: CGFloat = 24
-    static let rowHeight: CGFloat = 52
+    static let cardRadius: CGFloat = 12
+    static let cardSpacing: CGFloat = 20
+    static let rowHeight: CGFloat = 44
     static let rowInset: CGFloat = 16
-    static let rowVerticalPadding: CGFloat = 12
+    static let rowVerticalPadding: CGFloat = 9
 
     // Window layout.
     static let titleBarHeight: CGFloat = 52
@@ -45,63 +47,15 @@ enum SettingsMetrics {
 
     // Sidebar.
     static let sidebarInset: CGFloat = 10
-    static let sidebarRowHeight: CGFloat = 34
+    static let sidebarRowHeight: CGFloat = 32
     static let sidebarWidth: ClosedRange<CGFloat> = 180...320
     static let sidebarDefaultWidth: CGFloat = 208
 }
 
-/// The sidebar's Liquid Glass under a gray layer, so the desktop is only a faint hint.
-/// The window is transparent behind the sidebar, so the glass refracts whatever is
-/// behind it. Before macOS 26 it falls back to the frosted sidebar material; with
-/// Reduce Transparency it is a solid surface.
-struct SettingsSidebarGlass: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        if reduceTransparency {
-            SettingsTheme.sidebar
-        } else {
-            SidebarGlassView(dark: colorScheme == .dark)
-                // The glass tint alone lets the wallpaper through almost unchanged;
-                // this gray layer leaves only a faint hint of it.
-                .overlay {
-                    SettingsTheme.sidebar.opacity(0.88)
-                        .allowsHitTesting(false)
-                }
-        }
-    }
-}
-
-/// Frosted glass with a dark tint, so the desktop shows only as muted color.
-private struct SidebarGlassView: NSViewRepresentable {
-    let dark: Bool
-
-    private var tint: NSColor {
-        dark ? NSColor(white: 0.08, alpha: 0.42) : NSColor(white: 0.25, alpha: 0.14)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            // Regular glass frosts the desktop; clear glass showed too much of it.
-            glass.style = .regular
-            glass.cornerRadius = 0
-            glass.tintColor = tint
-            return glass
-        }
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
-            glass.tintColor = tint
-        }
-    }
+/// Opaque by design: the navigation surface is stable against every wallpaper and
+/// does not require a separate Reduce Transparency fallback.
+struct SettingsSidebarSurface: View {
+    var body: some View { SettingsTheme.sidebar }
 }
 
 /// A centered, bounded reading column. The page heading follows its navigation context.
@@ -124,6 +78,7 @@ struct SettingsPage<Content: View>: View {
         .scrollIndicators(.automatic)
         .toggleStyle(.switch)
         .tint(SettingsTheme.accent)
+        .foregroundStyle(SettingsTheme.text)
     }
 }
 
@@ -160,7 +115,7 @@ struct SettingsCard<Content: View>: View {
                             in: RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.065), lineWidth: 1)
+                        .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.045), lineWidth: 1)
                         .allowsHitTesting(false)
                 }
             if let footer {
@@ -282,7 +237,7 @@ struct SettingsLabel: View {
                 if let badge { SettingsBadge(badge) }
             }
             if let detail {
-                Text(detail).font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                Text(detail).font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -312,7 +267,7 @@ struct SettingsFootnote: View {
     var body: some View {
         Text(text)
             .font(SettingsMetrics.detail)
-            .foregroundStyle(isError ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
+            .foregroundStyle(isError ? AnyShapeStyle(Color.red) : AnyShapeStyle(SettingsTheme.secondaryText))
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -500,7 +455,7 @@ struct SettingsChoiceTiles<Value: Hashable>: View {
                         .foregroundStyle(selected ? SettingsTheme.accent : Color.secondary)
                         .padding(.horizontal, 10)
                         .frame(minWidth: SettingsMetrics.controlHeight, minHeight: SettingsMetrics.controlHeight)
-                        .background(selected ? SettingsTheme.accent.opacity(0.13) : .clear,
+                        .background(selected ? SettingsTheme.selection : .clear,
                                     in: RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius, style: .continuous))
                         .contentShape(Rectangle())
                 }
@@ -639,11 +594,11 @@ struct SettingsVisualChoice<Artwork: View>: View {
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? SettingsTheme.accent.opacity(0.075) : .clear,
+        .background(selected ? SettingsTheme.selection : .clear,
                     in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(selected ? SettingsTheme.accent.opacity(0.6)
+                .strokeBorder(selected ? SettingsTheme.accent.opacity(0.35)
                               : Color.primary.opacity(contrast == .increased ? 0.35 : 0.075), lineWidth: 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 14))

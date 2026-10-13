@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The navigation column: search, then one row per page, on a glass surface. Only the
+/// The navigation column: search, then one row per page, on an opaque surface. Only the
 /// selected row has a fill, and that fill moves between rows as one matched shape.
 /// Native buttons keep focus and keyboard use.
 struct SettingsSidebar: View {

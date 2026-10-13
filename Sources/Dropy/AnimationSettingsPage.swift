@@ -74,7 +74,7 @@ struct AnimationSettingsPage: View {
                 HStack(alignment: .center, spacing: SettingsMetrics.rowInset) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: SettingsMetrics.controlSpacing) {
-                            Text(choice.animation.name).font(.system(size: 17, weight: .semibold, design: .rounded))
+                            Text(choice.animation.name).font(.system(size: 17, weight: .semibold))
                         }
                         Text(DropyAnimation.Part.allCases.map { String(format: "%@ %.2f s", $0.title, choice.animation[$0].duration) }
                             .joined(separator: " · "))
