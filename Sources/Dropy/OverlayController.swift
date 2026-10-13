@@ -658,7 +658,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         case .selecting:
             status?.stringValue = available.isEmpty
                 ? "No open windows. Open an app, then use the window menu."
-                : "Choose a window"
+                : "\(available.count) window\(available.count == 1 ? "" : "s") available"
         default:
             status?.stringValue = next.message ?? ""
         }
@@ -857,13 +857,15 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         menu.addItem(label)
         for window in available {
             let button = WindowChoiceButton(title: window.displayName, target: self, action: #selector(windowClicked))
-            button.frame = CGRect(x: 0, y: 0, width: max(1, workspace.bounds.width - 32), height: 42)
+            button.frame = CGRect(x: 0, y: 0, width: max(1, workspace.bounds.width - 32), height: 52)
             button.identity = window.identity
+            button.configure(appName: window.applicationName, windowTitle: window.window.title ?? "",
+                             icon: NSRunningApplication(processIdentifier: window.processID)?.icon)
             button.alignment = .left
             button.lineBreakMode = .byTruncatingTail
             list.addArrangedSubview(button)
             button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 42).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 52).isActive = true
             let item = NSMenuItem(title: window.displayName, action: #selector(menuWindowClicked), keyEquivalent: "")
             item.target = self
             item.representedObject = window.identity
@@ -1055,7 +1057,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         if !rows.contains(where: { $0.identity == highlightedIdentity }) { highlightedIdentity = rows.first?.identity }
         for row in rows {
             let highlighted = row.identity == highlightedIdentity
-            row.bezelColor = highlighted ? .controlAccentColor : nil
+            row.keyboardSelected = highlighted
             if highlighted, scrolling { row.scrollToVisible(row.bounds) }
         }
     }

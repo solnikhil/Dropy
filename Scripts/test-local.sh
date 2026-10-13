@@ -72,7 +72,8 @@ swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
 
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/WorkspaceChecks" \
-  "$repo_dir/Tests/LocalWorkspaceCheck.swift" "$repo_dir/Sources/Dropy/OverlayWorkspaceView.swift"
+  "$repo_dir/Tests/LocalWorkspaceCheck.swift" "$repo_dir/Sources/Dropy/OverlayWorkspaceView.swift" \
+  "$repo_dir/Sources/Dropy/DropyAppearance.swift"
 "$build_dir/WorkspaceChecks"
 
 # Deterministic close/reopen, interrupted adoption and Live-to-preview ownership.

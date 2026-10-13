@@ -633,17 +633,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    static let contentSize = CGSize(width: 780, height: 640)
+    static let contentSize = CGSize(width: 920, height: 720)
 
     private func makeWindow() -> NSWindow {
         let host = NSHostingController(rootView: SettingsView(model: model))
-        // The window keeps one size; SwiftUI content does not resize it.
+        // AppKit owns the window size; content adapts without resizing the window.
         host.sizingOptions = []
         let window = NSWindow(contentViewController: host)
         window.title = "Settings"
-        // Not resizable: one fixed size, like System Settings. Zoom and full screen
-        // are unavailable as a result.
-        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.collectionBehavior.insert(.fullScreenNone)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -656,15 +654,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // An empty unified toolbar gives the taller title area, which centers the
         // traffic lights beside the Back and Forward capsule drawn by SwiftUI.
         let toolbar = NSToolbar(identifier: "DropySettings")
-        toolbar.showsBaselineSeparator = false
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.titlebarSeparatorStyle = .none
-        // Only the position is remembered: the fixed size is applied after the saved
-        // frame is restored, so a frame saved while the window was resizable is ignored.
-        window.setFrameAutosaveName("DropySettings3")
         window.setContentSize(Self.contentSize)
-        window.standardWindowButton(.zoomButton)?.isEnabled = false
+        window.contentMinSize = CGSize(width: 800, height: 640)
+        window.setFrameAutosaveName("DropySettings4")
         window.delegate = self
         return window
     }

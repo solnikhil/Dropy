@@ -30,22 +30,30 @@ struct AnimationSettingsPage: View {
                 }
             }
             preview
-            SettingsCard("Built In") {
-                SettingsRow("Style", detail: model.preferences.customAnimation == nil
-                            ? model.preferences.motionStyle.summary
-                            : "Your own animation is in use. Choose a style here to go back to one.") {
-                    SettingsChoiceTiles(label: "Animation style", selection: Binding(
-                        get: { model.preferences.customAnimation == nil ? Optional(model.preferences.motionStyle) : nil },
-                        set: { if let style = $0 { model.useBuiltIn(style) } }), options: [
-                        ("Rapid", Optional(MotionStyle.rapid), "Quick and direct"),
-                        ("Balanced", Optional(MotionStyle.balanced), "Smooth but quick"),
-                        ("Smooth", Optional(MotionStyle.smooth), "Unhurried, with a soft settle"),
-                    ])
-                }
-            }
+            builtInStyles
             yours
             examples
             ai
+        }
+    }
+
+    private var builtInStyles: some View {
+        SettingsCard("Find Your Rhythm") {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(MotionStyle.allCases, id: \.self) { style in
+                    let selected = model.preferences.customAnimation == nil && model.preferences.motionStyle == style
+                    Button { model.useBuiltIn(style) } label: {
+                        SettingsVisualChoice(title: style.title, subtitle: style.summary, selected: selected) {
+                            MotionSparkline(motion: style.animation.open)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(style.title)
+                    .accessibilityHint(style.summary)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .padding(SettingsMetrics.rowInset)
         }
     }
 
@@ -55,14 +63,18 @@ struct AnimationSettingsPage: View {
         SettingsCard {
             VStack(alignment: .leading, spacing: SettingsMetrics.rowInset) {
                 // Ends open, so the preview at rest shows the overlay rather than an empty notch.
+                HStack {
+                    Label("MOTION PREVIEW", systemImage: "play.rectangle")
+                        .font(.system(size: 9, weight: .semibold)).tracking(1.2).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Open · Resize · Close").font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                }
                 AnimationStage(animation: choice.animation, request: replay.count, parts: [.open, .resize, .close, .open])
-                    .frame(height: 190)
+                    .frame(height: 200)
                 HStack(alignment: .center, spacing: SettingsMetrics.rowInset) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: SettingsMetrics.controlSpacing) {
-                            Text(choice.animation.name).font(SettingsMetrics.bodyEmphasis)
-                            SettingsBadge(choice.animation.cost.level.title)
-                                .help(choice.animation.cost.reason)
+                            Text(choice.animation.name).font(.system(size: 17, weight: .semibold, design: .rounded))
                         }
                         Text(DropyAnimation.Part.allCases.map { String(format: "%@ %.2f s", $0.title, choice.animation[$0].duration) }
                             .joined(separator: " · "))
@@ -74,7 +86,7 @@ struct AnimationSettingsPage: View {
                         .buttonStyle(SettingsButtonStyle(circular: true))
                         .help("Replay")
                     Button("Play on Notch") { _ = model.playOnNotch?(choice.animation, 1) }
-                        .buttonStyle(SettingsButtonStyle())
+                        .buttonStyle(SettingsButtonStyle(outlined: true))
                         .help("Play it for real at the notch, with stand-in content")
                 }
             }
@@ -85,10 +97,16 @@ struct AnimationSettingsPage: View {
     // MARK: Yours
 
     private var yours: some View {
-        SettingsCard("Yours", footer: "Each is a file in the animations folder. Dropy picks up a change the moment the file is saved, so edits from a text editor or an AI agent show up here at once.") {
+        SettingsCard("Your Collection") {
             if model.animationEntries.isEmpty {
-                SettingsRow("No animations of your own yet",
-                            detail: "Make one in the Animation Studio, start from an example, paste a share code, or ask an AI agent.")
+                HStack(spacing: 14) {
+                    Image(systemName: "waveform.path")
+                        .font(.system(size: 24, weight: .light)).foregroundStyle(SettingsTheme.accent)
+                        .frame(width: 46, height: 46)
+                        .background(SettingsTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    SettingsLabel("A movement of your own", detail: "Shape a spring, draw a curve, or start with an example.")
+                }
+                .settingsRow()
             }
             ForEach(model.animationEntries) { entry in row(entry) }
             HStack(spacing: SettingsMetrics.controlSpacing) {
@@ -195,8 +213,9 @@ struct AnimationSettingsPage: View {
     // MARK: AI
 
     private var ai: some View {
-        SettingsCard("Make One with AI", footer: "The prompt points the agent at the guide in the animations folder, which explains the format and the rules. The agent writes a file there, checks it, draws it, and plays it on your notch until you like it.") {
-            SettingsRow("Copy a Prompt", detail: "Paste it into Claude Code, Codex, Cursor or another agent that can run commands, and describe the feel you want.") {
+        SettingsCard {
+          DisclosureGroup {
+            SettingsRow("Copy a Prompt", detail: "Paste into a coding agent and describe the feel you want. The prompt includes the animation guide.") {
                 Button(model.promptCopied ? "Copied" : "Copy Prompt") { model.copyAIPrompt() }
                     .buttonStyle(SettingsButtonStyle(outlined: true))
             }
@@ -204,6 +223,10 @@ struct AnimationSettingsPage: View {
                 Button("Copy") { model.copyAnimationCommand() }
                     .buttonStyle(SettingsButtonStyle())
             }
+          } label: {
+              SettingsLabel("Create with AI or a Terminal", detail: "A few more ways to make something personal.")
+          }
+          .padding(SettingsMetrics.rowInset)
         }
     }
 }

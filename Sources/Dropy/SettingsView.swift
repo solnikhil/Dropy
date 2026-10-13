@@ -152,6 +152,7 @@ struct SettingsView: View {
                 Group {
                     if trimmedQuery.isEmpty {
                         paneBody.id(model.pane)
+                            .environment(\.settingsPane, model.pane)
                     } else {
                         searchResults
                     }
@@ -188,6 +189,12 @@ struct SettingsView: View {
                 ContentUnavailableView.search(text: trimmedQuery)
             } else {
                 SettingsPage {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Search Results").font(.system(size: 27, weight: .bold, design: .rounded))
+                            .accessibilityAddTraits(.isHeader)
+                        Text("\(matches.count) result\(matches.count == 1 ? "" : "s") for “\(trimmedQuery)”")
+                            .font(SettingsMetrics.body).foregroundStyle(.secondary)
+                    }
                     ForEach(SettingsPane.allCases) { resultPane in
                         let topics = matches.filter { $0.pane == resultPane }
                         if !topics.isEmpty {
@@ -220,7 +227,8 @@ struct SettingsView: View {
 
     private var general: some View {
         SettingsPage {
-            SettingsCard(footer: "Dropy is always available in the menu bar. While Settings is open, it also appears in the Dock.") {
+            SettingsWelcomeCard()
+            SettingsCard("Make Yourself at Home", footer: "Always available in the menu bar. Dropy also appears in the Dock while Settings is open.") {
                 SettingsToggleRow("Open at Login", isOn: model.opensAtLogin)
                 loginStatus
                 if !model.isInstalled {
@@ -284,7 +292,7 @@ struct SettingsView: View {
 
     private var opening: some View {
         SettingsPage {
-            SettingsCard(footer: "A pinned app opens every time. Dropy launches it for you when needed.") {
+            SettingsCard("Your Go-to App", footer: "A pinned app opens every time. Dropy launches it for you when needed.") {
                 pinnedRow
             }
 
@@ -382,7 +390,7 @@ struct SettingsView: View {
 
     private var overlay: some View {
         SettingsPage {
-            SettingsCard {
+            SettingsCard("Room to Work") {
                 VStack(alignment: .leading, spacing: SettingsMetrics.rowInset) {
                     SettingsLabel("Overlay Size", detail: sizeDetail(model.preferences.sizePreset))
                     OverlaySizeTiles(selection: model.binding(\.sizePreset))
@@ -396,7 +404,7 @@ struct SettingsView: View {
                     .disabled(model.preferences.sizePreset == .nativeSize)
             }
 
-            SettingsCard {
+            SettingsCard("A Place of Its Own") {
                 VStack(alignment: .leading, spacing: SettingsMetrics.rowInset) {
                     SettingsLabel("Open From", detail: positionDetail(model.preferences.position))
                     OverlayPositionTiles(selection: model.binding(\.position))
@@ -467,12 +475,13 @@ struct SettingsView: View {
                     ])
                 }
                 SettingsToggleRow("Keep Pinned App Ready",
-                                  detail: "Its window waits on a hidden display between openings, so it opens at once on any desktop. macOS counts that display, so a full-screen screenshot (⇧⌘3) also saves a black picture of it, and protected video can't play while it exists (it has no HDCP): Dropy removes it when a video starts. Off, the hidden display exists only while Dropy needs it.",
+                                  detail: "Keep your pinned app ready to open on any desktop.",
                                   isOn: model.binding(\.keepsPinnedAppReady))
                     .disabled(model.preferences.interaction != .fullApp || model.preferences.protectsVideo)
                 SettingsToggleRow("Protect Video Playback",
-                                  detail: "Over a full-screen app, Dropy streams the window from a hidden display, and a window from another desktop passes through that display. Protected video (Prime Video, Apple TV, Netflix) stops or shows an HDCP error meanwhile, so Dropy asks first when a video played in the last 15 minutes. On, it never does either: those windows stay where they are.",
+                                  detail: "Avoid screen capture and hidden displays so protected video keeps playing.",
                                   isOn: model.binding(\.protectsVideo))
+                SettingsExplanation(title: "How this affects displays and video", text: "Keeping an app ready uses a hidden display. macOS includes it in full-screen screenshots, so ⇧⌘3 can also save a black picture. Protected video cannot play while that display exists; Dropy removes it when a video starts. With Protect Video Playback on, Dropy never captures or creates a hidden display. Windows on another desktop or over a full-screen app stay where they are. Otherwise, Dropy asks before streaming when video played in the last 15 minutes.")
                 if model.preferences.interaction == .fullApp, !model.accessibilityGranted {
                     SettingsNotice(symbol: "hand.raised", title: "Accessibility access required",
                                    detail: "Allow Dropy to move the app's window into the overlay. Until then it is a preview.") {
@@ -502,7 +511,7 @@ struct SettingsView: View {
     }
 
     private var interactionFooter: String {
-        "With Full App, the app's own window moves into the overlay and its app comes to the front, and nothing is captured. Over a full-screen app, Dropy streams the window instead, so macOS shows its screen-recording indicator while it is open. A window you pick that isn't pinned goes back where it was."
+        "Unpinned windows return to their original place when Dropy closes. Over a full-screen app, Full App may stream the window and show macOS’s screen-recording indicator."
     }
 
     private var crossingStatus: String {

@@ -1,0 +1,63 @@
+# Dropy visual system
+
+## Direction
+
+Dropy should feel calm, precise and at home on a Mac. The overlay's shape and movement
+are its identity. Settings should make those choices understandable through small
+illustrations, with supporting explanations kept subordinate to the controls.
+
+## Foundations
+
+- `DropyAppearance` owns semantic AppKit colors; `SettingsTheme` adapts them for SwiftUI.
+  Charcoal and warm off-white establish the surfaces. Coral identifies selected choices
+  and important actions. Blue is informational, and system green/red retain status meaning.
+- `SettingsMetrics` owns spacing, controls, card corners and the reading type scale.
+  Body text is 13 points, supporting text 12. Page titles are 27 points; navigation
+  group labels are compact and letter-spaced.
+- Cards have an opaque, appearance-aware surface and a thin boundary. Hover changes
+  the surface; selection adds an accent boundary plus a checkmark or selected trait.
+  Color is never the sole selection signal.
+- The content column is bounded and centered. Settings can resize, with a minimum
+  size that preserves the controls. Sidebar width remains adjustable and saved.
+
+## Shared presentation
+
+Every Settings page begins with its title and a short purpose statement. Sidebar
+categories are grouped by workspace, experience and app maintenance. Native buttons,
+menus, switches, text fields and disclosure groups retain keyboard and accessibility
+behavior. Transparency and navigation motion continue to honor system preferences.
+
+`WorkspaceIllustration` draws schematic content and uses production `NotchShape` and
+`OverlayPosition` geometry. It never captures another app. Size and position tiles use
+one selection treatment and one illustration language. Animation previews use the
+production motion renderer with the same slate-and-warm wallpaper palette.
+
+Technical display and video consequences remain available in an expandable explanation.
+The summary must still explain the effect of the setting before the person changes it.
+Warnings and permission requirements remain immediately visible.
+
+## Animation and overlay
+
+Animation Settings presents the motion preview, built-in styles, personal collection,
+examples, then optional AI/terminal tools. Studio separates playback from committing an
+animation: Play All is the main playback action, each motion can be played independently,
+and Use Animation is the primary commit. Real-notch playback is available in the menu.
+
+Window picker rows use app icons, app names and secondary document titles. The existing
+exact-window identity and keyboard navigation remain the source of selection. Hover and
+keyboard selection are distinct presentation states. Empty/loading messages have a
+centered illustration; populated lists have a count and keyboard guidance. Preview
+messages use a readable foreground on the overlay's permanently dark surface.
+
+## Verification
+
+Build and run the existing local checks, including AppKit workspace layout, capture and
+window lifecycle, and animation validation. Review General, Overlay, Animation,
+Interaction, permission states, search, and Studio in the running app. Check the minimum
+window size, sidebar resizing, light/dark appearance, keyboard focus, Reduce Motion and
+Increase Contrast when available. Visual review is separate from compile/test success.
+
+Implementation checks on 2026-10-13: the direct signed build and full local check suite
+passed. The workspace checks passed again after the final empty-state layout changes.
+The Mac was locked during the attempted UI review, so installing the new copy and
+visual verification remain pending until it is unlocked.

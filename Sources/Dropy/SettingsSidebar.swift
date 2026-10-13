@@ -15,15 +15,26 @@ struct SettingsSidebar: View {
             // The window's real AppKit traffic lights sit in the title bar area above.
             Color.clear.frame(height: SettingsMetrics.titleBarHeight).accessibilityHidden(true)
 
+            HStack(spacing: 10) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable().frame(width: 34, height: 34).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Dropy").font(.system(size: 19, weight: .bold, design: .rounded))
+                    Text("Your apps. Closer.").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+
             searchField
                 .padding(.horizontal, SettingsMetrics.sidebarInset)
-                .padding(.bottom, 12)
+                .padding(.bottom, 18)
 
             ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(SettingsPane.allCases) { pane in
-                        row(pane)
-                    }
+                VStack(alignment: .leading, spacing: 3) {
+                    section("WORKSPACE", panes: [.general, .opening, .overlay])
+                    section("EXPERIENCE", panes: [.animation, .interaction])
+                    section("DROPY", panes: [.permissions, .advanced, .about])
                 }
                 .padding(.horizontal, SettingsMetrics.sidebarInset)
                 .padding(.bottom, SettingsMetrics.sidebarInset)
@@ -37,9 +48,25 @@ struct SettingsSidebar: View {
                 default: break
                 }
             }
+            HStack(spacing: 6) {
+                Image(systemName: "macwindow").font(.system(size: 11))
+                Text("Made for your Mac").font(.system(size: 11))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 18).padding(.vertical, 20)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Settings categories")
+    }
+
+    private func section(_ title: String, panes: [SettingsPane]) -> some View {
+        Group {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold)).tracking(1.4)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10).padding(.top, title == "WORKSPACE" ? 0 : 19).padding(.bottom, 5)
+            ForEach(panes) { pane in row(pane) }
+        }
     }
 
     private func row(_ pane: SettingsPane) -> some View {
@@ -48,19 +75,23 @@ struct SettingsSidebar: View {
             select(pane)
         } label: {
             HStack(spacing: SettingsMetrics.controlSpacing) {
-                SettingsIcon(symbol: pane.symbol)
+                Image(systemName: pane.symbol)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(selected ? SettingsTheme.accent : Color.secondary)
+                    .frame(width: 22)
+                    .accessibilityHidden(true)
                 Text(pane.title)
-                    .font(SettingsMetrics.body)
+                    .font(selected ? SettingsMetrics.bodyEmphasis : SettingsMetrics.body)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if let badge = pane.badge { SettingsBadge(badge) }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 10)
             .frame(height: SettingsMetrics.sidebarRowHeight)
             .contentShape(RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SettingsNavigationStyle())
         .background {
             if selected {
                 RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 2, style: .continuous)
@@ -111,6 +142,25 @@ struct SettingsSidebar: View {
         withAnimation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.86)) {
             model.navigate(to: pane)
         }
+    }
+}
+
+private struct SettingsNavigationStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsNavigationBody(configuration: configuration)
+    }
+}
+
+private struct SettingsNavigationBody: View {
+    let configuration: ButtonStyleConfiguration
+    @StateObject private var hover = HoverState()
+
+    var body: some View {
+        configuration.label
+            .background(hover.isHovered ? SettingsTheme.control : .clear,
+                        in: RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 2))
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .onHover { hover.isHovered = $0 }
     }
 }
 

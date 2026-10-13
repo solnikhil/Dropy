@@ -11,6 +11,9 @@ final class OverlayWorkspaceView: NSView {
     let windowList = NSStackView()
     let previewShell = NSView()
     let status = NSTextField(wrappingLabelWithString: "Finding open windows…")
+    let pickerHeading = NSTextField(labelWithString: "Choose a window")
+    let pickerHint = NSTextField(labelWithString: "↑ ↓ to choose   ·   Return to open   ·   Esc to close")
+    private let emptyIcon = NSImageView()
     let interaction = NSTextField(wrappingLabelWithString: "")
     let privacy = NSButton(title: "Open Privacy Settings", target: nil, action: nil)
     /// Shows a docked window that cannot come here (another desktop, full screen).
@@ -44,9 +47,18 @@ final class OverlayWorkspaceView: NSView {
         previewShell.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
         previewShell.layer?.cornerRadius = 12
         status.font = .systemFont(ofSize: 12)
-        status.textColor = .secondaryLabelColor
+        status.textColor = NSColor(white: 0.65, alpha: 1)
+        emptyIcon.image = NSImage(systemSymbolName: "macwindow.on.rectangle", accessibilityDescription: nil)
+        emptyIcon.contentTintColor = NSColor(white: 0.48, alpha: 1)
+        emptyIcon.imageScaling = .scaleProportionallyUpOrDown
+        emptyIcon.setAccessibilityElement(false)
+        pickerHeading.font = .systemFont(ofSize: 19, weight: .semibold)
+        pickerHeading.textColor = NSColor(white: 0.95, alpha: 1)
+        pickerHint.font = .systemFont(ofSize: 10)
+        pickerHint.textColor = NSColor(white: 0.60, alpha: 1)
+        pickerHint.setAccessibilityElement(false)
         interaction.font = .systemFont(ofSize: 10)
-        interaction.textColor = .secondaryLabelColor
+        interaction.textColor = NSColor(white: 0.78, alpha: 1)
         interaction.maximumNumberOfLines = 2
         interaction.isHidden = true
         interaction.wantsLayer = true
@@ -56,7 +68,7 @@ final class OverlayWorkspaceView: NSView {
         elsewhere.isHidden = true
         elsewhere.bezelStyle = .rounded
         previewShell.addSubview(cover)
-        for view in [apps, expand, scroll, previewShell, status, interaction, privacy, elsewhere] { addSubview(view) }
+        for view in [apps, expand, scroll, previewShell, status, pickerHeading, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
     override func layout() {
@@ -71,18 +83,26 @@ final class OverlayWorkspaceView: NSView {
         for child in previewShell.subviews { child.frame = previewShell.bounds }
         previewShell.isHidden = docked ? !coversWindow : !showsPreview
         cover.isHidden = !docked
-        scroll.frame = CGRect(x: 12, y: 76, width: max(1, bounds.width - 24), height: max(1, bounds.height - 126))
+        pickerHeading.frame = CGRect(x: 16, y: bounds.height - 72, width: max(1, bounds.width - 32), height: 26)
+        pickerHeading.isHidden = showsPreview || docked
+        pickerHint.frame = CGRect(x: 16, y: 16, width: max(1, bounds.width - 32), height: 16)
+        pickerHint.isHidden = showsPreview || docked || !privacy.isHidden
+        scroll.frame = CGRect(x: 12, y: 76, width: max(1, bounds.width - 24), height: max(1, bounds.height - 164))
         scroll.isHidden = showsPreview || docked
         interaction.frame = CGRect(x: 12, y: previewRect.minY + 8,
                                    width: max(1, bounds.width - 24), height: 36)
         elsewhere.frame = CGRect(x: previewRect.midX - 90, y: previewRect.midY - 62, width: 180, height: 28)
-        status.frame = showsPreview || docked
+        let emptyPicker = !showsPreview && !docked && windowList.arrangedSubviews.isEmpty
+        emptyIcon.frame = CGRect(x: bounds.midX - 22, y: bounds.midY + 12, width: 44, height: 44)
+        emptyIcon.isHidden = !emptyPicker
+        status.alignment = showsPreview || docked || emptyPicker ? .center : .left
+        status.frame = showsPreview || docked || emptyPicker
             ? CGRect(x: 20, y: previewRect.midY - 26, width: max(1, bounds.width - 40), height: 52)
             : CGRect(x: 12, y: 42, width: max(1, bounds.width - 24), height: 32)
         privacy.frame = CGRect(x: 12, y: 8, width: 180, height: 28)
         let rowWidth = max(1, scroll.contentSize.width - 8)
         for row in windowList.arrangedSubviews { row.frame.size.width = rowWidth }
-        windowList.frame.size = CGSize(width: rowWidth, height: max(1, CGFloat(windowList.arrangedSubviews.count) * 48))
+        windowList.frame.size = CGSize(width: rowWidth, height: max(1, CGFloat(windowList.arrangedSubviews.count) * 58))
     }
 }
 
@@ -119,4 +139,64 @@ final class WindowCover: NSView {
 @MainActor
 final class WindowChoiceButton: NSButton {
     var identity: WindowIdentity?
+    var keyboardSelected = false { didSet { needsDisplay = true } }
+    private var hovered = false
+    private var appName = ""
+    private var documentName = ""
+    private var appIcon: NSImage?
+
+    func configure(appName: String, windowTitle: String, icon: NSImage?) {
+        self.appName = appName
+        documentName = windowTitle.isEmpty ? "Untitled window" : windowTitle
+        appIcon = icon
+        isBordered = false
+        focusRingType = .exterior
+        setButtonType(.momentaryPushIn)
+        setAccessibilityLabel("\(appName), \(documentName)")
+        needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 11, yRadius: 11)
+        let active = keyboardSelected || (cell?.isHighlighted ?? false)
+        (active ? DropyAppearance.accent.withAlphaComponent(0.14)
+         : NSColor.white.withAlphaComponent(hovered ? 0.09 : 0.035)).setFill()
+        shape.fill()
+        (active ? DropyAppearance.accent.withAlphaComponent(0.5) : NSColor.white.withAlphaComponent(0.065)).setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
+        let iconRect = CGRect(x: 12, y: (bounds.height - 30) / 2, width: 30, height: 30)
+        appIcon?.draw(in: iconRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: NSColor(white: 0.94, alpha: 1), .paragraphStyle: paragraph]
+        let detail: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor(white: 0.62, alpha: 1), .paragraphStyle: paragraph]
+        let width = max(1, bounds.width - 90)
+        let nameY: CGFloat = isFlipped ? 9 : bounds.height - 25
+        let detailY: CGFloat = isFlipped ? 28 : 9
+        (appName as NSString).draw(in: CGRect(x: 54, y: nameY, width: width, height: 17), withAttributes: attributes)
+        (documentName as NSString).draw(in: CGRect(x: 54, y: detailY, width: width, height: 15), withAttributes: detail)
+        if active || hovered {
+            let symbol = NSImage(systemSymbolName: "return", accessibilityDescription: nil)
+            symbol?.draw(in: CGRect(x: bounds.width - 27, y: (bounds.height - 12) / 2, width: 14, height: 12),
+                         from: .zero, operation: .sourceOver, fraction: 0.6, respectFlipped: true, hints: nil)
+        }
+    }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 11, yRadius: 11).fill()
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
 }

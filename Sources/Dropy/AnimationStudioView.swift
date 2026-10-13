@@ -45,11 +45,6 @@ struct AnimationStudioView: View {
                     model.partStarted(part, at: time, slowdown: slowdown)
                 }
                 .frame(minHeight: 200, idealHeight: 250, maxHeight: 270)
-                .overlay(alignment: .bottomTrailing) {
-                    Button { model.play() } label: { Label("Replay", systemImage: "arrow.counterclockwise") }
-                        .buttonStyle(SettingsButtonStyle())
-                        .padding(10)
-                }
                 tabs
                 Group {
                     if model.tab == .content {
@@ -105,19 +100,16 @@ struct AnimationStudioView: View {
                 .disabled(!model.canRedo)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .help("Redo (⇧⌘Z)")
-            Button { model.play() } label: { Label("Play", systemImage: "play.fill") }
-                .buttonStyle(SettingsButtonStyle(outlined: true))
+            Button { model.play() } label: { Label("Play All", systemImage: "play.fill") }
+                .buttonStyle(SettingsButtonStyle())
                 .keyboardShortcut(.return, modifiers: .command)
                 .help("Play opening, resizing and closing (⌘↩)")
-            Button { model.playOnNotchNow() } label: { Label("On Notch", systemImage: "rectangle.topthird.inset.filled") }
-                .buttonStyle(SettingsButtonStyle())
-                .help("Play it for real, at the notch, with stand-in content")
             if model.inUse() {
                 Label("In Use", systemImage: "checkmark.circle.fill")
                     .font(SettingsMetrics.body)
                     .foregroundStyle(.secondary)
             } else {
-                Button("Use") {
+                Button("Use Animation") {
                     model.saveNow()
                     model.use?(model.fileID)
                     model.objectWillChange.send()
@@ -127,6 +119,8 @@ struct AnimationStudioView: View {
                 .help("Make the overlay use this animation")
             }
             Menu {
+                Button("Play on Notch") { model.playOnNotchNow() }
+                Divider()
                 Button(model.shareCodeCopied ? "Share Code Copied" : "Copy Share Code") { model.copyShareCode() }
                 Button("Copy AI Prompt to Refine It") { model.copyRefinePrompt() }
                 Divider()
@@ -141,7 +135,7 @@ struct AnimationStudioView: View {
                     model.saveNow()
                     NSWorkspace.shared.open(model.url)
                 }
-            } label: { Image(systemName: "square.and.arrow.up") }
+            } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.button)
                 .buttonStyle(SettingsButtonStyle(circular: true))
                 .menuIndicator(.hidden)
@@ -212,7 +206,7 @@ struct AnimationStudioView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(width: 72)
-                Button { model.playCurrent() } label: { Label("Play", systemImage: "play") }
+                Button { model.playCurrent() } label: { Label("Play \(model.tab.title)", systemImage: "play") }
                     .buttonStyle(SettingsButtonStyle())
                     .help("Play only the \(model.tab.rawValue) motion")
                     .padding(.trailing, 4)
@@ -232,8 +226,6 @@ struct AnimationStudioView: View {
                 .fixedSize()
                 .help("Draw a built-in style's curve behind yours")
             } else {
-                Button { model.play() } label: { Label("Play All", systemImage: "play") }
-                    .buttonStyle(SettingsButtonStyle())
                 playbackOptions
                 Spacer()
             }
@@ -349,12 +341,17 @@ struct AnimationStudioView: View {
     private var inspector: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Fine-tune").font(.system(size: 20, weight: .semibold, design: .rounded))
+                    Text("Small changes. A different feel.").font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                }
                 if model.tab == .content { contentInspector } else { curveInspector }
             }
             .padding(.horizontal, 18)
             .padding(.top, 58)
             .padding(.bottom, 18)
         }
+        .background(SettingsTheme.sidebar.opacity(0.45))
     }
 
     @ViewBuilder private var curveInspector: some View {
@@ -591,6 +588,10 @@ struct StudioSection<Content: View>: View {
             Text(title).font(SettingsMetrics.header)
             content
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(SettingsTheme.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(SettingsTheme.separator, lineWidth: 1) }
     }
 }
 
