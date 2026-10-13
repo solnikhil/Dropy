@@ -250,7 +250,7 @@ struct SettingsValue: View {
     init(_ text: String) { self.text = text }
 
     var body: some View {
-        Text(text).font(SettingsMetrics.body.monospacedDigit()).foregroundStyle(.secondary)
+        Text(text).font(SettingsMetrics.body.monospacedDigit()).foregroundStyle(SettingsTheme.secondaryText)
     }
 }
 
@@ -299,7 +299,7 @@ struct SettingsGlyph: View {
     var body: some View {
         Image(systemName: symbol)
             .font(.system(size: 14))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(SettingsTheme.secondaryText)
             .frame(width: SettingsMetrics.iconSize)
             .accessibilityHidden(true)
     }
@@ -338,7 +338,7 @@ struct SettingsNotice<Accessory: View>: View {
             SettingsGlyph(symbol: symbol)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(SettingsMetrics.bodyEmphasis)
-                Text(detail).font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                Text(detail).font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: SettingsMetrics.rowInset)
@@ -425,7 +425,7 @@ struct SettingsMenu<Value: Hashable>: View {
                 Text(options.first { $0.value == selection }?.title ?? "")
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTheme.secondaryText)
             }
         }
         .menuStyle(.button)
@@ -452,7 +452,7 @@ struct SettingsChoiceTiles<Value: Hashable>: View {
                 } label: {
                     Text(option.title)
                         .font(selected ? SettingsMetrics.bodyEmphasis : SettingsMetrics.body)
-                        .foregroundStyle(selected ? SettingsTheme.accent : Color.secondary)
+                        .foregroundStyle(selected ? SettingsTheme.accent : SettingsTheme.secondaryText)
                         .padding(.horizontal, 10)
                         .frame(minWidth: SettingsMetrics.controlHeight, minHeight: SettingsMetrics.controlHeight)
                         .background(selected ? SettingsTheme.selection : .clear,
@@ -578,7 +578,7 @@ struct SettingsVisualChoice<Artwork: View>: View {
             HStack(spacing: 3) {
                 Text(title)
                     .font(.system(size: 12, weight: selected ? .semibold : .medium))
-                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .foregroundStyle(selected ? Color.primary : SettingsTheme.secondaryText)
                     .lineLimit(1).minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
                 if selected {
@@ -587,7 +587,7 @@ struct SettingsVisualChoice<Artwork: View>: View {
                 }
             }
             if let subtitle {
-                Text(subtitle).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                Text(subtitle).font(.system(size: 11).monospacedDigit()).foregroundStyle(SettingsTheme.secondaryText)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 26, alignment: .topLeading)
             }

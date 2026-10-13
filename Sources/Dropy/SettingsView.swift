@@ -200,7 +200,7 @@ struct SettingsView: View {
                         Text("Search Results").font(.system(size: 24, weight: .semibold))
                             .accessibilityAddTraits(.isHeader)
                         Text("\(matches.count) result\(matches.count == 1 ? "" : "s") for “\(trimmedQuery)”")
-                            .font(SettingsMetrics.body).foregroundStyle(.secondary)
+                            .font(SettingsMetrics.body).foregroundStyle(SettingsTheme.secondaryText)
                     }
                     ForEach(SettingsPane.allCases) { resultPane in
                         let topics = matches.filter { $0.pane == resultPane }
@@ -298,7 +298,7 @@ struct SettingsView: View {
 
     private var opening: some View {
         SettingsPage {
-            SettingsCard("Your Go-to App", footer: "A pinned app opens every time. Dropy launches it for you when needed.") {
+            SettingsCard("Pinned App", footer: "A pinned app opens every time. Dropy launches it for you when needed.") {
                 pinnedRow
             }
 
@@ -349,7 +349,7 @@ struct SettingsView: View {
                 if let icon = pinned.icon {
                     Image(nsImage: icon).resizable().frame(width: 28, height: 28).accessibilityHidden(true)
                 }
-                SettingsLabel(pinned.name, detail: "Your go-to app, always within reach.")
+                SettingsLabel(pinned.name, detail: "Opens automatically with Dropy.")
                 Spacer(minLength: 8)
                 Button("Remove", action: model.unpin).buttonStyle(SettingsButtonStyle())
                 Button("Change…", action: model.prepareAppList).buttonStyle(SettingsButtonStyle(outlined: true))
@@ -396,7 +396,7 @@ struct SettingsView: View {
 
     private var overlay: some View {
         SettingsPage {
-            SettingsCard("Room to Work") {
+            SettingsCard("Size") {
                 VStack(alignment: .leading, spacing: SettingsMetrics.rowInset) {
                     SettingsLabel("Overlay Size", detail: sizeDetail(model.preferences.sizePreset))
                     OverlaySizeTiles(selection: model.binding(\.sizePreset))
@@ -410,7 +410,7 @@ struct SettingsView: View {
                     .disabled(model.preferences.sizePreset == .nativeSize)
             }
 
-            SettingsCard("A Place of Its Own") {
+            SettingsCard("Position") {
                 VStack(alignment: .leading, spacing: SettingsMetrics.rowInset) {
                     SettingsLabel("Open From", detail: positionDetail(model.preferences.position))
                     OverlayPositionTiles(selection: model.binding(\.position))
@@ -582,7 +582,7 @@ struct SettingsView: View {
                         Text("Dropy").font(.system(size: 17, weight: .semibold))
                             .accessibilityAddTraits(.isHeader)
                         Text("macOS app workspace")
-                            .font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                            .font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     }
                     Spacer(minLength: SettingsMetrics.rowInset)
                     Button("About Dropy", action: model.showAbout)
@@ -657,7 +657,7 @@ private struct AppChooserSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Choose a pinned app").font(.title2.bold())
                     Text(model.isLoadingApps ? "Finding your apps…" : "Open directly into an app you use often.")
-                        .font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                        .font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                 }
                 Spacer()
             }
@@ -714,7 +714,7 @@ private struct AppChooserSheet: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(app.name)
                     if markRunning, app.running {
-                        Text("Running").font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                        Text("Running").font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     }
                 }
             }

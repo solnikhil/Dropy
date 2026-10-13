@@ -17,11 +17,11 @@ extension SettingsPane {
     var introduction: String {
         switch self {
         case .general: "Configure startup behavior and keyboard shortcuts."
-        case .opening: "Choose what’s waiting when you open Dropy."
-        case .overlay: "Find the right place. Give your apps room to breathe."
-        case .animation: "Make every opening feel like yours."
+        case .opening: "Configure which app or window appears on opening."
+        case .overlay: "Set the overlay position and size."
+        case .animation: "Configure motion and preview animations."
         case .interaction: "Choose how your apps work inside Dropy."
-        case .permissions: "You’re in control of what Dropy can access."
+        case .permissions: "Manage the permissions required to display and control apps."
         case .advanced: "Reset preferences and view diagnostic information."
         case .about: "Version and project information."
         case .updates: "Check for published versions and view update status."
@@ -124,14 +124,14 @@ struct SettingsExplanation: View {
         DisclosureGroup {
             Text(text)
                 .font(SettingsMetrics.detail)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTheme.secondaryText)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
         } label: {
             Label(title, systemImage: "info.circle")
                 .font(SettingsMetrics.detail)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTheme.secondaryText)
         }
         .tint(SettingsTheme.accent)
         .settingsRow()

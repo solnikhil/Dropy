@@ -49,7 +49,7 @@ struct SettingsSidebar: View {
             HStack(spacing: SettingsMetrics.controlSpacing) {
                 Image(systemName: pane.symbol)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(selected ? SettingsTheme.accent : Color.secondary)
+                    .foregroundStyle(selected ? SettingsTheme.accent : SettingsTheme.secondaryText)
                     .frame(width: 22)
                     .accessibilityHidden(true)
                 Text(pane.title)
@@ -82,7 +82,7 @@ struct SettingsSidebar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTheme.secondaryText)
                 .accessibilityHidden(true)
             TextField("Search", text: $model.settingsQuery)
                 .textFieldStyle(.plain)
@@ -93,7 +93,7 @@ struct SettingsSidebar: View {
                 Button {
                     model.settingsQuery = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(SettingsTheme.secondaryText)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")

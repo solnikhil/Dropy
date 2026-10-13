@@ -14,7 +14,7 @@ struct UpdatesSettingsPage: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 8) {
                         Text(title).font(.system(size: 18, weight: .semibold)).accessibilityAddTraits(.isHeader)
-                        Text(detail).font(SettingsMetrics.body).foregroundStyle(.secondary)
+                        Text(detail).font(SettingsMetrics.body).foregroundStyle(SettingsTheme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                         HStack(spacing: 10) {
                             if checker.isChecking { ProgressView().controlSize(.small) }

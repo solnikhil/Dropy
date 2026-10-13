@@ -82,3 +82,18 @@ once and then preserves subsequent resizing. Overlay tile structure is unchanged
 schematic wallpaper and animation sample content use darker, subdued surfaces.
 The signed build and workspace checks passed. General, Permissions, Overlay and
 Animation were visually reviewed in the installed app's dark appearance.
+
+
+## Settings design review — 14 October
+
+The near-black palette and existing Overlay composition remain the foundation.
+A visual pass across Settings found inconsistent secondary text: read-only values,
+update status descriptions, disclosure labels, animation metadata, and unselected
+choices still used system opacity-based secondary styling. They now use the same
+adaptive semantic secondary-text color as row descriptions, keeping the hierarchy
+consistent on the opaque dark surfaces. Disabled controls retain their separate
+disabled treatment.
+
+Page descriptions and section titles now use neutral, functional language: Pinned
+App, Size, Position, Motion Presets, and Saved Animations. Shared components own
+these treatments so future Settings pages inherit the same presentation.

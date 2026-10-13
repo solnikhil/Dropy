@@ -21,7 +21,7 @@ struct AnimationSettingsPage: View {
         SettingsPage {
             if let problem = choice.problem {
                 SettingsCard {
-                    SettingsNotice(symbol: "exclamationmark.triangle.fill", title: "Your animation can't be used right now",
+                    SettingsNotice(symbol: "exclamationmark.triangle.fill", title: "Animation Unavailable",
                                    detail: problem) {
                         if let id = model.preferences.customAnimation, model.animations?.entry(id) != nil {
                             Button("Fix It") { model.openStudio?(id) }.buttonStyle(SettingsButtonStyle())
@@ -38,7 +38,7 @@ struct AnimationSettingsPage: View {
     }
 
     private var builtInStyles: some View {
-        SettingsCard("Find Your Rhythm") {
+        SettingsCard("Motion Presets") {
             HStack(alignment: .top, spacing: 10) {
                 ForEach(MotionStyle.allCases, id: \.self) { style in
                     let selected = model.preferences.customAnimation == nil && model.preferences.motionStyle == style
@@ -65,9 +65,9 @@ struct AnimationSettingsPage: View {
                 // Ends open, so the preview at rest shows the overlay rather than an empty notch.
                 HStack {
                     Label("MOTION PREVIEW", systemImage: "play.rectangle")
-                        .font(.system(size: 9, weight: .semibold)).tracking(1.2).foregroundStyle(.secondary)
+                        .font(.system(size: 9, weight: .semibold)).tracking(1.2).foregroundStyle(SettingsTheme.secondaryText)
                     Spacer()
-                    Text("Open · Resize · Close").font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                    Text("Open · Resize · Close").font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                 }
                 AnimationStage(animation: choice.animation, request: replay.count, parts: [.open, .resize, .close, .open])
                     .frame(height: 200)
@@ -79,7 +79,7 @@ struct AnimationSettingsPage: View {
                         Text(DropyAnimation.Part.allCases.map { String(format: "%@ %.2f s", $0.title, choice.animation[$0].duration) }
                             .joined(separator: " · "))
                             .font(SettingsMetrics.detail.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(SettingsTheme.secondaryText)
                     }
                     Spacer()
                     Button { replay.count += 1 } label: { Image(systemName: "arrow.counterclockwise") }
@@ -97,7 +97,7 @@ struct AnimationSettingsPage: View {
     // MARK: Yours
 
     private var yours: some View {
-        SettingsCard("Your Collection") {
+        SettingsCard("Saved Animations") {
             if model.animationEntries.isEmpty {
                 HStack(spacing: 14) {
                     Image(systemName: "waveform.path")
@@ -140,7 +140,7 @@ struct AnimationSettingsPage: View {
                 if let animation = entry.animation {
                     MotionSparkline(motion: animation.open)
                 } else {
-                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(SettingsTheme.secondaryText)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
@@ -193,7 +193,7 @@ struct AnimationSettingsPage: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(example.animation.name).font(SettingsMetrics.body)
-                        Text(example.animation.summary).font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                        Text(example.animation.summary).font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: SettingsMetrics.rowInset)
