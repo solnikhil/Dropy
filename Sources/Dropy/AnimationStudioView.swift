@@ -235,15 +235,9 @@ struct AnimationStudioView: View {
     /// Slow motion and looping, for the stage and the notch.
     private var playbackOptions: some View {
         HStack(spacing: 6) {
-            Picker("Speed", selection: $model.slowdown) {
-                Text("1×").tag(1.0)
-                Text("½×").tag(2.0)
-                Text("¼×").tag(4.0)
-                Text("⅒×").tag(10.0)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+            SettingsMenu(label: "Playback speed", selection: $model.slowdown, options: [
+                ("1×", 1.0), ("½×", 2.0), ("¼×", 4.0), ("⅒×", 10.0),
+            ])
             .help("Slow motion, here and on the notch")
             Toggle(isOn: $model.loop) { Image(systemName: "repeat") }
                 .toggleStyle(.button)

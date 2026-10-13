@@ -59,5 +59,10 @@ Increase Contrast when available. Visual review is separate from compile/test su
 
 Implementation checks on 2026-10-13: the direct signed build and full local check suite
 passed. The workspace checks passed again after the final empty-state layout changes.
-The Mac was locked during the attempted UI review, so installing the new copy and
-visual verification remain pending until it is unlocked.
+After the Mac was unlocked, the installed app was updated and General, Overlay,
+Animation, Interaction, permission status and search were reviewed in the running dark
+appearance. Studio review caught toolbar overflow; playback speed now uses a compact
+menu and the complete layout was visually rechecked. The schematic drawing canvas is
+explicitly bounded so decorative wallpaper cannot expand or crop its geometry. The
+final build was installed and General was left open. Light appearance, accessibility
+preference combinations, and live picker visuals have not been manually reviewed.

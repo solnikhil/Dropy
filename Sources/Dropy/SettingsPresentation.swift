@@ -82,23 +82,28 @@ struct WorkspaceIllustration: View {
                     context.fill(Path(shape.fillPath).applying(flip), with: .color(Color(red: 0.055, green: 0.063, blue: 0.078)))
                     context.stroke(Path(shape.strokePath).applying(flip), with: .color(.white.opacity(0.20)), lineWidth: 0.7)
                     let body = rect.applying(flip)
-                    let inset: CGFloat = 14
-                    let top = body.minY + 18
-                    let icon = CGRect(x: body.minX + inset, y: top, width: 20, height: 20)
+                    let inset = max(3, body.width * 0.08)
+                    let top = body.minY + max(6, body.height * 0.13)
+                    let iconSide = min(20, body.width * 0.16)
+                    let icon = CGRect(x: body.minX + inset, y: top, width: iconSide, height: iconSide)
                     context.fill(Path(roundedRect: icon, cornerRadius: 6), with: .color(SettingsTheme.accent.opacity(0.85)))
-                    let title = CGRect(x: icon.maxX + 8, y: top + 4, width: max(10, body.width * 0.36), height: 4)
+                    let title = CGRect(x: icon.maxX + iconSide * 0.4, y: top + iconSide * 0.2,
+                                       width: max(3, body.width * 0.36), height: max(2, iconSide * 0.2))
                     context.fill(Path(roundedRect: title, cornerRadius: 2), with: .color(.white.opacity(0.7)))
                     for index in 0..<3 {
-                        let row = CGRect(x: body.minX + inset, y: top + 34 + CGFloat(index) * 16,
-                                         width: max(10, body.width - inset * 2), height: 10)
-                        if row.maxY < body.maxY - 10 {
+                        let row = CGRect(x: body.minX + inset,
+                                         y: top + iconSide + max(4, body.height * 0.1) + CGFloat(index) * max(5, body.height * 0.12),
+                                         width: max(3, body.width - inset * 2), height: max(2, min(10, body.height * 0.065)))
+                        if row.maxY < body.maxY - max(3, body.height * 0.1) {
                             context.fill(Path(roundedRect: row, cornerRadius: 3), with: .color(.white.opacity(index == 0 ? 0.13 : 0.055)))
                         }
                     }
                     let notch = CGRect(x: canvas.width / 2 - 22, y: 0, width: 44, height: 9)
                     context.fill(Path(roundedRect: notch, cornerRadius: 3), with: .color(.black))
                 }
+                .frame(width: size.width, height: size.height)
             }
+            .frame(width: size.width, height: size.height)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
