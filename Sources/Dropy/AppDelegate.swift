@@ -25,6 +25,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settings: SettingsWindowController!
     private let onboardingProgress = OnboardingProgress()
     private var onboarding: OnboardingWindowController?
+    private let updater = UpdateChecker()
+    private var updateMenuItems: [NSMenuItem] = []
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
     private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
     private var fullAppItems: [NSMenuItem] = []
@@ -93,6 +95,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings = SettingsWindowController(model: SettingsModel(
             preferences: preferences.value, change: { [weak self] edit in self?.change(edit) }))
         settings.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        settings.model.updater = updater
+        updater.onChange = { [weak self] in
+            guard let self else { return }
+            for item in self.updateMenuItems {
+                item.title = self.updater.availableRelease == nil ? "Check for Updates…" : "Update Available…"
+            }
+        }
         // Checks launched with --show never touch the person's Dock.
         if !Self.launchedByCheck {
             dockAutoHide.onProblem = { [weak self] problem in self?.settings?.model.dockProblemChanged(problem) }
@@ -220,7 +229,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fullAppItems.append(fullApp)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
-        menu.addItem(NSMenuItem(title: "Welcome to Dropy…", action: #selector(showOnboarding), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Setup…", action: #selector(showOnboarding), keyEquivalent: ""))
+        let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(updates)
+        updateMenuItems.append(updates)
         menu.addItem(NSMenuItem(title: "Quit Dropy", action: #selector(quit), keyEquivalent: "q"))
         for entry in menu.items { if entry.action != nil { entry.target = self } }
         for entry in sizes.items { entry.target = self }
@@ -278,6 +290,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onboarding?.show()
         }
         startStageIfUseful()
+        if !Self.launchedByCheck { updater.check() }
         startDebugDriversIfRequested()
     }
 
@@ -383,6 +396,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // An edit made in the Animation Studio a moment ago is saved, not lost.
         studio.model?.saveNow()
+        updater.cancel()
         demo.stop()
         overlay.shutdown()
         dockAutoHide.restoreNow()
@@ -567,10 +581,15 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func quit() { overlay.shutdown(); NSApp.terminate(nil) }
     @objc private func showSettings() { settings.show() }
     @objc private func showOnboarding() { onboarding?.show() }
+    @objc private func checkForUpdates() {
+        settings.model.navigate(to: .updates)
+        settings.show()
+        updater.check()
+    }
 
     @objc private func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .credits: NSAttributedString(string: "Your apps, near the notch.\nFree and MIT-licensed.")
+            .credits: NSAttributedString(string: "macOS app workspace.\nFree and MIT-licensed.")
         ])
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -883,6 +902,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .separator(),
             item("Quit Dropy", #selector(quit), "q", target: self),
         ])
+        let updates = item("Check for Updates…", #selector(checkForUpdates), target: self)
+        main.items.first?.submenu?.insertItem(updates, at: 2)
+        updateMenuItems.append(updates)
 
         let overlayMenu = NSMenu(title: "Overlay")
         openItems.append(addOverlayItems(to: overlayMenu))
@@ -903,7 +925,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         NSApp.windowsMenu = window
 
-        let help = submenu("Help", [item("Welcome to Dropy…", #selector(showOnboarding), target: self),
+        let help = submenu("Help", [item("Setup…", #selector(showOnboarding), target: self),
                                     .separator(), item("Dropy on GitHub", #selector(openProjectPage), target: self)])
         NSApp.helpMenu = help
         return main

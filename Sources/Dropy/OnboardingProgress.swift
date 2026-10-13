@@ -5,7 +5,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
     var id: Int { rawValue }
     var title: String {
         switch self {
-        case .welcome: "Welcome"
+        case .welcome: "Introduction"
         case .permissions: "Access"
         case .shortcut: "Shortcut"
         case .tryIt: "Try it"

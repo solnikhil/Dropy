@@ -23,7 +23,7 @@ illustrations, with supporting explanations kept subordinate to the controls.
 ## Shared presentation
 
 Every Settings page begins with its title and a short purpose statement. Sidebar
-categories are grouped by workspace, experience and app maintenance. Native buttons,
+navigation is a flat list, without branding, category labels or a decorative footer. Native buttons,
 menus, switches, text fields and disclosure groups retain keyboard and accessibility
 behavior. Transparency and navigation motion continue to honor system preferences.
 
@@ -66,3 +66,7 @@ menu and the complete layout was visually rechecked. The schematic drawing canva
 explicitly bounded so decorative wallpaper cannot expand or crop its geometry. The
 final build was installed and General was left open. Light appearance, accessibility
 preference combinations, and live picker visuals have not been manually reviewed.
+
+Revision on 2026-10-14: General now contains neutral Application controls without the
+welcome illustration. Setup headings and menu labels are neutral. Updates has a dedicated
+page and startup checks; release-source and publishing requirements are in `docs/UPDATES.md`.

@@ -15,26 +15,13 @@ struct SettingsSidebar: View {
             // The window's real AppKit traffic lights sit in the title bar area above.
             Color.clear.frame(height: SettingsMetrics.titleBarHeight).accessibilityHidden(true)
 
-            HStack(spacing: 10) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable().frame(width: 34, height: 34).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Dropy").font(.system(size: 19, weight: .bold, design: .rounded))
-                    Text("Your apps. Closer.").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 24)
-
             searchField
                 .padding(.horizontal, SettingsMetrics.sidebarInset)
                 .padding(.bottom, 18)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 3) {
-                    section("WORKSPACE", panes: [.general, .opening, .overlay])
-                    section("EXPERIENCE", panes: [.animation, .interaction])
-                    section("DROPY", panes: [.permissions, .advanced, .about])
+                    ForEach(SettingsPane.allCases) { pane in row(pane) }
                 }
                 .padding(.horizontal, SettingsMetrics.sidebarInset)
                 .padding(.bottom, SettingsMetrics.sidebarInset)
@@ -48,25 +35,10 @@ struct SettingsSidebar: View {
                 default: break
                 }
             }
-            HStack(spacing: 6) {
-                Image(systemName: "macwindow").font(.system(size: 11))
-                Text("Made for your Mac").font(.system(size: 11))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 18).padding(.vertical, 20)
+
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Settings categories")
-    }
-
-    private func section(_ title: String, panes: [SettingsPane]) -> some View {
-        Group {
-            Text(title)
-                .font(.system(size: 9, weight: .semibold)).tracking(1.4)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10).padding(.top, title == "WORKSPACE" ? 0 : 19).padding(.bottom, 5)
-            ForEach(panes) { pane in row(pane) }
-        }
     }
 
     private func row(_ pane: SettingsPane) -> some View {
@@ -85,7 +57,9 @@ struct SettingsSidebar: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if let badge = pane.badge { SettingsBadge(badge) }
+                if pane == .updates, model.updater?.availableRelease != nil {
+                    SettingsBadge("New")
+                } else if let badge = pane.badge { SettingsBadge(badge) }
             }
             .padding(.horizontal, 10)
             .frame(height: SettingsMetrics.sidebarRowHeight)

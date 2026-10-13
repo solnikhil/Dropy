@@ -16,14 +16,15 @@ extension EnvironmentValues {
 extension SettingsPane {
     var introduction: String {
         switch self {
-        case .general: "A little space for the apps you reach for every day."
+        case .general: "Configure startup behavior and keyboard shortcuts."
         case .opening: "Choose what’s waiting when you open Dropy."
         case .overlay: "Find the right place. Give your apps room to breathe."
         case .animation: "Make every opening feel like yours."
         case .interaction: "Choose how your apps work inside Dropy."
         case .permissions: "You’re in control of what Dropy can access."
-        case .advanced: "Tools for a fresh start and a little troubleshooting."
-        case .about: "Small by design. Open by nature."
+        case .advanced: "Reset preferences and view diagnostic information."
+        case .about: "Version and project information."
+        case .updates: "Check for published versions and view update status."
         }
     }
 }
@@ -111,34 +112,6 @@ struct WorkspaceIllustration: View {
                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)
         }
         .accessibilityHidden(true)
-    }
-}
-
-struct SettingsWelcomeCard: View {
-    var body: some View {
-        HStack(spacing: 24) {
-            VStack(alignment: .leading, spacing: 12) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable().frame(width: 40, height: 40)
-                    .accessibilityHidden(true)
-                Text("Always within reach.")
-                    .font(.system(size: 21, weight: .semibold, design: .rounded))
-                    .tracking(-0.4)
-                Text("Open an app. Stay in your flow.\nPick up right where you left off.")
-                    .font(SettingsMetrics.detail)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(width: 220, alignment: .leading)
-            WorkspaceIllustration().frame(height: 166)
-        }
-        .padding(20)
-        .background(SettingsTheme.card, in: RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius))
-        .overlay {
-            RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius)
-                .strokeBorder(SettingsTheme.separator, lineWidth: 1)
-        }
     }
 }
 

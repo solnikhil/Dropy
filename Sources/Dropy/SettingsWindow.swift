@@ -46,6 +46,10 @@ final class SettingsModel: ObservableObject {
         didSet { animationsObservation = animations?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() } }
     }
     private var animationsObservation: AnyCancellable?
+    var updater: UpdateChecker? {
+        didSet { updaterObservation = updater?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() } }
+    }
+    private var updaterObservation: AnyCancellable?
     /// Plays an animation on the notch; returns how long it takes.
     var playOnNotch: ((DropyAnimation, Double) -> TimeInterval)?
     /// The animation in use, and why when it is not the one chosen.
@@ -433,7 +437,7 @@ final class SettingsModel: ObservableObject {
 
     func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .credits: NSAttributedString(string: "Your apps, near the notch.\nFree and MIT-licensed."),
+            .credits: NSAttributedString(string: "macOS app workspace.\nFree and MIT-licensed."),
         ])
     }
 

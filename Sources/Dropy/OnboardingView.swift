@@ -43,15 +43,7 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 26, height: 26)
-                    .accessibilityHidden(true)
-                Text("Dropy").font(.system(size: 15, weight: .bold, design: .rounded))
-                Spacer()
-                Text("MAKE YOURSELF AT HOME").font(.system(size: 9, weight: .semibold)).tracking(1.5)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.leading, 84).padding(.trailing, 28).frame(height: 64)
+            Color.clear.frame(height: 60).accessibilityHidden(true)
 
             HStack(spacing: 8) {
                 ForEach(OnboardingStep.allCases) { step in
@@ -106,7 +98,7 @@ struct OnboardingView: View {
     @ViewBuilder private var page: some View {
         switch model.step {
         case .welcome:
-            heading("Your apps. A little closer.", detail: "A temporary home for the app you need, right at the edge of your screen.")
+            heading("Set Up Dropy", detail: "A temporary home for the app you need, right at the edge of your screen.")
             WorkspaceIllustration().frame(height: 190)
             HStack(alignment: .top, spacing: 24) {
                 feature("Open", symbol: "macwindow.badge.plus", detail: "Bring an open app into Dropy.")
@@ -114,7 +106,7 @@ struct OnboardingView: View {
                 feature("Return", symbol: "arrow.uturn.backward", detail: "Close Dropy and keep your session.")
             }
         case .permissions:
-            heading("A little access. You’re in control.", detail: "macOS asks you to allow these in System Settings. You can continue now and grant access later.")
+            heading("Permissions", detail: "macOS asks you to allow these in System Settings. You can continue now and grant access later.")
             SettingsCard {
                 permission("Accessibility", symbol: "hand.point.up.left", detail: "Moves an app’s real window into Dropy so you can type, click and work as usual.", granted: settings.accessibilityGranted) {
                     settings.openAccessibilitySettings()
@@ -131,13 +123,13 @@ struct OnboardingView: View {
             }
             if model.requestedScreenAccess && !settings.screenRecordingGranted {
                 SettingsCard {
-                    SettingsRow("macOS may need a fresh start", detail: "If you’ve allowed Screen Recording, relaunch Dropy. Your setup progress is saved.") {
+                    SettingsRow("Relaunch Required", detail: "If you’ve allowed Screen Recording, relaunch Dropy. Your setup progress is saved.") {
                         Button("Relaunch Dropy") { settings.relaunch() }.buttonStyle(SettingsButtonStyle())
                     }
                 }
             }
         case .shortcut:
-            heading("One shortcut. Always within reach.", detail: "Open and close Dropy from anywhere. Keep this shortcut or click it to make it yours.")
+            heading("Keyboard Shortcut", detail: "Open and close Dropy from anywhere. Keep this shortcut or click it to make it yours.")
             VStack(spacing: 18) {
                 Image(systemName: "keyboard").font(.system(size: 42, weight: .light)).foregroundStyle(SettingsTheme.accent)
                 ShortcutButton(shortcut: settings.preferences.shortcut, isRecording: settings.isRecordingShortcut,
@@ -158,7 +150,7 @@ struct OnboardingView: View {
                  : "You can also open Dropy from the notch or the ◆ menu-bar button.")
                 .font(SettingsMetrics.detail).foregroundStyle(.secondary)
         case .tryIt:
-            heading("See it in action.", detail: "Watch Dropy open, make room, and tuck itself away. This demo uses sample content and needs no permissions.")
+            heading("Overlay Preview", detail: "Watch Dropy open, make room, and tuck itself away. This demo uses sample content and needs no permissions.")
             if reduceMotion {
                 WorkspaceIllustration().frame(height: 180)
                 Text("Reduce Motion is on. The preview stays still; the optional demo plays the selected animation.")
@@ -172,7 +164,7 @@ struct OnboardingView: View {
                 Spacer()
                 Text(settings.animationChoice.animation.name).font(SettingsMetrics.body).foregroundStyle(.secondary)
             }
-            Text("You’re ready. Get Started opens Settings, where you can pin a favorite app, change the size and position, or make an animation of your own.")
+            Text("Get Started opens Settings to configure a pinned app, overlay size and position, and animation.")
                 .font(SettingsMetrics.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -238,7 +230,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         let host = NSHostingController(rootView: OnboardingView(model: model, settings: model.settings))
         host.sizingOptions = []
         let window = NSWindow(contentViewController: host)
-        window.title = "Welcome to Dropy"
+        window.title = "Dropy Setup"
         window.styleMask = [.titled, .closable, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true

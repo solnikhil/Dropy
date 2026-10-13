@@ -4,7 +4,7 @@ import SwiftUI
 import DropyCore
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, opening, overlay, animation, interaction, permissions, advanced, about
+    case general, opening, overlay, animation, interaction, permissions, updates, advanced, about
 
     var id: String { rawValue }
 
@@ -16,6 +16,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .animation: "Animation"
         case .interaction: "Interaction"
         case .permissions: "Permissions"
+        case .updates: "Updates"
         case .advanced: "Advanced"
         case .about: "About"
         }
@@ -29,6 +30,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .animation: "wand.and.stars"
         case .interaction: "hand.point.up.left.fill"
         case .permissions: "lock.shield.fill"
+        case .updates: "arrow.triangle.2.circlepath"
         case .advanced: "wrench.and.screwdriver.fill"
         case .about: "info.circle.fill"
         }
@@ -46,6 +48,9 @@ private struct SettingsTopic: Identifiable {
     let keywords: String
 
     static let all: [SettingsTopic] = [
+        SettingsTopic(id: "updates", pane: .updates, title: "Check for Updates",
+                      detail: "Checks published versions at startup and on request.",
+                      keywords: "update release version download startup latest software"),
         SettingsTopic(id: "login", pane: .general, title: "Open at Login",
                       detail: "Start Dropy when you log in.",
                       keywords: "login items startup launch"),
@@ -178,6 +183,8 @@ struct SettingsView: View {
         case .animation: AnimationSettingsPage(model: model)
         case .interaction: interaction
         case .permissions: permissions
+        case .updates:
+            if let updater = model.updater { UpdatesSettingsPage(checker: updater) }
         case .advanced: advanced
         case .about: about
         }
@@ -227,8 +234,7 @@ struct SettingsView: View {
 
     private var general: some View {
         SettingsPage {
-            SettingsWelcomeCard()
-            SettingsCard("Make Yourself at Home", footer: "Always available in the menu bar. Dropy also appears in the Dock while Settings is open.") {
+            SettingsCard("Application", footer: "Available in the menu bar. Dropy also appears in the Dock while Settings is open.") {
                 SettingsToggleRow("Open at Login", isOn: model.opensAtLogin)
                 loginStatus
                 if !model.isInstalled {
@@ -575,7 +581,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Dropy").font(.system(size: 17, weight: .semibold))
                             .accessibilityAddTraits(.isHeader)
-                        Text("Your apps, near the notch.")
+                        Text("macOS app workspace")
                             .font(SettingsMetrics.detail).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: SettingsMetrics.rowInset)
