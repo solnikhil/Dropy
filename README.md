@@ -6,6 +6,8 @@ Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app 
 
 ## What works today
 
+- **A first-launch welcome.** A four-step tour introduces Dropy, explains Accessibility and Screen Recording, lets you choose your shortcut, and offers a sample-content demo on your screen. Permission requests happen only when you choose Allow Access. Closing the tour saves your place; finishing or choosing Set Up Later stops automatic presentation. Reopen it from **Help › Welcome to Dropy…** or the menu-bar menu. Development launches can use `--onboarding`; benchmark/debug and explicit Settings/Studio launches skip automatic onboarding.
+
 - **Animations you can make your own.** Three built-in styles (Rapid, Balanced, Smooth) and any number of your own, made in the **Animation Studio** (Settings › Animation, or Animation in the menu bar menu): springs you shape by dragging one handle, keyframes on a timeline, or a curve you draw with the pen, previewed live and on the real notch. Every animation is a small JSON file in `~/Library/Application Support/Dropy/Animations`, picked up the moment it is saved, shareable as a one-line code. AI coding agents (Claude Code, Codex, Cursor) can make them too: Settings copies a prompt, the folder carries the guide, and `Dropy animation check | render | play | use` lets an agent check its file, look at it and show it to you. Format and rules: [docs/ANIMATIONS.md](docs/ANIMATIONS.md).
 
 - A top-edge AppKit panel that expands from the notch area and can temporarily cover part of the menu bar.

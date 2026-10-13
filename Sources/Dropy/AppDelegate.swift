@@ -23,6 +23,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let demo = AnimationDemo()
     private lazy var studio = AnimationStudioController(library: animations)
     private var settings: SettingsWindowController!
+    private let onboardingProgress = OnboardingProgress()
+    private var onboarding: OnboardingWindowController?
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
     private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
     private var fullAppItems: [NSMenuItem] = []
@@ -99,6 +101,21 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.model.animations = animations
         settings.model.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
         settings.model.openStudio = { [weak self] id in self?.studio.open(id) }
+        let onboardingModel = OnboardingModel(progress: onboardingProgress, settings: settings.model)
+        onboarding = OnboardingWindowController(model: onboardingModel)
+        onboarding?.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        onboarding?.onClose = { [weak self] in self?.demo.stop() }
+        onboardingModel.onPreview = { [weak self] in
+            guard let self else { return }
+            _ = self.playOnNotch(self.animations.choice(for: self.preferences.value).animation, slowdown: 1)
+        }
+        onboardingModel.onFinish = { [weak self] skipped in
+            guard let self else { return }
+            self.onboarding?.close()
+            self.settings.model.navigate(to: skipped ? .general
+                : self.settings.model.accessibilityGranted && self.settings.model.screenRecordingGranted ? .opening : .permissions)
+            self.settings.show()
+        }
         studio.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
         studio.use = { [weak self] id in self?.change { $0.customAnimation = id } }
         studio.inUse = { [weak self] id in
@@ -203,6 +220,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fullAppItems.append(fullApp)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Welcome to Dropy…", action: #selector(showOnboarding), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit Dropy", action: #selector(quit), keyEquivalent: "q"))
         for entry in menu.items { if entry.action != nil { entry.target = self } }
         for entry in sizes.items { entry.target = self }
@@ -254,6 +272,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let index = arguments.firstIndex(of: "--studio"), index + 1 < arguments.count {
             studio.open(arguments[index + 1])
+        }
+        if OnboardingProgress.shouldPresent(isComplete: onboardingProgress.isComplete,
+                                             arguments: arguments, isCheck: Self.launchedByCheck) {
+            onboarding?.show()
         }
         startStageIfUseful()
         startDebugDriversIfRequested()
@@ -544,6 +566,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func refresh() { if overlay.state == .closed { overlay.open() } else { overlay.refreshWindows() } }
     @objc private func quit() { overlay.shutdown(); NSApp.terminate(nil) }
     @objc private func showSettings() { settings.show() }
+    @objc private func showOnboarding() { onboarding?.show() }
 
     @objc private func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
@@ -796,7 +819,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A Dock icon and Dropy's own menu bar when "Show in Dock" is on, and always while
     /// Settings is open so the window can be found with Command-Tab.
     private func updateActivationPolicy() {
-        let regular = wantsDockIcon || settings.isVisible || studio.isVisible
+        let regular = wantsDockIcon || settings.isVisible || studio.isVisible || onboarding?.isVisible == true
         guard NSApp.activationPolicy() != (regular ? .regular : .accessory) else { return }
         NSApp.setActivationPolicy(regular ? .regular : .accessory)
         if regular { NSApp.activate(ignoringOtherApps: true) }
@@ -805,6 +828,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Opening Dropy again from Finder, Spotlight or the Dock shows Settings, the way an
     /// ordinary app shows its main window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !onboardingProgress.isComplete { onboarding?.show(); return false }
         if overlay.state == .closed { settings.show() }
         return false
     }
@@ -879,7 +903,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         NSApp.windowsMenu = window
 
-        let help = submenu("Help", [item("Dropy on GitHub", #selector(openProjectPage), target: self)])
+        let help = submenu("Help", [item("Welcome to Dropy…", #selector(showOnboarding), target: self),
+                                    .separator(), item("Dropy on GitHub", #selector(openProjectPage), target: self)])
         NSApp.helpMenu = help
         return main
     }

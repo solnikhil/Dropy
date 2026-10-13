@@ -66,6 +66,10 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 "$build_dir/PlacementJournalTests"
 
 # AppKit-level regression checks for the overlay panel (no window is shown).
+swiftc -swift-version 6 -o "$build_dir/OnboardingChecks" \
+  "$repo_dir/Tests/LocalOnboardingCheck.swift" "$repo_dir/Sources/Dropy/OnboardingProgress.swift"
+"$build_dir/OnboardingChecks"
+
 swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
   "$repo_dir/Tests/LocalOverlayPanelCheck.swift" "$repo_dir/Sources/Dropy/OverlayPanel.swift"
 "$build_dir/OverlayPanelChecks"
