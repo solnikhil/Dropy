@@ -141,6 +141,7 @@ final class WindowChoiceButton: NSButton {
     var identity: WindowIdentity?
     var keyboardSelected = false { didSet { needsDisplay = true } }
     private var hovered = false
+    private var hoverArea: NSTrackingArea?
     private var appName = ""
     private var documentName = ""
     private var appIcon: NSImage?
@@ -158,8 +159,10 @@ final class WindowChoiceButton: NSButton {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        for area in trackingAreas { removeTrackingArea(area) }
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverArea = area
     }
 
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }

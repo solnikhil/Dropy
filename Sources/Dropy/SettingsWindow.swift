@@ -626,7 +626,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     var isVisible: Bool { window?.isVisible ?? false }
 
     func show() {
-        let saved = UserDefaults.standard.string(forKey: "NSWindow Frame DropySettings5") != nil
+        let saved = UserDefaults.standard.string(forKey: "NSWindow Frame \(Self.frameName)") != nil
         let created = window == nil
         let window = self.window ?? makeWindow()
         self.window = window
@@ -638,6 +638,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     static let contentSize = CGSize(width: 920, height: 620)
+    private static let frameName = "DropySettings5"
 
     private func makeWindow() -> NSWindow {
         let host = NSHostingController(rootView: SettingsView(model: model))
@@ -661,7 +662,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.titlebarSeparatorStyle = .none
         window.setContentSize(Self.contentSize)
         window.contentMinSize = CGSize(width: 800, height: 560)
-        window.setFrameAutosaveName("DropySettings5")
+        window.setFrameAutosaveName(Self.frameName)
         window.delegate = self
         return window
     }

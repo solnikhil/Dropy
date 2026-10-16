@@ -812,7 +812,12 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKey?.unregister()
         let shortcut = preferences.value.shortcut
         hotKey = GlobalHotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
-            self?.overlay.toggle()
+            guard let self else { return }
+            // Setup's Shortcut step asks for a press: answer with the animation alone.
+            if let onboarding = self.onboarding, onboarding.isVisible, onboarding.model.step == .shortcut {
+                return onboarding.model.shortcutPressed()
+            }
+            self.overlay.toggle()
         }
         for item in openItems { item.title = openTitle }
         settings.model.shortcutRegistered = hotKey != nil

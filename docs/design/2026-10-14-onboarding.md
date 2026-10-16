@@ -1,8 +1,30 @@
 # First-launch onboarding
 
 The welcome flow introduces the app, explains permissions, teaches the saved keyboard
-shortcut, and offers the production animation demo with sample content. It uses the
-same semantic palette, controls and preview renderer as Settings.
+shortcut, and offers the production animation demo with sample content. It shares the
+accent and preview renderer with Settings but has its own expressive surface.
+
+## Visuals
+
+Dark and monochrome on a solid near-black window with a still overhead light; the
+background never moves. Surfaces are machined (hairline edges, lit top edges) and white
+metal marks the lit step pill and primary actions. The window has no title-bar controls;
+the step track sits at the top, and pages are laid out to fit without scrolling.
+
+Welcome opens on the title and a Get to Know More button. Clicking it pulls both into a
+notch at the page's top edge, and the notch opens like Dropy to show the title, line and
+three feature cards inside it. Going back to Welcome later shows it already open.
+Permissions shows a shield that turns green once both grants are
+in. Shortcut shows keycaps that press the real shortcut in order and asks for a press:
+while that step is visible, the global shortcut plays the selected animation on the notch
+instead of opening the overlay, and the prompt confirms it. Try it loops the production
+notch animation on sample content.
+
+Get Started fades the window out and drops the real notch (or a notch-sized body at the top
+center of a display without one) to show "Dropy is ready" with the shortcut's keycaps. It
+holds three seconds, and setup finishes and Settings opens as it tucks back. Reduce Motion
+stops continuous effects, uses fades between pages and opens Welcome without the morph. Shared
+effects live in OnboardingEffects.
 
 ## Lifecycle
 

@@ -481,7 +481,7 @@ struct SettingsView: View {
                     ])
                 }
                 SettingsToggleRow("Keep Pinned App Ready",
-                                  detail: "Keep your pinned app ready to open on any desktop.",
+                                  detail: "Opens at once on any desktop. Uses a hidden display that full-screen screenshots include and protected video can’t play alongside.",
                                   isOn: model.binding(\.keepsPinnedAppReady))
                     .disabled(model.preferences.interaction != .fullApp || model.preferences.protectsVideo)
                 SettingsToggleRow("Protect Video Playback",
