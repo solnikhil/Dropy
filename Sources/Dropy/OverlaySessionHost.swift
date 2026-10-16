@@ -30,6 +30,8 @@ protocol OverlaySessionHost: AnyObject {
     func visibleFrame(of screen: NSScreen) -> CGRect
     /// When the outline's current animation finishes.
     var settlesAt: Date { get }
+    /// When the outline has grown over its end place and stays over it (at or before `settlesAt`).
+    var coversAt: Date { get }
 
     /// Sizes the overlay to the previewed window.
     func layoutSelectedWindow()

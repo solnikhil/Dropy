@@ -58,6 +58,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     var onClose: (() -> Void)?
     /// When the opening morph finishes; pointer-leave does not close before then.
     private(set) var settlesAt = Date.distantPast
+    private(set) var coversAt = Date.distantPast
     private(set) var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
     var selectedIdentity: WindowIdentity?
@@ -252,13 +253,43 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             setState(.selecting)
         }
         onOpen?()
+        if let prediction { dockPredictedWindow(prediction) }
         refreshWindows()
+    }
+
+    /// Starts docking a predicted Native opening's window at once. Docking needs only
+    /// Accessibility; waiting for the window list first (ScreenCaptureKit, the slowest
+    /// and least predictable step of an opening) held every opening up. The list still
+    /// loads for the app switcher.
+    private func dockPredictedWindow(_ prediction: OpeningPrediction) {
+        guard case .docking(let name) = prediction.state, let windowID = prediction.windowID,
+              SessionModePolicy.mode(for: sessionConditions) == .native,
+              let application = NSRunningApplication(processIdentifier: prediction.processID),
+              !application.isTerminated, let launchDate = application.launchDate else { return }
+        let identity = WindowIdentity(processID: prediction.processID, processLaunchDate: launchDate,
+                                      windowID: windowID, bundleIdentifier: application.bundleIdentifier)
+        awaitingAutoSelection = false
+        selectedIdentity = identity
+        selectedWindowSize = prediction.windowSize
+        selectedApplicationName = name
+        remember(bundleID: application.bundleIdentifier)
+        native.start(identity, applicationName: name, request: generation)
+    }
+
+    /// The app chosen last, for the next direct or last-used opening.
+    private func remember(bundleID: String?) {
+        guard let bundleID else { return }
+        preferences.update {
+            $0.lastUsedBundleIdentifier = bundleID
+            if $0.openBehavior == .direct { $0.selectedBundleIdentifier = bundleID }
+        }
     }
 
     private struct OpeningPrediction {
         let body: CGRect
         let preview: CGRect
         let windowID: UInt32?
+        let windowSize: CGSize
         let state: CapturePhase
         let processID: pid_t
     }
@@ -274,7 +305,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         case .native, .live:
             guard let predicted = native.predictedLayout(for: bundleID, on: screen) else { return nil }
             return OpeningPrediction(body: predicted.layout.body, preview: predicted.layout.windowInBody,
-                                     windowID: predicted.windowID, state: .docking(applicationName: name),
+                                     windowID: predicted.windowID, windowSize: predicted.size,
+                                     state: .docking(applicationName: name),
                                      processID: application.processIdentifier)
         case .preview:
             // The app's frontmost window, from the window server (no permission needed).
@@ -287,7 +319,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             let layout = previewLayout(for: bounds.size, on: screen)
             let body = placedBody(size: layout.size, on: screen)
             return OpeningPrediction(body: body, preview: layout.preview, windowID: row[kCGWindowNumber as String] as? UInt32,
-                                     state: .starting(applicationName: name), processID: application.processIdentifier)
+                                     windowSize: bounds.size, state: .starting(applicationName: name), processID: application.processIdentifier)
         }
     }
 
@@ -398,10 +430,12 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         if OverlayMotion.reduced {
             backdrop.set(open)
             settlesAt = Date()
+            coversAt = settlesAt
         } else {
             let duration = backdrop.morph(from: closedShape(in: canvas, body: content.frame), to: open,
                                           motion: OverlayMotion.morph.open, clipping: content)
             settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
+            coversAt = Date().addingTimeInterval(OverlayMotion.wall(backdrop.coverDuration))
         }
         OverlayMotion.revealContent(content, position: position)
         // Without a notch to grow from, the whole overlay also fades in.
@@ -786,6 +820,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             let duration = backdrop.morph(from: startShape, to: endShape, motion: OverlayMotion.morph.resize, clipping: workspace)
             OverlayMotion.relayoutContent(workspace)
             settlesAt = Date().addingTimeInterval(OverlayMotion.wall(duration))
+            coversAt = Date().addingTimeInterval(OverlayMotion.wall(backdrop.coverDuration))
             // Once settled, shrink the panel to fit; nothing moves on screen.
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(OverlayMotion.wall(duration)))
@@ -799,6 +834,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         } else {
             backdrop?.settle(endShape)
             settlesAt = Date().addingTimeInterval(DismissBehavior.pointerLeaveGrace)
+            coversAt = Date()
             if state == .live { live?.resumeInputAfterLayout() }
         }
         // A docked window's menus and sheets reach outside the overlay; pointer-leave
@@ -924,12 +960,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
         rebuildWindowList()
-        if let bundleID = selected.bundleIdentifier {
-            preferences.update {
-                $0.lastUsedBundleIdentifier = bundleID
-                if $0.openBehavior == .direct { $0.selectedBundleIdentifier = bundleID }
-            }
-        }
+        remember(bundleID: selected.bundleIdentifier)
         renderer.clear()
         let conditions = sessionConditions
         switch SessionModePolicy.mode(for: conditions) {

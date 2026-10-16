@@ -178,6 +178,18 @@ public enum NotchMorph {
         return (shapes, keyTimes, duration)
     }
 
+    /// Seconds into a morph after which every frame's body covers the end shape's body
+    /// to within `tolerance` points. A spring that overshoots gets there well before it
+    /// settles, because the rest of its travel is on the far side of the end, so a
+    /// window can move in beneath the outline that early.
+    public static func coverTime(shapes: [NotchShape], keyTimes: [Double], duration: TimeInterval,
+                                 tolerance: CGFloat = 1) -> TimeInterval {
+        guard let end = shapes.last?.body, shapes.count == keyTimes.count else { return duration }
+        let target = end.insetBy(dx: tolerance, dy: tolerance)
+        guard let short = shapes.lastIndex(where: { !$0.body.contains(target) }) else { return 0 }
+        return keyTimes[min(short + 1, keyTimes.count - 1)] * duration
+    }
+
     /// Room around the open body for the outline's overshoot, so the window edge never
     /// clips it. `reach` is how far past its target (as a fraction of the size) the
     /// animation in use ever takes the outline; the built-in styles stay within 2.5 %.

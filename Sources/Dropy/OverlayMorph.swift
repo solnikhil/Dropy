@@ -18,6 +18,8 @@ final class MorphBackdropView: NSView {
     }
     /// The morph in progress, to tell where the outline is on screen right now.
     private var active: (frames: [NotchShape], duration: TimeInterval, startedAt: CFTimeInterval)?
+    /// How long the latest morph takes to cover its end shape's place (`NotchMorph.coverTime`).
+    private(set) var coverDuration: TimeInterval = 0
     /// How many times slower than real time its layers run (a slowed-down preview).
     var slowdown = OverlayMotion.slowdown
 
@@ -26,6 +28,12 @@ final class MorphBackdropView: NSView {
         guard let active else { return currentShape }
         let elapsed = (CACurrentMediaTime() - active.startedAt) / slowdown
         return NotchMorph.shape(in: active.frames, duration: active.duration, at: elapsed) ?? currentShape
+    }
+
+    /// Wall-clock seconds until the morph in progress ends; 0 at rest.
+    var morphRemaining: TimeInterval {
+        guard let active else { return 0 }
+        return max(0, active.duration * slowdown - (CACurrentMediaTime() - active.startedAt))
     }
 
     override init(frame: CGRect) {
@@ -91,6 +99,7 @@ final class MorphBackdropView: NSView {
         let frames = NotchMorph.frames(from: start, to: end, motion: motion)
         set(end)
         active = (frames.shapes, frames.duration, CACurrentMediaTime())
+        coverDuration = NotchMorph.coverTime(shapes: frames.shapes, keyTimes: frames.keyTimes, duration: frames.duration)
         func keyframes(_ path: (NotchShape) -> CGPath?) -> CAKeyframeAnimation {
             let animation = CAKeyframeAnimation(keyPath: "path")
             animation.values = frames.shapes.compactMap(path)

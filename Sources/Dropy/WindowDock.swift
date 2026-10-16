@@ -1,7 +1,6 @@
 import AppKit
 import ApplicationServices
 import DropyCore
-import ScreenCaptureKit
 
 /// Puts an app's real window inside the overlay, brings its app to the front, and
 /// puts it back where it was when the overlay closes. Nothing is forwarded: the
@@ -44,7 +43,6 @@ final class WindowDock {
 
     struct Docked {
         let identity: WindowIdentity
-        var window: SCWindow
         var element: AXUIElement
         /// Where the window is, global top-left, as last placed or followed.
         var frame: CGRect
@@ -84,20 +82,15 @@ final class WindowDock {
 
     // MARK: Choosing a window
 
-    /// Makes `window` the docked window. A different one docked before goes back to
+    /// Makes the window with `identity` the docked window. A different one docked before goes back to
     /// where the person had it. The window is not moved yet.
-    func adopt(_ window: SCWindow, identity: WindowIdentity, session: UUID) -> Task<Void, Error> {
+    func adopt(_ identity: WindowIdentity, session: UUID) -> Task<Void, Error> {
         operations.adopt(session) { [self] in
-            if var docked = current, docked.identity == identity {
-                docked.window = window
-                current = docked
-                return
-            }
+            if current?.identity == identity { return }
             // Opened again while waiting to go home: it is on the Stage already.
             if let index = returning.firstIndex(where: { $0.identity == identity }) {
-                var docked = returning.remove(at: index)
+                let docked = returning.remove(at: index)
                 if current != nil { await sendHomeNow() }
-                docked.window = window
                 current = docked
                 startObserving(docked)
                 return
@@ -116,7 +109,7 @@ final class WindowDock {
             }
             let state = try WindowPlacer.readState(element, identity: identity)
             let spaces = Spaces.of(identity.windowID) ?? []
-            current = Docked(identity: identity, window: window, element: element, frame: state.frame,
+            current = Docked(identity: identity, element: element, frame: state.frame,
                              cornerRadius: DockGeometry.defaultCornerRadius,
                              homeSpace: spaces.count == 1 ? spaces[0] : nil)
             // A window on another desktop is pulled over through the Stage: a move to

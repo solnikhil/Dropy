@@ -44,7 +44,7 @@ final class LiveSession {
         host.backdrop?.hole = nil
         host.workspace?.coversWindow = false
         host.setState(.docking(applicationName: selected.applicationName))
-        let adoption = native.adopt(selected, request: request)
+        let adoption = native.adopt(selected.identity, request: request)
         Task { [self] in
             if !stage.isReady { await stage.start() }
             guard isCurrent(request) else { return }

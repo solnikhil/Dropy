@@ -82,15 +82,15 @@ final class NativeSession: NSObject {
     /// opening at the preset's size and morphing again (the late jump people saw on a
     /// first opening). Uses the window Dropy already manages for that app, or the app's
     /// main window. Nil when the app has no window to measure.
-    func predictedLayout(for bundleID: String, on screen: NSScreen) -> (layout: DockLayout, windowID: UInt32?)? {
+    func predictedLayout(for bundleID: String, on screen: NSScreen) -> (layout: DockLayout, windowID: UInt32?, size: CGSize)? {
         if let docked = dock.current, docked.identity.bundleIdentifier == bundleID {
-            return (targetLayout(for: docked, on: screen), docked.identity.windowID)
+            return (targetLayout(for: docked, on: screen), docked.identity.windowID, docked.frame.size)
         }
         guard let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
                 .first(where: { !$0.isTerminated }),
               let window = WindowPlacer.mainWindow(of: application.processIdentifier),
               let size = try? WindowPlacer.sizeValue(window, kAXSizeAttribute), size.width > 0 else { return nil }
-        return (targetLayout(windowSize: size, on: screen), WindowPlacer.windowID(of: window))
+        return (targetLayout(windowSize: size, on: screen), WindowPlacer.windowID(of: window), size)
     }
 
     /// Covers the window's place with the icon of the app with `processID`, for an
@@ -103,9 +103,9 @@ final class NativeSession: NSObject {
     // MARK: Opening
 
     /// Native and Live share one ownership token and the same operation queue.
-    func adopt(_ selected: CapturableWindow, request: UUID) -> Task<Void, Error> {
+    func adopt(_ identity: WindowIdentity, request: UUID) -> Task<Void, Error> {
         session = request
-        return dock.adopt(selected.window, identity: selected.identity, session: request)
+        return dock.adopt(identity, session: request)
     }
 
     /// Stops owning the source before preview begins. Cleanup is reserved now, not
@@ -122,13 +122,19 @@ final class NativeSession: NSObject {
 
     /// The person chose a window: bring the real one in.
     func start(_ selected: CapturableWindow, request: UUID) {
+        start(selected.identity, applicationName: selected.applicationName, request: request)
+    }
+
+    /// Brings in the window with `identity`. Docking needs Accessibility only, not the
+    /// window list, so an opening that already knows its window starts here at once.
+    func start(_ identity: WindowIdentity, applicationName: String, request: UUID) {
         removeWatchers()
         host.backdrop?.hole = nil
         host.panel?.ignoresMouseEvents = false
         host.workspace?.coversWindow = true
-        setCover(selected.identity.processID)
-        host.setState(.docking(applicationName: selected.applicationName))
-        let adoption = adopt(selected, request: request)
+        setCover(identity.processID)
+        host.setState(.docking(applicationName: applicationName))
+        let adoption = adopt(identity, request: request)
         Task {
             // The Stage is not awaited here: only a window on another desktop needs it,
             // and `adopt` waits for it then. Waiting for it on every first opening held
@@ -137,13 +143,13 @@ final class NativeSession: NSObject {
                 try await adoption.value
             } catch {
                 guard isCurrent(request) else { return }
-                if !WindowDock.isOnActiveSpace(selected.identity.windowID) {
+                if !WindowDock.isOnActiveSpace(identity.windowID) {
                     // Accessibility may not reach a window on another desktop at all.
-                    host.setState(.dockedElsewhere(applicationName: selected.applicationName))
+                    host.setState(.dockedElsewhere(applicationName: applicationName))
                     return
                 }
                 NSLog("Dropy dock: cannot dock (%@); showing the preview", String(describing: error))
-                host.showPreviewInstead(of: selected.identity, request: request,
+                host.showPreviewInstead(of: identity, request: request,
                                         note: "View only · Dropy could not move this window")
                 return
             }
@@ -163,8 +169,9 @@ final class NativeSession: NSObject {
     /// reveals it.
     private func finish(request: UUID, target: DockLayout, on screen: NSScreen) async {
         // The window moves in only once the outline has grown over its place, so no
-        // part of it shows outside the overlay.
-        let wait = host.settlesAt.timeIntervalSinceNow
+        // part of it shows outside the overlay. That is before the spring settles: the
+        // placing and activation below overlap the rest of its travel.
+        let wait = host.coversAt.timeIntervalSinceNow
         if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
         guard isCurrent(request) else { return }
         let placed: CGRect
@@ -184,8 +191,10 @@ final class NativeSession: NSObject {
         if layout != target { host.applyLayout(body: layout.body, preview: layout.windowInBody, animated: false) }
         dockLayout = layout
         await dock.activate(session: request)
-        // A frame for the window server to draw the window where it now is.
-        try? await Task.sleep(for: .milliseconds(34))
+        // A frame for the window server to draw the window where it now is, and the
+        // outline at rest: its cut-out does not show through a morph still playing.
+        let settle = max(0.034, host.backdrop?.morphRemaining ?? 0)
+        try? await Task.sleep(for: .seconds(settle))
         guard isCurrent(request) else { return }
         reveal()
     }
