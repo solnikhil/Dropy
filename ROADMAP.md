@@ -1,6 +1,6 @@
 # Dropy roadmap
 
-This is the working sequence for turning Dropy from a live window preview into a dependable notch container. The end goal is an existing app's UI inside a Dropy-owned overlay, with its session intact after dismissal. The current build is **view-only**, and the source window remains visible elsewhere. We will publish compatibility by tested workflow rather than imply universal support from an early demo.
+This is the working sequence for turning Dropy from a live window preview into a dependable notch container. The end goal is an existing app's UI inside a Dropy-owned overlay, with its session intact after dismissal. The current build docks the real window for native interaction, with Live streaming over full-screen Spaces and a view-only fallback. We will publish compatibility by tested workflow rather than imply universal support from an early demo.
 
 Milestones are **evidence gates**, not calendar promises. Work may move between phases when an experiment changes the architecture. Each milestone has an explicit completion condition so a narrow success cannot be mistaken for the full product.
 
@@ -12,6 +12,12 @@ Milestones are **evidence gates**, not calendar promises. Work may move between 
 | M3 · Interaction feasibility | Exact-window pointer/scroll/keyboard bridge, focus rules, accessibility fallback, IME and menus/dialogs/drag-drop matrix | A named cross-toolkit app set passes the written interaction and containment contract without acting on the wrong window; unsupported workflows remain clearly labelled |
 | M4 · Product experience and performance | Direct/last/picker opening, app pinning, size and region controls, dismissal, shortcut and notchless entry, accessibility, multi-display/full-screen behavior, benchmark suite | End-to-end journeys pass on target hardware; latency and resource budgets are measured and met for supported workflows |
 | M5 · Release candidate | Compatibility matrix, signed/notarized packaging, update and rollback policy, documentation, privacy review, regression testing | Reproducible release with honest app/workflow support and no unresolved data-loss, security or source-window restoration failure |
+
+## Current workspace work (2026-10-17)
+
+Implemented in the local source: ordered favorites with a default-opening choice and optional per-favorite keyboard shortcuts, per-app size/position overrides, exact-process window memory, searchable favorite/recent ordering, and additional restoration/display/Live-layout safeguards. Behavior and remaining validation are in [WORKSPACE.md](docs/WORKSPACE.md). Only one favorite is kept warm at a time; other favorites launch on demand. These changes do not complete the real-app hardware validation gates.
+
+The M1 work order and pre-October-7 interaction gates below are historical context. Current interaction uses real windows, not the removed forwarding bridge. Installed-app pinning and launching are implemented; selected-region display remains open.
 
 ## Interaction decision (2026-10-07) and status (2026-10-08)
 
@@ -73,7 +79,7 @@ The [feasibility record](docs/FEASIBILITY.md) explains why these gates exist. A 
 ## Product decisions
 
 - Keep the overlay owned by Dropy and expanded **in place** from the notch, temporarily covering menu-bar items beneath it.
-- Keep direct-open, last-used and picker flows distinct. App pinning, selected-region display and automatic dismissal are planned work, not current features.
+- Keep direct-open, last-used and picker flows distinct. Favorites, installed-app launching and automatic dismissal are implemented. Selected-region display remains planned.
 - Publish support as **view-only**, **interactive for named workflows**, or **unsupported**, with a dated app/OS/version matrix.
 - Use platform-specific backends. Windows may share the product contract and tests, but its capture/input/windowing architecture is a later track.
 

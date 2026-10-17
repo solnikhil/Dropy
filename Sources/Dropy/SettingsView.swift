@@ -298,8 +298,31 @@ struct SettingsView: View {
 
     private var opening: some View {
         SettingsPage {
-            SettingsCard("Pinned App", footer: "A pinned app opens every time. Dropy launches it for you when needed.") {
-                pinnedRow
+            SettingsCard("Favorite Apps", footer: "Choose a default for opening, or switch favorites from the window menu. Dropy launches closed favorites. Only the most recently used favorite stays ready on the hidden display; switching restores the previous window.") {
+                ForEach(model.preferences.favoriteApps) { favorite in
+                    favoriteRow(favorite)
+                }
+                HStack {
+                    Button("Add App…", action: model.prepareAppList).buttonStyle(SettingsButtonStyle(outlined: true))
+                    Spacer()
+                    if model.preferences.pinnedBundleIdentifier != nil {
+                        Button("Use Opening Choice", action: model.unpin).buttonStyle(SettingsButtonStyle())
+                    }
+                }.settingsRow()
+                SettingsToggleRow("Favorite Shortcuts", detail: "⌃⌥1 through ⌃⌥9 open favorites in their listed order.",
+                                  isOn: model.binding(\.favoriteShortcutsEnabled))
+                ForEach(model.favoriteShortcutProblems, id: \.self) { problem in
+                    SettingsFootnote(problem, isError: true)
+                }
+            }
+            SettingsCard("Remembered Windows", footer: "Dropy remembers the exact window while its app stays running. A closed document or relaunched app asks you to choose again. Document titles and contents are never saved.") {
+                HStack {
+                    SettingsLabel("Recent Windows", detail: "Favorites appear first, followed by recently used windows.")
+                    Spacer()
+                    Button("Forget Windows", action: model.forgetWindows)
+                        .buttonStyle(SettingsButtonStyle())
+                        .disabled(model.preferences.rememberedWindows.isEmpty)
+                }.settingsRow()
             }
 
             SettingsCard("Window Selection", footer: openDetail) {
@@ -343,23 +366,41 @@ struct SettingsView: View {
         }
     }
 
-    private var pinnedRow: some View {
-        HStack(spacing: SettingsMetrics.rowInset) {
-            if let pinned = model.pinnedApp {
-                if let icon = pinned.icon {
-                    Image(nsImage: icon).resizable().frame(width: 28, height: 28).accessibilityHidden(true)
+    private func favoriteRow(_ favorite: FavoriteApp) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                if let icon = model.icon(for: favorite.id) {
+                    Image(nsImage: icon).resizable().frame(width: 24, height: 24).accessibilityHidden(true)
                 }
-                SettingsLabel(pinned.name, detail: "Opens automatically with Dropy.")
-                Spacer(minLength: 8)
-                Button("Remove", action: model.unpin).buttonStyle(SettingsButtonStyle())
-                Button("Change…", action: model.prepareAppList).buttonStyle(SettingsButtonStyle(outlined: true))
-            } else {
-                SettingsLabel("Pinned App", detail: "Open straight into an app you use often.")
-                Spacer(minLength: 8)
-                Button("Choose App…", action: model.prepareAppList).buttonStyle(SettingsButtonStyle(outlined: true))
+                SettingsLabel(model.appName(favorite.id), detail:
+                    model.preferences.pinnedBundleIdentifier == favorite.id ? "Default on opening" : "Available in the window menu")
+                Spacer()
+                Button { model.moveFavorite(favorite.id, by: -1) } label: { Image(systemName: "arrow.up") }
+                    .help("Move favorite earlier").accessibilityLabel("Move favorite earlier")
+                    .disabled(model.preferences.favoriteApps.first?.id == favorite.id)
+                Button { model.moveFavorite(favorite.id, by: 1) } label: { Image(systemName: "arrow.down") }
+                    .help("Move favorite later").accessibilityLabel("Move favorite later")
+                    .disabled(model.preferences.favoriteApps.last?.id == favorite.id)
+                if model.preferences.pinnedBundleIdentifier != favorite.id {
+                    Button("Make Default") { model.makeDefault(favorite.id) }
+                }
+                Button("Remove") { model.removeFavorite(favorite.id) }
             }
-        }
-        .settingsRow()
+            HStack {
+                Text("Size").foregroundStyle(SettingsTheme.secondaryText)
+                Picker("Size for \(model.appName(favorite.id))", selection: Binding<SizePreset?>(
+                    get: { favorite.sizePreset }, set: { model.favoriteSize(favorite.id, $0) })) {
+                    Text("Use global setting").tag(Optional<SizePreset>.none)
+                    ForEach(SizePreset.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
+                }.labelsHidden().frame(maxWidth: 160)
+                Text("Position").foregroundStyle(SettingsTheme.secondaryText)
+                Picker("Position for \(model.appName(favorite.id))", selection: Binding<OverlayPosition?>(
+                    get: { favorite.position }, set: { model.favoritePosition(favorite.id, $0) })) {
+                    Text("Use global setting").tag(Optional<OverlayPosition>.none)
+                    ForEach(OverlayPosition.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
+                }.labelsHidden().frame(maxWidth: 160)
+            }
+        }.settingsRow()
     }
 
     private var triggerName: String {

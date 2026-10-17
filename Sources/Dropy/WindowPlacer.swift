@@ -145,6 +145,12 @@ enum WindowPlacer {
         if entry.mode == .docked, entry.applied.isAppHidden,
            let application = NSRunningApplication(processIdentifier: entry.identity.processID),
            application.isHidden, WindowCatalog.isRunning(entry.identity) {
+            // Revealing the app is also a mutation. A crash between this reveal
+            // and the frame restore must not look like a later user change.
+            entry.applied.isAppHidden = false
+            entry.applicationConfirmed = false
+            do { try journal.upsert(entry) }
+            catch { return .deferred(.journalWriteFailed(String(describing: error))) }
             application.unhide()
             for _ in 0..<20 {
                 if case .found = (try? find(entry.identity)) ?? .missing(.processGone) { break }
@@ -175,6 +181,22 @@ enum WindowPlacer {
                     guard let window else { return .deferred(.applyFailed("windowElementUnavailable")) }
                     if unminimize { try setMinimized(false, window: window) }
                     if let frame { try setFrame(frame, of: window, resize: resize) }
+                }
+                // Adoption can reveal a previously hidden or minimized source.
+                // Restore both directions of those flags, after its frame is home.
+                let target: WindowPlacementState
+                switch planned {
+                case .restore(let state), .restoreOnFallbackDisplay(let state): target = state
+                default: return .deferred(.applyFailed("invalidRestoreTarget"))
+                }
+                if target.isMinimized {
+                    guard let window else { return .deferred(.applyFailed("windowElementUnavailable")) }
+                    try setMinimized(true, window: window)
+                }
+                if target.isAppHidden {
+                    guard NSRunningApplication(processIdentifier: entry.identity.processID)?.hide() == true else {
+                        return .deferred(.applyFailed("couldNotRestoreHiddenState"))
+                    }
                 }
             } catch {
                 return .deferred(.applyFailed(String(describing: error)))

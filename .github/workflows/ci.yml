@@ -32,7 +32,7 @@ jobs:
         with:
           bun-version: "1.3.13"
       - name: Benchmark probe checks
-        run: bun test Tests/BenchProbeTests.test.ts
+        run: bun run bench:test
       - name: Validate bundle
         run: |
           plutil -lint .build/local/Dropy.app/Contents/Info.plist

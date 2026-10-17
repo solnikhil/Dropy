@@ -47,7 +47,11 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         drawnPixelSize.map { PresentedFrame(pixelSize: $0, geometry: presentedGeometry) }
     }
 
-    static func make(frame: CGRect) throws -> MetalFrameView {
+    /// A transparent view shows only what the frames draw: Live mode's mirror, whose
+    /// frames are the app's windows on a clear background.
+    private let transparent: Bool
+
+    static func make(frame: CGRect, transparent: Bool = false) throws -> MetalFrameView {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else {
             throw RendererError.metalUnavailable
@@ -63,16 +67,19 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
         return MetalFrameView(frame: frame, metalDevice: device,
-                              commandQueue: queue, pipeline: pipeline)
+                              commandQueue: queue, pipeline: pipeline, transparent: transparent)
     }
 
     private init(frame: CGRect, metalDevice: MTLDevice,
-                 commandQueue: MTLCommandQueue, pipeline: MTLRenderPipelineState) {
+                 commandQueue: MTLCommandQueue, pipeline: MTLRenderPipelineState, transparent: Bool) {
         self.pipeline = pipeline
         self.commandQueue = commandQueue
+        self.transparent = transparent
         super.init(frame: frame, device: metalDevice)
         colorPixelFormat = .bgra8Unorm
-        clearColor = MTLClearColor(red: 0.045, green: 0.05, blue: 0.07, alpha: 1)
+        clearColor = transparent ? MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            : MTLClearColor(red: 0.045, green: 0.05, blue: 0.07, alpha: 1)
+        layer?.isOpaque = !transparent
         framebufferOnly = true
         // Two drawables keep presentation from queueing an extra refresh behind.
         (layer as? CAMetalLayer)?.maximumDrawableCount = 2
@@ -82,7 +89,8 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
         concealmentView.frame = bounds
         concealmentView.autoresizingMask = [.width, .height]
         concealmentView.wantsLayer = true
-        concealmentView.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
+        concealmentView.layer?.backgroundColor = transparent ? NSColor.clear.cgColor
+            : NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
         addSubview(concealmentView)
     }
 
@@ -93,6 +101,7 @@ final class MetalFrameView: MTKView, MTKViewDelegate {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         (layer as? CAMetalLayer)?.maximumDrawableCount = 2
+        if transparent { layer?.isOpaque = false }
         NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification,
                                                   object: nil)
         if let window {

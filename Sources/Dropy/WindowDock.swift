@@ -98,20 +98,31 @@ final class WindowDock {
             if current != nil { await sendHomeNow() }
             guard WindowPlacer.isTrusted else { throw DockError.accessibilityNotTrusted }
             let application = NSRunningApplication(processIdentifier: identity.processID)
-            // A window the person hid or minimized is shown so it can be placed.
-            if application?.isHidden == true { application?.unhide() }
-            let element = try await findElement(identity)
-            var minimized: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &minimized) == .success,
-               minimized as? Bool == true {
-                try? WindowPlacer.setMinimized(false, window: element)
-                try? await Task.sleep(for: .milliseconds(350))
+            // An earlier failed restore still owns this window's original state.
+            // Resolve it before adopting again rather than overwriting its evidence.
+            guard !journal.entries.contains(where: { $0.identity == identity }) else {
+                throw DockError.windowUnreachable("pendingRecovery")
             }
-            let state = try WindowPlacer.readState(element, identity: identity)
+            let element = try await findElement(identity)
+            let original = try WindowPlacer.readState(element, identity: identity)
             let spaces = Spaces.of(identity.windowID) ?? []
-            current = Docked(identity: identity, element: element, frame: state.frame,
+            current = Docked(identity: identity, element: element, frame: original.frame,
                              cornerRadius: DockGeometry.defaultCornerRadius,
                              homeSpace: spaces.count == 1 ? spaces[0] : nil)
+            // Unhiding and unminimizing are source mutations too. Save the original
+            // state first, including those flags, before asking macOS to change it.
+            var entry = PlacementEntry(identity: identity, mode: .docked, original: original,
+                                       applied: WindowPlacementState(frame: original.frame, isMinimized: false, isAppHidden: false),
+                                       createdAt: Date(), applicationConfirmed: false)
+            do { try journal.upsert(entry) } catch { current = nil; throw DockError.journal(error) }
+            if original.isAppHidden { application?.unhide() }
+            if original.isMinimized {
+                try WindowPlacer.setMinimized(false, window: element)
+                try? await Task.sleep(for: .milliseconds(350))
+            }
+            entry.applied = try WindowPlacer.readState(element, identity: identity)
+            entry.applicationConfirmed = true
+            do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
             // A window on another desktop is pulled over through the Stage: a move to
             // another display lands on that display's current desktop, and from the
             // Stage it lands on the person's (spike S2).
@@ -273,22 +284,30 @@ final class WindowDock {
         NSLog("Dropy dock: staged window=%u at %.0f,%.0f", identity.windowID, observed.frame.minX, observed.frame.minY)
     }
 
-    /// Live mode: the window waits on the Stage at `size` and the Stage is uncovered,
-    /// so the window draws at full rate for streaming. Returns its frame there.
-    func prepareLive(size: CGSize, session: UUID) async throws -> CGRect {
+    /// Live mode: the window goes to `frame` on the Stage (global top-left; the spot
+    /// that mirrors where the person sees it) and the Stage is uncovered, so the window
+    /// draws at full rate for streaming. Returns its frame there.
+    func prepareLive(frame: CGRect, session: UUID) async throws -> CGRect {
         try await operations.perform(session) { [self] in
             if current?.isStaged != true { try await moveToStageNow() }
-            guard var docked = current, let stage, let slot = stage.slot(for: size) else {
+            guard var docked = current, let stage, stage.bounds?.contains(frame.origin) == true else {
                 throw DockError.windowUnreachable("noStage")
             }
-            try? WindowPlacer.setFrame(CGRect(origin: slot, size: size), of: docked.element, resize: true)
+            guard var entry = existingEntry(docked.identity) else { throw DockError.nothingDocked }
+            entry.applied.frame = frame
+            entry.applicationConfirmed = false
+            do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
+            setFrame(frame, of: docked.element)
+            // Some apps apply a new size a moment later (a layout pass of their own).
             try? await Task.sleep(for: .milliseconds(40))
-            let observed = try WindowPlacer.readState(docked.element, identity: docked.identity)
-            if var entry = existingEntry(docked.identity) {
-                entry.applied = observed
-                entry.applicationConfirmed = true
-                try? journal.upsert(entry)
+            var observed = try WindowPlacer.readState(docked.element, identity: docked.identity)
+            if !observed.frame.origin.equalTo(frame.origin) {
+                try? WindowPlacer.setPosition(frame.origin, of: docked.element)
+                observed = try WindowPlacer.readState(docked.element, identity: docked.identity)
             }
+            entry.applied = observed
+            entry.applicationConfirmed = true
+            do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
             docked.frame = observed.frame
             current = docked
             stage.setCovered(false)
@@ -306,6 +325,16 @@ final class WindowDock {
     func release() -> Task<Void, Never> {
         let restore = operations.enqueue { [self] in await sendHomeNow() }
         return Task { _ = try? await restore.value }
+    }
+
+    /// System transitions release every owned window after any in-flight adoption,
+    /// placement and closing have settled. Returning windows must not be stranded on
+    /// a Stage whose coordinate system has just changed.
+    func releaseAll() {
+        _ = operations.enqueue { [self] in
+            releaseNow()
+            returnAllNow()
+        }
     }
 
     /// Covering and restoration are one queued operation belonging to the closing
@@ -420,10 +449,20 @@ final class WindowDock {
         guard let docked = current else { return }
         stopObserving()
         current = nil
-        if let entry = existingEntry(docked.identity) {
-            try? WindowPlacer.setFrame(entry.original.frame, of: docked.element, resize: true)
+        guard var entry = existingEntry(docked.identity) else { return }
+        do {
+            let current = try WindowPlacer.readState(docked.element, identity: docked.identity)
+            var target = entry.original
+            target.isMinimized = current.isMinimized
+            target.isAppHidden = current.isAppHidden
+            entry = PlacementEntry(identity: entry.identity, mode: entry.mode, original: target,
+                                   applied: current, createdAt: entry.createdAt, applicationConfirmed: true)
+            try journal.upsert(entry)
+            let outcome = WindowPlacer.restore(entry, journal: journal)
+            if outcome.retriesAutomatically { onDeferredRestore?(docked.identity) }
+        } catch {
+            onDeferredRestore?(docked.identity)
         }
-        try? journal.remove(docked.identity)
         NSLog("Dropy dock: put back (minimized or hidden) window=%u", docked.identity.windowID)
     }
 

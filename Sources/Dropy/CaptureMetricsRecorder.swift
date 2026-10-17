@@ -175,6 +175,18 @@ final class CaptureMetricsRecorder: @unchecked Sendable {
         }
     }
 
+    /// Raw timing evidence, fetched only by an explicitly enabled benchmark session.
+    func benchmarkSnapshot() -> [String: Any] {
+        lock.withLock {
+            ["presented": metrics.presented, "statuses": metrics.statusCounts,
+             "mailboxDrops": metrics.mailboxDrops, "notPresented": metrics.notPresented,
+             "frameAgeMs": metrics.frameAge, "callbackToPresentMs": metrics.callbackToPresent,
+             "captureToCallbackMs": metrics.captureToCallback,
+             "clockOffsetMs": metrics.presentClockOffsetMilliseconds,
+             "sampleLimit": CaptureSessionMetrics.sampleLimit]
+        }
+    }
+
     func recordRateChange(idle: Bool) {
         lock.withLock {
             if idle { metrics.idleRateSwitches += 1 } else { metrics.fullRateSwitches += 1 }

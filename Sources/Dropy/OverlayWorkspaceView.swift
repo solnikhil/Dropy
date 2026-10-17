@@ -7,12 +7,13 @@ import DropyCore
 final class OverlayWorkspaceView: NSView {
     let apps = NSPopUpButton(frame: .zero, pullsDown: true)
     let expand = NSButton()
+    let search = NSSearchField()
     let scroll = NSScrollView()
     let windowList = NSStackView()
     let previewShell = NSView()
     let status = NSTextField(wrappingLabelWithString: "Finding open windows…")
     let pickerHeading = NSTextField(labelWithString: "Choose a window")
-    let pickerHint = NSTextField(labelWithString: "↑ ↓ to choose   ·   Return to open   ·   Esc to close")
+    let pickerHint = NSTextField(labelWithString: "Type to search   ·   ↑ ↓ to choose   ·   Return to open   ·   Esc to close")
     private let emptyIcon = NSImageView()
     let interaction = NSTextField(wrappingLabelWithString: "")
     let privacy = NSButton(title: "Open Privacy Settings", target: nil, action: nil)
@@ -37,6 +38,8 @@ final class OverlayWorkspaceView: NSView {
         expand.bezelStyle = .inline
         expand.toolTip = "Expand or return to window size"
         expand.setAccessibilityLabel("Expand or return to window size")
+        search.placeholderString = "Search apps and windows"
+        search.setAccessibilityLabel("Search apps and windows")
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         windowList.orientation = .vertical
@@ -68,7 +71,7 @@ final class OverlayWorkspaceView: NSView {
         elsewhere.isHidden = true
         elsewhere.bezelStyle = .rounded
         previewShell.addSubview(cover)
-        for view in [apps, expand, scroll, previewShell, status, pickerHeading, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
+        for view in [apps, expand, search, scroll, previewShell, status, pickerHeading, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
     override func layout() {
@@ -87,7 +90,9 @@ final class OverlayWorkspaceView: NSView {
         pickerHeading.isHidden = showsPreview || docked
         pickerHint.frame = CGRect(x: 16, y: 16, width: max(1, bounds.width - 32), height: 16)
         pickerHint.isHidden = showsPreview || docked || !privacy.isHidden
-        scroll.frame = CGRect(x: 12, y: 76, width: max(1, bounds.width - 24), height: max(1, bounds.height - 164))
+        search.frame = CGRect(x: 16, y: bounds.height - 106, width: max(1, bounds.width - 32), height: 26)
+        search.isHidden = showsPreview || docked
+        scroll.frame = CGRect(x: 12, y: 76, width: max(1, bounds.width - 24), height: max(1, bounds.height - 194))
         scroll.isHidden = showsPreview || docked
         interaction.frame = CGRect(x: 12, y: previewRect.minY + 8,
                                    width: max(1, bounds.width - 24), height: 36)

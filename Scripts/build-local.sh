@@ -2,11 +2,17 @@
 set -euo pipefail
 
 repo_dir="${0:A:h:h}"
-build_dir="$repo_dir/.build/local"
+build_dir="${DROPY_BUILD_DIR:-$repo_dir/.build/local}"
+configuration="${DROPY_BUILD_CONFIGURATION:-debug}"
+case "$configuration" in
+  debug) optimization=() ;;
+  release) optimization=(-O) ;;
+  *) print -u2 "DROPY_BUILD_CONFIGURATION must be debug or release"; exit 2 ;;
+esac
 app_dir="$build_dir/Dropy.app"
 mkdir -p "$build_dir" "$app_dir/Contents/MacOS" "$app_dir/Contents/Frameworks"
 
-swiftc -swift-version 6 -parse-as-library -emit-library -emit-module \
+swiftc -swift-version 6 $optimization -parse-as-library -emit-library -emit-module \
   -module-name DropyCore \
   -Xlinker -install_name -Xlinker '@rpath/libDropyCore.dylib' \
   -o "$build_dir/libDropyCore.dylib" \
@@ -16,7 +22,7 @@ swiftc -swift-version 6 -parse-as-library -emit-library -emit-module \
 clang -fobjc-arc -fmodules -O2 -c "$repo_dir/Sources/DropyStageShim/DropyStageShim.m" \
   -I "$repo_dir/Sources/DropyStageShim/include" -o "$build_dir/DropyStageShim.o"
 
-swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+swiftc -swift-version 6 $optimization -I "$build_dir" -L "$build_dir" -lDropyCore \
   -I "$repo_dir/Sources/DropyStageShim/include" "$build_dir/DropyStageShim.o" -framework CoreGraphics \
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' \
   -o "$app_dir/Contents/MacOS/Dropy" \

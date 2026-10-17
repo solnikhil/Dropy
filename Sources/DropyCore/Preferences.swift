@@ -154,6 +154,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     /// another desktop. A capture stops some video players, and a display without HDCP
     /// stops every protected one (see `CaptureGuard`).
     public var protectsVideo: Bool
+    public var favoriteShortcutsEnabled: Bool
+    public var favorites: [FavoriteApp]
+    public var rememberedWindows: [RememberedWindow]
 
     public init(
         trigger: Trigger = .notchHover,
@@ -174,7 +177,10 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         shortcut: KeyShortcut = .default,
         position: OverlayPosition = .notch,
         hidesDock: Bool = false,
-        protectsVideo: Bool = false
+        protectsVideo: Bool = false,
+        favoriteShortcutsEnabled: Bool = false,
+        favorites: [FavoriteApp] = [],
+        rememberedWindows: [RememberedWindow] = []
     ) {
         self.trigger = trigger
         self.openBehavior = openBehavior
@@ -195,6 +201,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.position = position
         self.hidesDock = hidesDock
         self.protectsVideo = protectsVideo
+        self.favoriteShortcutsEnabled = favoriteShortcutsEnabled
+        self.favorites = favorites
+        self.rememberedWindows = rememberedWindows
     }
 
     /// The app whose window an opening selects by itself, if any. A pinned app wins
@@ -212,7 +221,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
         case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, motionStyle, customAnimation, showInDock
         case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize, position, hidesDock
-        case protectsVideo
+        case protectsVideo, favorites, rememberedWindows, favoriteShortcutsEnabled
     }
 
     /// Settings saved before a field existed keep every other choice; a new field takes
@@ -239,6 +248,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         customAnimation = try container.decodeIfPresent(String.self, forKey: .customAnimation)
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
+        favoriteShortcutsEnabled = try container.decodeIfPresent(Bool.self, forKey: .favoriteShortcutsEnabled) ?? false
+        favorites = try container.decodeIfPresent([FavoriteApp].self, forKey: .favorites) ?? []
+        rememberedWindows = try container.decodeIfPresent([RememberedWindow].self, forKey: .rememberedWindows) ?? []
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)
         shortcut = savedShortcut == KeyShortcut.previousDefault ? defaults.shortcut : savedShortcut ?? defaults.shortcut
         position = (try? container.decodeIfPresent(OverlayPosition.self, forKey: .position)) ?? defaults.position

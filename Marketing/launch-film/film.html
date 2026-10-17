@@ -1,0 +1,1778 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dropy Launch Film</title>
+<style>
+  :root { --bg: #000; --fg: #f5f5f7; --dim: #8e8e93; --line: rgba(255,255,255,.12); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  body { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 16px; }
+  #film { display: block; width: min(100%, calc((100vh - 90px) * 16 / 9)); aspect-ratio: 16 / 9; height: auto; background: #000; border-radius: 10px; }
+  .bar { width: min(100%, calc((100vh - 90px) * 16 / 9)); display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--dim); }
+  .bar button { appearance: none; border: 1px solid var(--line); background: #0d0d0f; color: var(--fg); border-radius: 999px; padding: 7px 16px; font: inherit; cursor: pointer; min-width: 78px; }
+  .bar input { flex: 1; accent-color: #f5f5f7; }
+  .bar span { font-variant-numeric: tabular-nums; min-width: 92px; text-align: right; }
+  body.render { padding: 0; display: block; overflow: hidden; }
+  body.render #film { width: 1920px; height: 1080px; border-radius: 0; }
+  body.render .bar { display: none; }
+</style>
+</head>
+<body>
+<canvas id="film" width="1920" height="1080"></canvas>
+<div class="bar">
+  <button id="play" type="button">Pause</button>
+  <input id="scrub" type="range" min="0" max="50" step="0.01" value="0" aria-label="Position">
+  <span id="clock">0.00 / 50.00</span>
+</div>
+<script>
+'use strict';
+// Dropy launch film. Every frame is a pure function of time, so the browser preview
+// and the frame-by-frame render (render.mjs) show exactly the same film.
+
+const W = 1920, H = 1080, DUR = 48.3;
+// The timeline below is written in story seconds. Played back, the action runs SPEED
+// times faster up to the end card, which then holds at normal speed so it can be read.
+// Two scenes are inserted into it at story times `at`; while one plays, the main
+// timeline holds still and the scene draws over the same screen.
+const INSERTS = [{ at: 8.1, dur: 8.5, kind: 'edges' }, { at: 16.85, dur: 6.6, kind: 'montage' }];
+const INS = Object.fromEntries(INSERTS.map(I => [I.kind, I]));
+const EXTRA = INSERTS.reduce((a, b) => a + b.dur, 0);
+// One stretch of the story is cut out (where an app picker used to be).
+// Stretches cut out of the story: a beat of stillness before the edges scene, where an
+// app picker used to be, a full-screen demo, and an empty desktop before the finale.
+const CUTS = [{ at: 8.15, len: .4 }, { at: 10.4, len: 2.2 }, { at: 20.95, len: 7.3 }, { at: 37.45, len: .55 }];
+const CUT_LEN = CUTS.reduce((a, c) => a + c.len, 0);
+const cutOf = o => { let c = o; for (const C of CUTS) c -= clamp(o - C.at, 0, C.len); return c; };
+const uncut = c => { let o = c; for (const C of CUTS) if (o > C.at) o += C.len; return o; };
+const SPEED = 1.4, HOLD_AT = 44 - CUT_LEN + EXTRA, TOTAL = DUR - CUT_LEN + EXTRA;
+const REAL_DUR = HOLD_AT / SPEED + (TOTAL - HOLD_AT);
+// Real seconds <-> master seconds (the story with the scenes in it).
+const masterOf = r => r * SPEED <= HOLD_AT ? r * SPEED : HOLD_AT + (r - HOLD_AT / SPEED);
+const realOf = m => m <= HOLD_AT ? m / SPEED : HOLD_AT / SPEED + (m - HOLD_AT);
+function toMaster(o) { const c = cutOf(o); let m = c; for (const I of INSERTS) if (c > cutOf(I.at)) m += I.dur; return m; }
+const insertStart = I => toMaster(I.at);
+function locate(m) {
+  let shift = 0;
+  for (const I of INSERTS) {
+    const start = cutOf(I.at) + shift;
+    if (m < start) break;
+    if (m < start + I.dur) return { o: I.at, ins: I, l: m - start };
+    shift += I.dur;
+  }
+  return { o: uncut(m - shift) };
+}
+// Story seconds to real seconds, for the score.
+const real = o => realOf(toMaster(o));
+// Per-frame state: an ambient clock that never holds, and
+// overrides the inserted scenes set.
+const BPM = 96, BEAT = 60 / BPM;
+let AMB = 0, SHELL_EDGE = 1, SHELL_BODY = 0, MENU_APP = null, NOTCH_JIGGLE = { w: 0, h: 0 };
+const cv = document.getElementById('film');
+const ctx = cv.getContext('2d');
+const FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif';
+const FG = '245,245,247';
+
+// ---------- math ----------
+const clamp = (x, a = 0, b = 1) => x < a ? a : x > b ? b : x;
+const lerp = (a, b, u) => a + (b - a) * u;
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const E = {
+  inOut: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  out: x => 1 - Math.pow(1 - x, 3),
+  in: x => x * x * x,
+  outExpo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  inOutExpo: x => x <= 0 ? 0 : x >= 1 ? 1 : x < .5 ? Math.pow(2, 20 * x - 10) / 2 : (2 - Math.pow(2, -20 * x + 10)) / 2,
+  outQuint: x => 1 - Math.pow(1 - x, 5),
+  inOutSine: x => -(Math.cos(Math.PI * x) - 1) / 2,
+};
+// Damped spring from 0 to 1, `t` seconds after it starts.
+function spring(t, w = 14, z = .72) {
+  if (t <= 0) return 0;
+  if (z >= 1) return 1 - (1 + w * t) * Math.exp(-w * t);
+  const wd = w * Math.sqrt(1 - z * z);
+  return 1 - Math.exp(-z * w * t) * (Math.cos(wd * t) + (z * w / wd) * Math.sin(wd * t));
+}
+function rng(seed) {
+  return () => {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let r = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    r = r + Math.imul(r ^ r >>> 7, 61 | r) ^ r;
+    return ((r ^ r >>> 14) >>> 0) / 4294967296;
+  };
+}
+const lerpRect = (a, b, u) => ({ x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u), w: lerp(a.w, b.w, u), h: lerp(a.h, b.h, u) });
+
+// ---------- paths ----------
+function rr(g, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+function polyPath(g, pts) {
+  g.beginPath();
+  g.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+  g.closePath();
+}
+function arcPts(P, cx, cy, r, a0, a1, n = 18) {
+  for (let i = 1; i <= n; i++) { const a = lerp(a0, a1, i / n); P.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); }
+}
+function quadPts(P, qx, qy, x, y, n = 12) {
+  const [x0, y0] = P[P.length - 1];
+  for (let i = 1; i <= n; i++) {
+    const u = i / n, q = 1 - u;
+    P.push([q * q * x0 + 2 * q * u * qx + u * u * x, q * q * y0 + 2 * q * u * qy + u * u * y]);
+  }
+}
+function resample(pts, n, closed) {
+  const P = closed ? pts.concat([pts[0]]) : pts;
+  const L = [0];
+  for (let i = 1; i < P.length; i++) L.push(L[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+  const total = L[L.length - 1] || 1;
+  const out = [];
+  let j = 1;
+  for (let k = 0; k < n; k++) {
+    const d = closed ? total * k / n : total * k / (n - 1);
+    while (j < L.length - 1 && L[j] < d) j++;
+    const seg = (L[j] - L[j - 1]) || 1, u = clamp((d - L[j - 1]) / seg);
+    out.push([lerp(P[j - 1][0], P[j][0], u), lerp(P[j - 1][1], P[j][1], u)]);
+  }
+  return out;
+}
+
+// ---------- morphing ----------
+// Every morphing shape is N points, one closed loop. Open strokes (the line, the glyph)
+// run out and back, so stroking them draws the stroke and they can still inflate into
+// a filled outline.
+const N = 560;
+const symPhase = i => i < N / 2 ? i / (N / 2) : (N - 1 - i) / (N / 2);
+function doubled(open) { const half = resample(open, N / 2, false); return half.concat(half.slice().reverse()); }
+function roundedPolyline(vs, radii) {
+  const out = [vs[0]];
+  for (let i = 1; i < vs.length - 1; i++) {
+    const [px, py] = vs[i - 1], [x, y] = vs[i], [nx, ny] = vs[i + 1];
+    const d1 = Math.hypot(x - px, y - py), d2 = Math.hypot(nx - x, ny - y);
+    const a = Math.min(radii[i] || 0, d1 / 2, d2 / 2);
+    const ix = x - (x - px) / d1 * a, iy = y - (y - py) / d1 * a;
+    const ox = x + (nx - x) / d2 * a, oy = y + (ny - y) / d2 * a;
+    out.push([ix, iy]);
+    for (let k = 1; k <= 14; k++) {
+      const u = k / 14, q = 1 - u;
+      out.push([q * q * ix + 2 * q * u * x + u * u * ox, q * q * iy + 2 * q * u * y + u * u * oy]);
+    }
+  }
+  out.push(vs[vs.length - 1]);
+  return out;
+}
+// The Dropy mark, traced from the app icon: a line that drops into a box.
+const GLYPH_V = [[305, 490], [455, 490], [630, 790], [945, 790], [945, 490], [655, 490]];
+const GLYPH_R = [0, 34, 38, 58, 58, 0];
+const GLYPH_D = doubled(roundedPolyline(GLYPH_V, GLYPH_R).map(([x, y]) => [(x - 625) / 640, (y - 640) / 640]));
+const glyphAt = (cx, cy, w) => GLYPH_D.map(([x, y]) => [cx + x * w, cy + y * w]);
+// The mark as one open stroke, start to end, for drawing it like a pen.
+const GLYPH_O = resample(roundedPolyline(GLYPH_V, GLYPH_R).map(([x, y]) => [(x - 625) / 640, (y - 640) / 640]), 420, false);
+const lineAt = (cx, cy, w) => doubled([[cx - w / 2, cy], [cx + w / 2, cy]]);
+function dotAt(cx, cy, r) {
+  const out = [];
+  for (let k = 0; k < N; k++) { const a = Math.PI + 2 * Math.PI * k / N; out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); }
+  return out;
+}
+// The notch and the overlay it opens into: flush with the top edge, concave ears where
+// it meets it, rounded lower corners. Starts at the top centre, going right.
+function notchShape(cx, w, h, r, e) {
+  r = Math.min(r, h * .5, w * .5);
+  e = Math.max(0, Math.min(e, h - r - 1));
+  const L = cx - w / 2, R = cx + w / 2;
+  const P = [[cx, 0], [R + e, 0]];
+  quadPts(P, R, 0, R, e);
+  P.push([R, h - r]);
+  arcPts(P, R - r, h - r, r, 0, Math.PI / 2);
+  P.push([L + r, h]);
+  arcPts(P, L + r, h - r, r, Math.PI / 2, Math.PI);
+  P.push([L, e]);
+  quadPts(P, L, 0, L - e, 0);
+  return P;
+}
+// Rotate B's starting point to sit closest to A's, so a morph never twists.
+function align(A, B) {
+  let best = 0, bd = Infinity;
+  const test = k => {
+    let d = 0;
+    for (let i = 0; i < N; i += 4) { const a = A[i], b = B[(i + k + N) % N]; const dx = a[0] - b[0], dy = a[1] - b[1]; d += dx * dx + dy * dy; }
+    if (d < bd) { bd = d; best = (k + N) % N; }
+  };
+  for (let k = 0; k < N; k += 4) test(k);
+  const c = best;
+  for (let k = c - 4; k <= c + 4; k++) test(k);
+  return { pts: B.map((_, i) => B[(i + best) % N]), k: best };
+}
+// Point-wise morph; with `phase`, points set off in a travelling wave.
+function morph(A, B, u, phase, spread = .35) {
+  const out = new Array(N);
+  for (let i = 0; i < N; i++) {
+    let v = u;
+    if (phase) v = E.inOut(clamp(u * (1 + spread) - spread * phase(i)));
+    out[i] = [lerp(A[i][0], B[i][0], v), lerp(A[i][1], B[i][1], v)];
+  }
+  return out;
+}
+
+// ---------- text ----------
+const layouts = new Map();
+function layout(text, font, track) {
+  const key = font + '|' + track + '|' + text;
+  let L = layouts.get(key);
+  if (!L) {
+    ctx.font = font;
+    const xs = [];
+    for (let i = 0; i <= text.length; i++) xs.push(ctx.measureText(text.slice(0, i)).width + i * track);
+    L = { xs, width: xs[text.length] - track };
+    layouts.set(key, L);
+  }
+  return L;
+}
+// Text that arrives letter by letter out of a blur and leaves upward into one.
+function animText(t, o) {
+  const font = `${o.weight || 600} ${o.size}px ${FONT}`;
+  const track = o.track || 0;
+  const L = layout(o.text, font, track);
+  const st = o.st ?? .022, dur = o.dur ?? .75, tOut = o.tOut ?? 1e9;
+  const x0 = o.align === 'left' ? o.x : o.align === 'right' ? o.x - L.width : o.x - L.width / 2;
+  const g = o.g || ctx;
+  g.save();
+  g.font = font;
+  g.textBaseline = 'alphabetic';
+  g.fillStyle = o.color || `rgb(${FG})`;
+  if (o.glow) { g.shadowColor = `rgba(255,255,255,${o.glow})`; g.shadowBlur = 24; }
+  for (let i = 0; i < o.text.length; i++) {
+    const ch = o.text[i];
+    if (ch === ' ') continue;
+    const a = E.outExpo(prog(t, o.tIn + i * st, o.tIn + i * st + dur));
+    const b = E.in(prog(t, tOut + i * st * .3, tOut + i * st * .3 + .36));
+    const alpha = a * (1 - b) * (o.alpha ?? 1);
+    if (alpha <= .004) continue;
+    const blur = (1 - a) * (o.blur ?? 16) + b * 12;
+    const dy = (1 - a) * (o.rise ?? 26) - b * 18;
+    g.globalAlpha = alpha;
+    g.filter = blur > .3 ? `blur(${blur.toFixed(2)}px)` : 'none';
+    g.fillText(ch, x0 + L.xs[i], o.y + dy);
+  }
+  g.restore();
+}
+// Captions that drop in word by word and land with a bounce, then fly up and out.
+function kinetic(t, o) {
+  const font = `${o.weight || 700} ${o.size}px ${FONT}`, track = o.track ?? -1;
+  const L = layout(o.text, font, track);
+  const x0 = o.x - L.width / 2, tOut = o.tOut ?? 1e9, g = o.g || ctx;
+  const words = [];
+  let i0 = 0;
+  for (let i = 0; i <= o.text.length; i++) if (i === o.text.length || o.text[i] === ' ') { if (i > i0) words.push([i0, i]); i0 = i + 1; }
+  g.save();
+  g.font = font; g.textBaseline = 'alphabetic'; g.textAlign = 'left'; g.fillStyle = o.color || `rgb(${FG})`; g.letterSpacing = track + 'px';
+  if (o.glow) { g.shadowColor = `rgba(255,255,255,${o.glow})`; g.shadowBlur = 24; }
+  words.forEach(([a, b], k) => {
+    const t0 = o.tIn + k * (o.st ?? .075);
+    const sp = spring(t - t0, 15, .66), a1 = clamp((t - t0) / .2);
+    const out = E.in(prog(t, tOut + k * .035, tOut + k * .035 + .3));
+    const alpha = a1 * (1 - out) * (o.alpha ?? 1);
+    if (alpha <= .004) return;
+    const ww = L.xs[b] - L.xs[a] - track, cx = x0 + L.xs[a] + ww / 2;
+    const sc = lerp(1.22, 1, sp) * (1 + out * .15);
+    const dy = (1 - sp) * -(o.drop ?? 26) - out * 22;
+    const blur = (1 - a1) * 14 + out * 14 + Math.abs(1 - sp) * 5;
+    g.globalAlpha = alpha;
+    g.filter = blur > .3 ? `blur(${blur.toFixed(2)}px)` : 'none';
+    g.save(); g.translate(cx, o.y + dy); g.scale(sc, sc); g.fillText(o.text.slice(a, b), -ww / 2, 0); g.restore();
+  });
+  g.restore();
+}
+function text(g, s, x, y, size, weight, color, align = 'left', track = 0) {
+  g.font = `${weight} ${size}px ${FONT}`;
+  g.fillStyle = color;
+  g.textAlign = align;
+  g.textBaseline = 'alphabetic';
+  if (track) g.letterSpacing = track + 'px';
+  g.fillText(s, x, y);
+  if (track) g.letterSpacing = '0px';
+  g.textAlign = 'left';
+}
+
+// ---------- timeline ----------
+// The overlay's openness: springs added together, so a new target picks up the motion
+// already under way, the way Dropy's own morph does.
+const OPEN = { w: 12.5, z: .74 }, SHUT = { w: 18, z: .9 };
+// Width leads and height follows, a touch apart, so opening stretches a little.
+const KW_W = 1.12, KZ_W = .9, KW_H = .92, KZ_H = 1;
+// A style's click to the overlay starting to open.
+const OPEN_DELAY = .2;
+const STYLES = [
+  { name: 'Rapid', w: 25, z: .93, response: '0.18 s' },
+  { name: 'Balanced', w: 15, z: .70, response: '0.32 s' },
+  { name: 'Smooth', w: 8.5, z: .83, response: '0.56 s' },
+];
+const SEL = [29.5, 31.9, 34.3];
+const OEV = [
+  [9.0, 1, OPEN], [18.05, 0, SHUT], [19.7, 1, OPEN], [20.65, 0, SHUT],
+  ...SEL.flatMap((s, i) => [[s + OPEN_DELAY, 1, STYLES[i]], [s + OPEN_DELAY + 1.2, 0, STYLES[i]]]),
+];
+function openness(t) {
+  let v = 0, prev = 0;
+  for (const [te, to, s] of OEV) {
+    if (t < te) break;
+    v += (to - prev) * spring(t - te, s.w, s.z);
+    prev = to;
+  }
+  return v;
+}
+// Width and height follow their own springs, so opening squashes and stretches.
+function opennessWith(t, kw, kz) {
+  let v = 0, prev = 0;
+  for (const [te, to, s] of OEV) {
+    if (t < te) break;
+    v += (to - prev) * spring(t - te, s.w * kw, Math.min(.98, s.z * kz));
+    prev = to;
+  }
+  return v;
+}
+function overlayGeom(o) {
+  const c = clamp(o, 0, 1.2);
+  return { w: lerp(230, 960, o), h: Math.max(30, lerp(38, 574, o)), r: lerp(12, 34, clamp(o)), e: lerp(7, 18, clamp(c)) };
+}
+
+// Camera: world (a 1920×1080 screen) to film. Opens close on the notch, settles to
+// full bleed, pulls back to show the display for Motion, then returns.
+// The camera leans in on the typing, twice, so the words can be read, then eases back.
+const PUSHES = [{ a: 12.65, b: 13.9, c: 15.8, d: 16.6, k: .42, at: [860, 330] }];
+function camera(t) {
+  const cam = baseCamera(t);
+  let z = 1, at = null;
+  for (const P of PUSHES) {
+    const u = E.inOutSine(prog(t, P.a, P.b)) * (1 - E.inOutSine(prog(t, P.c, P.d)));
+    if (u > 0) { z = 1 + P.k * u; at = P.at; }
+  }
+  if (!at) return cam;
+  const px = (at[0] - 960) * cam.s + cam.cx, py = (at[1] - 540) * cam.s + cam.cy;
+  return { s: cam.s * z, cx: px + (cam.cx - px) * z, cy: py + (cam.cy - py) * z };
+}
+function baseCamera(t) {
+  const intro = lerp(1.24, 1, E.inOut(prog(t, 5.0, 7.6)));
+  const drift = 1 + .022 * E.inOutSine(prog(t, 7.6, 20.9));
+  const top = { s: intro * drift, cx: 960, cy: 540 * intro * drift };
+  const away = { s: .52, cx: 560, cy: 515 };
+  const home = { s: 1, cx: 960, cy: 540 };
+  if (t < 28.3) return top;
+  if (t < 29.6) { const u = E.inOut(prog(t, 28.3, 29.6)); return { s: lerp(top.s, away.s, u), cx: lerp(top.cx, away.cx, u), cy: lerp(top.cy, away.cy, u) }; }
+  if (t < 36.4) return away;
+  const u = E.inOut(prog(t, 36.4, 37.4));
+  return { s: lerp(away.s, home.s, u), cx: lerp(away.cx, home.cx, u), cy: lerp(away.cy, home.cy, u) };
+}
+const toScreen = (cam, pts) => pts.map(([x, y]) => [(x - 960) * cam.s + cam.cx, (y - 540) * cam.s + cam.cy]);
+
+// ---------- the world: a Mac screen ----------
+const world = document.createElement('canvas');
+world.width = W; world.height = H;
+const wg = world.getContext('2d');
+
+const R3 = rng(23), MOTES = Array.from({ length: 46 }, () => ({ x: R3() * 1920, y: R3() * 1080, v: 8 + R3() * 22, r: .8 + R3() * 1.6, a: .12 + R3() * .3, p: R3() * 6.28 }));
+const R2 = rng(11), STARS = Array.from({ length: 140 }, () => ({ x: R2() * 1920, y: R2() * 700, r: .4 + R2() * 1.1, a: .1 + R2() * .5, p: R2() * 6.28 }));
+
+function drawWallpaper(g) {
+  const t = AMB;
+  g.fillStyle = '#040405';
+  g.fillRect(0, 0, W, H);
+  const drift = Math.sin(t * .23) * 60;
+  let r = g.createRadialGradient(1480 + drift, 1060, 0, 1480 + drift, 1060, 1150);
+  r.addColorStop(0, 'rgba(255,255,255,.06)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = r; g.fillRect(0, 0, W, H);
+  r = g.createRadialGradient(260 - drift, 140, 0, 260 - drift, 140, 900);
+  r.addColorStop(0, 'rgba(255,255,255,.04)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = r; g.fillRect(0, 0, W, H);
+  // A planet's lit rim along the bottom.
+  const cx = 960, cy = 3010, rad = 2120;
+  r = g.createRadialGradient(cx, cy, rad - 6, cx, cy, rad + 420);
+  r.addColorStop(0, 'rgba(255,255,255,.11)'); r.addColorStop(.25, 'rgba(255,255,255,.035)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = r; g.fillRect(0, 0, W, H);
+  g.beginPath(); g.arc(cx, cy, rad, 0, Math.PI * 2); g.fillStyle = '#020203'; g.fill();
+  const lit = g.createLinearGradient(260, 0, 1660, 0);
+  const hot = .5 + .18 * Math.sin(t * .4);
+  lit.addColorStop(0, 'rgba(255,255,255,0)'); lit.addColorStop(clamp(hot - .3), 'rgba(255,255,255,.18)');
+  lit.addColorStop(hot, 'rgba(255,255,255,.62)'); lit.addColorStop(clamp(hot + .3), 'rgba(255,255,255,.18)'); lit.addColorStop(1, 'rgba(255,255,255,0)');
+  g.save(); g.beginPath(); g.arc(cx, cy, rad, Math.PI * 1.25, Math.PI * 1.75);
+  g.strokeStyle = lit; g.lineWidth = 1.6; g.shadowColor = 'rgba(255,255,255,.5)'; g.shadowBlur = 22; g.stroke(); g.restore();
+  for (const s of STARS) {
+    g.globalAlpha = s.a * (.55 + .45 * Math.sin(t * 1.3 + s.p));
+    g.fillStyle = '#fff'; g.fillRect(s.x, s.y, s.r, s.r);
+  }
+  for (const m of MOTES) {
+    const y = ((m.y - t * m.v) % 1080 + 1080) % 1080;
+    g.globalAlpha = m.a * (.5 + .5 * Math.sin(t * .9 + m.p));
+    g.beginPath(); g.arc(m.x + Math.sin(t * .5 + m.p) * 24, y, m.r, 0, 6.283); g.fill();
+  }
+  g.globalAlpha = 1;
+}
+
+function drawMiniGlyph(g, x, y, w, alpha) {
+  g.save(); polyPath(g, glyphAt(x, y, w)); g.lineWidth = w * .09; g.lineJoin = 'round';
+  g.strokeStyle = `rgba(${FG},${alpha})`; g.stroke(); g.restore();
+}
+
+function drawMenuBar(g, t, a) {
+  if (a <= 0) return;
+  g.save(); g.globalAlpha = a;
+  g.translate(0, -(1 - a) * 38);
+  g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(0, 0, W, 38);
+  g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(0, 38, W, 1);
+  rr(g, 30, 12, 15, 15, 4); g.fillStyle = 'rgba(245,245,247,.85)'; g.fill();
+  const notes = E.inOut(prog(t, 9.1, 9.5)) * (1 - E.inOut(prog(t, 28.3, 28.7)));
+  const items = ['File', 'Edit', 'View', 'Window', 'Help'];
+  if (MENU_APP) text(g, MENU_APP, 66, 25, 15, 700, `rgba(${FG},.92)`);
+  else {
+    g.globalAlpha = a * (1 - notes); text(g, 'Finder', 66, 25, 15, 700, `rgba(${FG},.92)`);
+    g.globalAlpha = a * notes; text(g, 'Notes', 66, 25, 15, 700, `rgba(${FG},.92)`);
+  }
+  g.globalAlpha = a;
+  let x = 66 + 70;
+  for (const s of items) { text(g, s, x, 25, 15, 500, `rgba(${FG},.72)`); x += s.length * 9 + 30; }
+  // Right side: Dropy's menu-bar mark, battery, clock.
+  drawMiniGlyph(g, 1606, 19, 22, .9);
+  rr(g, 1640, 13, 26, 13, 4); g.strokeStyle = `rgba(${FG},.75)`; g.lineWidth = 1.2; g.stroke();
+  rr(g, 1643, 16, 18, 7, 2); g.fillStyle = `rgba(${FG},.85)`; g.fill();
+  text(g, 'Fri Oct 16  9:41 AM', 1890, 25, 15, 500, `rgba(${FG},.85)`, 'right');
+  g.restore();
+}
+
+// --- the docked app: a notes window ---
+const CW = 824, CH = 448, WR = { x: 499, y: 56, w: 923, h: 502 };
+const TYPED1 = 'Ship Dropy tonight.';
+function keyTimes(s, t0, t1, seed) {
+  const r = rng(seed), gaps = [...s].map(() => .55 + r() * .9), sum = gaps.reduce((a, b) => a + b, 0);
+  let acc = t0; return gaps.map(gp => (acc += gp / sum * (t1 - t0)));
+}
+const K1 = keyTimes(TYPED1, 14.1, 15.55, 3);
+const typed = (s, K, t) => s.slice(0, K.filter(k => k <= t).length);
+const lastKey = (K, t) => { let l = -9; for (const k of K) if (k <= t) l = k; return l; };
+
+function drawCheck(g, x, y, done) {
+  g.beginPath(); g.arc(x, y, 9, 0, 6.283);
+  if (done) {
+    g.fillStyle = `rgba(${FG},.9)`; g.fill();
+    g.beginPath(); g.moveTo(x - 4.2, y + .2); g.lineTo(x - 1.2, y + 3.2); g.lineTo(x + 4.4, y - 3.4);
+    g.strokeStyle = '#000'; g.lineWidth = 2; g.lineCap = 'round'; g.lineJoin = 'round'; g.stroke();
+  } else { g.strokeStyle = `rgba(${FG},.45)`; g.lineWidth = 1.5; g.stroke(); }
+}
+function drawNotesContent(g, t) {
+  g.fillStyle = 'rgba(255,255,255,.028)'; g.fillRect(0, 0, 214, CH);
+  g.fillStyle = 'rgba(255,255,255,.07)'; g.fillRect(214, 0, 1, CH);
+  for (let i = 0; i < 3; i++) { g.beginPath(); g.arc(22 + i * 20, 22, 6, 0, 6.283); g.fillStyle = 'rgba(255,255,255,.2)'; g.fill(); }
+  const side = ['Launch day', 'Ideas', 'Groceries', 'Reading list', 'Travel'];
+  side.forEach((s, i) => {
+    const y = 84 + i * 40;
+    if (!i) { rr(g, 10, y - 24, 194, 36, 9); g.fillStyle = 'rgba(255,255,255,.085)'; g.fill(); }
+    text(g, s, 26, y, 15, i ? 500 : 600, `rgba(${FG},${i ? .48 : .92})`);
+  });
+  text(g, 'October 16, 2026 at 9:41 AM', 246, 72, 13, 500, `rgba(${FG},.38)`);
+  text(g, 'Launch day', 246, 114, 30, 700, `rgba(${FG},.97)`, 'left', -.4);
+  text(g, 'Final checks before release', 246, 152, 17, 500, `rgba(${FG},.52)`);
+  const rows = [['Record the launch film', true], ['Polish the notch morph', true]];
+  rows.forEach(([s, done], i) => {
+    const y = 200 + i * 40;
+    drawCheck(g, 256, y - 6, done);
+    text(g, s, 278, y, 17, 500, `rgba(${FG},${done ? .5 : .9})`);
+  });
+  const row = (i, s) => { const y = 200 + i * 40; drawCheck(g, 256, y - 6, false); text(g, s, 278, y, 17, 500, `rgba(${FG},.94)`); };
+  const t1 = typed(TYPED1, K1, t);
+  if (t >= 13.85) row(2, t1);
+  // Caret.
+  let ci = -1, s = '', K = K1;
+  if (t >= 13.85 && t < 28.3) { ci = 2; s = t1; K = K1; }
+  if (ci >= 0) {
+    const since = t - Math.max(lastKey(K, t), ci === 2 ? 13.85 : 24.6);
+    if (since < .45 || Math.floor(since * 1.9) % 2 === 0) {
+      g.font = `500 17px ${FONT}`;
+      const x = 278 + g.measureText(s).width + 1.5, y = 200 + ci * 40;
+      g.fillStyle = `rgba(${FG},.95)`; g.fillRect(x, y - 16, 2, 21);
+    }
+  }
+}
+
+function drawOverlayContent(g, t, o) {
+  const GA = E.out(prog(o, .35, .92));
+  if (GA <= 0) return;
+  const k = lerp(.42, 1, o);
+  g.save();
+  g.translate(960, 0); g.scale(k, k); g.translate(-960, 0);
+  g.globalAlpha = GA;
+  rr(g, WR.x, WR.y, WR.w, WR.h, 16);
+  g.fillStyle = '#0f0f11'; g.fill();
+  g.strokeStyle = 'rgba(255,255,255,.1)'; g.lineWidth = 1.2; g.stroke();
+  g.clip();
+  g.translate(WR.x, WR.y); g.scale(WR.w / CW, WR.w / CW);
+  drawNotesContent(g, t);
+  g.restore();
+}
+// The closed notch has a little life before it opens: a wobble, a peek, a squash.
+function personality(t) {
+  if (t < 7.0 || t > 9.1) return { w: 0, h: 0 };
+  const wob = (t0, a, f = 17, d = 4.5) => { const u = t - t0; return u > 0 ? a * Math.sin(u * f) * Math.exp(-u * d) : 0; };
+  const peek = Math.sin(Math.PI * prog(t, 7.5, 8.0)), squash = Math.sin(Math.PI * prog(t, 8.6, 9.0));
+  return { w: wob(6.95, 30, 11, 3.2) - 10 * peek + 26 * squash, h: -wob(6.95, 6, 11, 3.2) + 26 * peek - 9 * squash };
+}
+// Any of Dropy's overlay outlines: lifted by a shadow, its content clipped inside, and
+// a plain hairline edge.
+function drawShell(g, pts, cam, lift, content) {
+  g.save();
+  g.shadowColor = 'rgba(0,0,0,.9)'; g.shadowBlur = 80 * lift * cam.s; g.shadowOffsetY = 26 * lift * cam.s;
+  polyPath(g, pts); g.fillStyle = '#000'; g.fill();
+  g.restore();
+  if (SHELL_BODY > 0) {
+    // In motion, a body of its own: dark graphite, lit softly from above, an inner rim.
+    let y0 = Infinity, y1 = -Infinity;
+    for (const [, y] of pts) { y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    g.save(); polyPath(g, pts); g.clip();
+    const body = g.createLinearGradient(0, y0, 0, y1);
+    body.addColorStop(0, `rgba(44,44,49,${SHELL_BODY})`); body.addColorStop(.45, `rgba(20,20,23,${SHELL_BODY})`); body.addColorStop(1, `rgba(8,8,9,${SHELL_BODY})`);
+    g.fillStyle = body; g.fill();
+    const rim = g.createLinearGradient(0, y0, 0, y1);
+    rim.addColorStop(0, `rgba(255,255,255,${.28 * SHELL_BODY})`); rim.addColorStop(.5, `rgba(255,255,255,${.06 * SHELL_BODY})`); rim.addColorStop(1, 'rgba(255,255,255,0)');
+    polyPath(g, pts); g.lineWidth = 5 / cam.s; g.strokeStyle = rim; g.stroke();
+    g.restore();
+  }
+  if (content) { g.save(); polyPath(g, pts); g.clip(); content(); g.restore(); }
+  g.save(); polyPath(g, pts);
+  g.lineWidth = 1.4 / cam.s; g.strokeStyle = `rgba(${FG},${.42 * SHELL_EDGE})`; g.stroke();
+  g.restore();
+}
+function drawOverlay(g, t, cam) {
+  const o = openness(t), ow = opennessWith(t, KW_W, KZ_W), oh = opennessWith(t, KW_H, KZ_H);
+  const G = overlayGeom(o), P = personality(t);
+  const w = lerp(230, 960, ow) + P.w + NOTCH_JIGGLE.w, h = Math.max(26, lerp(38, 574, oh) + P.h + NOTCH_JIGGLE.h);
+  const pts = notchShape(960, w, h, G.r, G.e);
+  drawShell(g, pts, cam, clamp(o), o > .02 ? () => drawOverlayContent(g, t, o) : null);
+}
+
+// --- the pointer ---
+const CUR = [[12.6, 1290, 760], [13.72, 828, 360], [14.05, 828, 360],
+  [23.4, 1480, 800], [24.5, 828, 404], [26.35, 1068, 414], [26.95, 1440, 900], [28.0, 1440, 900]];
+const CUR_ON = [[12.6, 14.05]];
+const CLICKS = [13.82];
+function cursorAt(t) {
+  if (t <= CUR[0][0]) return CUR[0].slice(1);
+  for (let i = 1; i < CUR.length; i++) if (t <= CUR[i][0]) {
+    const [t0, x0, y0] = CUR[i - 1], [t1, x1, y1] = CUR[i];
+    const u = E.inOut(prog(t, t0, t1));
+    // A slight arc, as a hand moves.
+    const bow = Math.sin(Math.PI * u) * Math.min(60, Math.hypot(x1 - x0, y1 - y0) * .08);
+    return [lerp(x0, x1, u) + bow * .3, lerp(y0, y1, u) - bow];
+  }
+  return CUR[CUR.length - 1].slice(1);
+}
+function drawArrow(g, px, py, s, al, shadow) {
+  g.save(); g.globalAlpha = al; g.translate(px, py); g.scale(s, s);
+  g.beginPath();
+  g.moveTo(0, 0); g.lineTo(0, 17); g.lineTo(4.2, 13.2); g.lineTo(7, 19.5); g.lineTo(9.6, 18.4); g.lineTo(6.9, 12.3); g.lineTo(12.3, 12.3); g.closePath();
+  if (shadow) { g.shadowColor = 'rgba(0,0,0,.5)'; g.shadowBlur = 6; g.shadowOffsetY = 2; }
+  g.fillStyle = '#000'; g.fill(); g.shadowColor = 'transparent';
+  g.strokeStyle = '#fff'; g.lineWidth = 1.3; g.lineJoin = 'round'; g.stroke();
+  g.restore();
+}
+function drawCursor(g, t) {
+  let a = 0;
+  for (const [a0, a1] of CUR_ON) a = Math.max(a, prog(t, a0, a0 + .25) * (1 - prog(t, a1 - .2, a1)));
+  for (const c of CLICKS) {
+    const u = prog(t, c, c + .55);
+    if (u > 0 && u < 1) {
+      const [x, y] = cursorAt(c);
+      g.beginPath(); g.arc(x, y, lerp(4, 34, E.outExpo(u)), 0, 6.283);
+      g.strokeStyle = `rgba(255,255,255,${.7 * (1 - u)})`; g.lineWidth = 1.6; g.stroke();
+    }
+  }
+  if (a <= 0) return;
+  const [x, y] = cursorAt(t);
+  let press = 0;
+  for (const c of CLICKS) press = Math.max(press, Math.sin(Math.PI * prog(t, c - .06, c + .12)));
+  const arrow = (px, py, s, al, shadow) => drawArrow(g, px, py, s, al, shadow);
+  for (let k = 4; k >= 1; k--) {
+    const [px, py] = cursorAt(t - k * .022);
+    if (Math.hypot(px - x, py - y) > 6) arrow(px, py, 1.45, a * .14 * (5 - k) / 4, false);
+  }
+  arrow(x, y, 1.45 * (1 - press * .12), a, true);
+}
+
+function drawWorld(t, cam) {
+  const g = wg;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, W, H);
+  g.setTransform(cam.s, 0, 0, cam.s, cam.cx - 960 * cam.s, cam.cy - 540 * cam.s);
+  const away = clamp((1 - cam.s) / .45);
+  if (away > 0) {
+    g.save();
+    g.shadowColor = `rgba(255,255,255,${.1 * away})`; g.shadowBlur = 90;
+    rr(g, -18, -18, 1956, 1116, 46); g.fillStyle = '#070708'; g.fill();
+    g.shadowColor = 'transparent';
+    g.lineWidth = 1.4 / cam.s; g.strokeStyle = `rgba(255,255,255,${.26 * away})`; g.stroke();
+    g.restore();
+  }
+  g.save();
+  rr(g, 0, 0, 1920, 1080, 26); g.clip();
+  drawWallpaper(g);
+  drawMenuBar(g, t, 1);
+  if (t >= 6.6 && t < 38.0) drawOverlay(g, t, cam);
+  drawCursor(g, t);
+  g.restore();
+}
+
+// ---------- screen-space layers ----------
+function drawHero(pts, o) {
+  ctx.save();
+  polyPath(ctx, pts);
+  if (o.fillA > 0) { ctx.fillStyle = `rgba(${o.fillC},${o.fillC},${o.fillC},${o.fillA})`; ctx.fill(); }
+  if (o.sw > 0) {
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = o.sw;
+    ctx.strokeStyle = o.stroke || `rgba(${FG},${o.strokeA ?? 1})`;
+    ctx.shadowColor = `rgba(255,255,255,${o.glow ?? .5})`; ctx.shadowBlur = o.blur ?? 26;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function notchScreenPts(cam) {
+  const G = overlayGeom(0);
+  return toScreen(cam, resample(notchShape(960, G.w, G.h, G.r, G.e), N, true));
+}
+const GW = 420, GSW = 18;
+// The mark at the notch's size, hanging just below the top edge.
+function notchGlyph(cam) {
+  const w = 205 * cam.s, top = (cam.cy - 540 * cam.s);
+  return { w, sw: GSW * w / GW * 1.15, cy: top + w * .47 / 2 + 10 * cam.s };
+}
+function drawIntro(t, cam) {
+  if (t >= 6.6) return;
+  const c = [960, 540];
+  // Anamorphic streak behind the first light.
+  const st = Math.sin(Math.PI * prog(t, .55, 2.9));
+  if (st > 0) {
+    const gr = ctx.createLinearGradient(c[0] - 700, 0, c[0] + 700, 0);
+    gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(.5, `rgba(255,255,255,${.5 * st})`); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gr; ctx.fillRect(c[0] - 700, c[1] - 1, 1400, 2);
+    const rg = ctx.createRadialGradient(c[0], c[1], 0, c[0], c[1], 240);
+    rg.addColorStop(0, `rgba(255,255,255,${.12 * st})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = rg; ctx.fillRect(c[0] - 240, c[1] - 240, 480, 480);
+  }
+  if (t < .45) return;
+  if (t < 1.35) {
+    const r = 6 * E.outExpo(prog(t, .45, 1.2)) * (1 + .15 * Math.sin(t * 9));
+    drawHero(dotAt(c[0], c[1], Math.max(.01, r)), { fillA: 1, fillC: 255, sw: 2, glow: .9, blur: 30 });
+    return;
+  }
+  if (t < 2.45) {
+    const u = E.inOutExpo(prog(t, 1.35, 2.45));
+    drawHero(morph(dotAt(c[0], c[1], 6), lineAt(c[0], c[1], GW), u),
+      { fillA: 1, fillC: 255, sw: lerp(2, 10, u), glow: .9, blur: 30 });
+    return;
+  }
+  const breathe = 1 + .012 * Math.sin(Math.PI * prog(t, 3.9, 5.0));
+  const glyph = glyphAt(c[0], c[1], GW * breathe);
+  if (t < 3.9) {
+    const at = ([x, y]) => [c[0] + x * GW, c[1] + y * GW], start = at(GLYPH_O[0]);
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = `rgb(${FG})`; ctx.fillStyle = '#fff';
+    ctx.shadowColor = 'rgba(255,255,255,.7)'; ctx.shadowBlur = 26;
+    if (t < 2.85) {
+      // The line gathers into a point where the mark begins: its near end first.
+      const a = E.inOutExpo(prog(t, 2.45, 2.75)), b = E.inOutExpo(prog(t, 2.5, 2.85));
+      const L = [lerp(c[0] - GW / 2, start[0], a), lerp(c[1], start[1], a)], R = [lerp(c[0] + GW / 2, start[0], b), lerp(c[1], start[1], b)];
+      ctx.lineWidth = lerp(10, GSW, b);
+      ctx.beginPath(); ctx.moveTo(L[0], L[1]); ctx.lineTo(R[0], R[1]); ctx.stroke();
+    } else {
+      // Then that point draws the mark like a pen, a bright nib leading.
+      const u = E.inOut(prog(t, 2.85, 3.85)), n = Math.max(2, Math.round(u * (GLYPH_O.length - 1)) + 1);
+      const pts = GLYPH_O.slice(0, n).map(at);
+      ctx.lineWidth = GSW;
+      ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+      const nib = 1 - prog(t, 3.75, 3.9), [hx, hy] = pts[pts.length - 1];
+      if (nib > 0) { ctx.globalAlpha = nib; ctx.shadowBlur = 30; ctx.beginPath(); ctx.arc(hx, hy, GSW * .62, 0, 6.283); ctx.fill(); }
+    }
+    ctx.restore();
+    return;
+  }
+  if (t < 5.0) {
+    // A sheen travels along the mark.
+    const u = E.inOut(prog(t, 3.95, 4.95));
+    const sx = lerp(c[0] - 380, c[0] + 380, u);
+    const gr = ctx.createLinearGradient(sx - 160, 0, sx + 160, 0);
+    gr.addColorStop(0, 'rgba(208,208,214,1)'); gr.addColorStop(.5, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(208,208,214,1)');
+    const sweep = Math.sin(Math.PI * u);
+    drawHero(glyph, { fillA: 0, sw: GSW, stroke: sweep > .02 ? gr : `rgb(${FG})`, glow: .5 + .35 * sweep, blur: 26 + 14 * sweep });
+    return;
+  }
+  // The mark rises to the top edge, then reshapes into the notch where it is.
+  const up = E.inOutExpo(prog(t, 5.0, 5.95));
+  const small = notchGlyph(cam);
+  const gw = lerp(GW, small.w, up), gsw = lerp(GSW, small.sw, up);
+  const moving = glyphAt(960, lerp(540, small.cy, up), gw);
+  if (t < 5.85) {
+    drawHero(moving, { fillA: 0, sw: gsw, glow: .5 + .3 * Math.sin(Math.PI * up), blur: 26 });
+    return;
+  }
+  const target = notchScreenPts(cam);
+  const A = align(target, moving);
+  const v = E.inOutExpo(prog(t, 5.85, 6.6));
+  drawHero(morph(A.pts, target, v), { fillA: v, fillC: 0, sw: lerp(gsw, 1.4, v), strokeA: lerp(1, .42, v), glow: lerp(.5, 0, v), blur: lerp(26, 0, v) });
+}
+
+function drawCaptions(t, cam) {
+  const CAPS = [
+    ['Meet Dropy.', 6.6, 7.75],
+    ['Even the notch.', 8.6, 10.2],
+    ['Real windows. Not pictures.', 12.75, 16.2],
+    ['Gone in a keystroke.', 17.05, 18.9],
+    ['Back in one. Nothing lost.', 19.25, 20.6],
+    ['Motion, made yours.', 29.35, 36.4],
+  ];
+  for (const [s, a, b] of CAPS) {
+    if (t < a - .1 || t > b + 1.2) continue;
+    kinetic(t, { text: s, x: 960, y: t > 28.5 ? 948 : 912, size: 60, weight: 700, track: -1, tIn: a, tOut: b, glow: .12 });
+  }
+}
+
+// The shortcut, Option-Quote, as two large light glyphs under the overlay. Pressing
+// them closes the overlay, and they are drawn up into the notch with it; for the reopen
+// they fall back out of the notch, are pressed again, and the overlay opens.
+const SHORTCUT = [['⌥', 'OPTION', -92], ["'", 'QUOTE', 92]];
+function drawKeys(t) {
+  if (t < 16.9 || t > 20.4) return;
+  const cam = camera(t);
+  const notch = [960, cam.cy - 540 * cam.s + 20 * cam.s];
+  SHORTCUT.forEach(([glyph, label, dx], i) => {
+    const home = [960 + dx, 740];
+    // In, pressed, up into the notch; back out, pressed, and away.
+    const rise = E.outQuint(prog(t, 16.95 + i * .08, 17.6 + i * .08));
+    const press1 = Math.sin(Math.PI * prog(t, 17.7 + i * .15, 17.95 + i * .15));
+    const up = E.inOut(prog(t, 18.1 + i * .05, 18.55 + i * .05));
+    const down = E.outQuint(prog(t, 18.95 + i * .06, 19.4 + i * .06));
+    const press2 = Math.sin(Math.PI * prog(t, 19.42 + i * .13, 19.67 + i * .13));
+    const away = E.inOut(prog(t, 19.85 + i * .05, 20.3 + i * .05));
+    const inNotch = t >= 18.55 + i * .05 && t < 18.95 + i * .06;
+    if (inNotch || rise <= 0) return;
+    const back = t >= 18.95;
+    const travel = back ? 1 - down : up;
+    const x = lerp(home[0], notch[0], travel), y = lerp(home[1], notch[1], travel);
+    const press = back ? press2 : press1;
+    const k = lerp(1, .12, travel) * (1 - .08 * press);
+    const a = (back ? 1 - away : rise) * (1 - E.inOut(clamp(travel * 2.4)));
+    if (a <= .003) return;
+    // The underline draws on the press and stays until the glyphs leave.
+    const line = back ? E.out(prog(t, 19.42 + i * .13, 19.6 + i * .13)) : E.out(prog(t, 17.7 + i * .15, 17.88 + i * .15));
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(x, y + (1 - rise) * 40 + press * 6);
+    ctx.scale(k, k);
+    text(ctx, glyph, 0, glyph === "'" ? 6 : 0, glyph === "'" ? 168 : 132, glyph === "'" ? 500 : 300, `rgba(${FG},${.82 + .18 * press})`, 'center');
+    if (travel < .05) {
+      ctx.fillStyle = `rgba(${FG},.55)`;
+      ctx.fillRect(-46 * line, 26, 92 * line, 1.5);
+      text(ctx, label, 0, 62, 13, 650, `rgba(${FG},.42)`, 'center', 3.2);
+    }
+    ctx.restore();
+  });
+}
+
+function selection(t) { let i = 0; for (let k = 0; k < SEL.length; k++) if (t >= SEL[k]) i = k; return i; }
+// The overlay's height as it opens with a style, `tau` seconds in: exactly what
+// drawOverlay draws, so the graph and the overlay can never disagree.
+const heightAt = (tau, S) => spring(tau, S.w * KW_H, Math.min(.98, S.z * KZ_H));
+const pillGeom = (() => {
+  const px = 1135, pw = 670, py = 150, ph = 620, gap = 12, pW = (pw - 80 - gap * 2) / 3;
+  return { px, pw, py, ph, pW, gap, y: py + ph - 100, h: 64, x: i => px + 40 + i * (pW + gap) };
+})();
+// The person's pointer in the Motion section, clicking each style in turn.
+const PANEL_CUR = (() => {
+  const c = i => [pillGeom.x(i) + pillGeom.pW * .55, pillGeom.y + 38];
+  return [[29.0, 1620, 930], [29.42, ...c(0)], [31.35, ...c(0)], [31.82, ...c(1)], [33.75, ...c(1)], [34.22, ...c(2)], [35.6, ...c(2)], [36.2, 1700, 960]];
+})();
+function panelCursorAt(t) {
+  const K = PANEL_CUR;
+  if (t <= K[0][0]) return K[0].slice(1);
+  for (let i = 1; i < K.length; i++) if (t <= K[i][0]) {
+    const u = E.inOut(prog(t, K[i - 1][0], K[i][0]));
+    return [lerp(K[i - 1][1], K[i][1], u), lerp(K[i - 1][2], K[i][2], u)];
+  }
+  return K[K.length - 1].slice(1);
+}
+function drawMotionPanel(t) {
+  const a = E.out(prog(t, 29.15, 29.9)) * (1 - E.in(prog(t, 36.2, 36.75)));
+  if (a <= 0) return;
+  const cam = camera(t);
+  // The graph shares the display's vertical scale: a value of v sits exactly level
+  // with the overlay's bottom edge when it is v open.
+  const yOf = v => cam.cy + (lerp(38, 574, v) - 540) * cam.s;
+  const { px, pw, py, ph, pW, h: pH } = pillGeom;
+  ctx.save();
+  ctx.translate((1 - a) * 60, 0);
+  ctx.globalAlpha = a;
+  ctx.filter = a < .98 ? `blur(${((1 - a) * 12).toFixed(1)}px)` : 'none';
+  rr(ctx, px, py, pw, ph, 30);
+  ctx.fillStyle = 'rgba(255,255,255,.035)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.13)'; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.filter = 'none';
+  text(ctx, 'ANIMATION', px + 40, py + 52, 18, 650, `rgba(${FG},.55)`, 'left', 3.4);
+  const si = selection(t);
+  STYLES.forEach((s, i) => {
+    const tin = SEL[i] + .05, tout = i < 2 ? SEL[i + 1] - .1 : 1e9;
+    animText(t, { text: s.response, x: px + pw - 40, y: py + 54, size: 26, weight: 600, align: 'right', tIn: tin, tOut: tout, alpha: a * .85, rise: 10, blur: 8, st: .03, dur: .5 });
+  });
+  const gx = px + 40, gw = pw - 80, TMAX = 1.1, xOf = tau => gx + tau / TMAX * gw;
+  ctx.save();
+  ctx.setLineDash([5, 7]); ctx.lineWidth = 1;
+  for (const [v, label] of [[0, 'CLOSED'], [1, 'OPEN']]) {
+    ctx.strokeStyle = 'rgba(255,255,255,.22)';
+    ctx.beginPath(); ctx.moveTo(gx, yOf(v)); ctx.lineTo(gx + gw, yOf(v)); ctx.stroke();
+    text(ctx, label, gx + gw, yOf(v) - 10, 15, 650, `rgba(${FG},.5)`, 'right', 2.6);
+  }
+  ctx.restore();
+  // Each style's curve is traced by the overlay as it opens; earlier ones stay, dimmed.
+  for (let i = 0; i <= si; i++) {
+    const T = SEL[i] + OPEN_DELAY;
+    if (t < T) continue;
+    const tau = Math.min(t - T, TMAX), live = i === si;
+    const pts = [];
+    for (let k = 0; k <= 100; k++) { const tt = tau * k / 100; pts.push([xOf(tt), yOf(heightAt(tt, STYLES[i]))]); }
+    ctx.save();
+    ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (live) {
+      ctx.strokeStyle = `rgba(${FG},.95)`; ctx.lineWidth = 3; ctx.shadowColor = 'rgba(255,255,255,.6)'; ctx.shadowBlur = 18; ctx.stroke();
+      ctx.lineTo(pts[pts.length - 1][0], yOf(0)); ctx.lineTo(gx, yOf(0)); ctx.closePath();
+      const fill = ctx.createLinearGradient(0, yOf(0), 0, yOf(1.1));
+      fill.addColorStop(0, 'rgba(255,255,255,0)'); fill.addColorStop(1, 'rgba(255,255,255,.09)');
+      ctx.shadowColor = 'transparent'; ctx.fillStyle = fill; ctx.fill();
+    } else {
+      ctx.strokeStyle = `rgba(${FG},.22)`; ctx.lineWidth = 2; ctx.stroke();
+      const [ex, ey] = pts[pts.length - 1];
+      text(ctx, STYLES[i].name, ex - 4, ey + 28 + i * 20, 16, 600, `rgba(${FG},.42)`, 'right');
+    }
+    ctx.restore();
+  }
+  // A beam ties the bead on the curve to the overlay's corner, level all the way.
+  const T = SEL[si] + OPEN_DELAY, tau = t - T;
+  if (tau > 0 && tau < 1.18) {
+    const fade = 1 - E.inOut(prog(tau, .98, 1.18)), grow = E.out(prog(tau, 0, .12));
+    const oh = opennessWith(t, KW_H, KZ_H), ow = opennessWith(t, KW_W, KZ_W);
+    const by = yOf(oh), bx = xOf(Math.min(tau, TMAX));
+    const cx = cam.cx + lerp(230, 960, ow) / 2 * cam.s - 2;
+    ctx.save();
+    ctx.globalAlpha = a * fade;
+    const beam = ctx.createLinearGradient(cx, 0, bx, 0);
+    beam.addColorStop(0, 'rgba(255,255,255,.85)'); beam.addColorStop(.5, 'rgba(255,255,255,.25)'); beam.addColorStop(1, 'rgba(255,255,255,.85)');
+    ctx.strokeStyle = beam; ctx.lineWidth = 1.4; ctx.shadowColor = 'rgba(255,255,255,.8)'; ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(lerp(cx, bx, grow), by); ctx.stroke();
+    for (const [x, r] of [[cx, 4.5], [bx, 7]]) { ctx.beginPath(); ctx.arc(x, by, r, 0, 6.283); ctx.fillStyle = '#fff'; ctx.shadowBlur = 22; ctx.fill(); }
+    ctx.restore();
+  }
+  // Style pills, with a selection that slides and stretches between them.
+  const pill = i => ({ x: pillGeom.x(i), y: pillGeom.y, w: pW, h: pH });
+  ctx.fillStyle = 'rgba(255,255,255,.04)';
+  for (let i = 0; i < 3; i++) { const p = pill(i); rr(ctx, p.x, p.y, p.w, p.h, 32); ctx.fill(); }
+  let sx = pill(0).x, sw = pW;
+  for (let k = 1; k <= si; k++) {
+    const u = spring(t - SEL[k], 14, .78), stretch = Math.sin(Math.PI * clamp(u)) * 40;
+    sx = lerp(pill(k - 1).x, pill(k).x, u) - stretch / 2; sw = pW + stretch;
+  }
+  const selA = E.out(prog(t, SEL[0], SEL[0] + .3));
+  STYLES.forEach((s, i) => { const p = pill(i); text(ctx, s.name, p.x + p.w / 2, p.y + 41, 24, 600, `rgba(${FG},.6)`, 'center'); });
+  ctx.save();
+  ctx.globalAlpha = a * selA;
+  rr(ctx, sx, pillGeom.y, sw, pH, 32); ctx.shadowColor = 'rgba(255,255,255,.35)'; ctx.shadowBlur = 24;
+  ctx.fillStyle = '#f5f5f7'; ctx.fill(); ctx.shadowColor = 'transparent'; ctx.clip();
+  STYLES.forEach((s, i) => { const p = pill(i); text(ctx, s.name, p.x + p.w / 2, p.y + 41, 24, 650, '#0a0a0b', 'center'); });
+  ctx.restore();
+  // The pointer, its clicks rippling out.
+  const ca = prog(t, 29.0, 29.25) * (1 - prog(t, 35.9, 36.2));
+  for (const c of SEL) {
+    const u = prog(t, c, c + .5);
+    if (u > 0 && u < 1) {
+      const [x, y] = panelCursorAt(c);
+      ctx.beginPath(); ctx.arc(x, y, lerp(4, 30, E.outExpo(u)), 0, 6.283);
+      ctx.strokeStyle = `rgba(255,255,255,${.7 * (1 - u)})`; ctx.lineWidth = 1.6; ctx.stroke();
+    }
+  }
+  if (ca > 0) {
+    const [x, y] = panelCursorAt(t);
+    let press = 0;
+    for (const c of SEL) press = Math.max(press, Math.sin(Math.PI * prog(t, c - .06, c + .12)));
+    drawArrow(ctx, x, y, 1.35 * (1 - press * .12), ca, true);
+  }
+  ctx.restore();
+}
+
+// The notch leaves the screen, becomes the mark again, and the icon forms around it.
+const ICON = { x: 810, y: 266, w: 300, h: 300 };
+const SPARKS = Array.from({ length: 90 }, (_, i) => { const r = rng(300 + i); return { a: r() * 6.283, v: 300 + r() * 1000, s: .8 + r() * 2.2, l: .6 + r() * 1.0, streak: r() < .45 }; });
+function drawFinale(t) {
+  if (t < 38.0) return;
+  const cam = { s: 1, cx: 960, cy: 540 };
+  const notch = notchScreenPts(cam);
+  const settle = spring(t - 40.1, 11, .74);
+  const gw = lerp(GW, ICON.w * .629, settle), gsw = lerp(GSW, ICON.w * .051, settle);
+  const gcy = lerp(540, ICON.y + ICON.h / 2 + ICON.w * .013, settle);
+  const glyph = glyphAt(960, gcy, gw);
+  // The end card leans in, slowly, for as long as it holds.
+  const push = 1 + .06 * E.inOutSine(prog(t, 40.3, 48.2));
+  ctx.save(); ctx.translate(960, 600); ctx.scale(push, push); ctx.translate(-960, -600);
+  // Sparks fly as the icon lands.
+  const su = t - 40.22;
+  if (su > 0 && su < 2) {
+    ctx.save(); ctx.lineCap = 'round';
+    for (const p of SPARKS) {
+      const life = su / p.l;
+      if (life >= 1) continue;
+      const d = 165 + p.v * (1 - Math.exp(-su * 3.4)) / 3.4, ca = Math.cos(p.a), sa = Math.sin(p.a);
+      const x = 960 + ca * d, y = gcy + sa * d, al = Math.pow(1 - life, 2);
+      ctx.globalAlpha = al; ctx.shadowColor = 'rgba(255,255,255,.9)'; ctx.shadowBlur = 10;
+      if (p.streak) {
+        const tail = Math.min(70, p.v * Math.exp(-su * 3.4) * .06);
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - ca * tail, y - sa * tail); ctx.strokeStyle = '#fff'; ctx.lineWidth = p.s; ctx.stroke();
+      } else { ctx.beginPath(); ctx.arc(x, y, p.s, 0, 6.283); ctx.fillStyle = '#fff'; ctx.fill(); }
+    }
+    ctx.restore();
+  }
+  // The icon body grows out of the mark.
+  if (t >= 40.1) {
+    const ia = E.out(prog(t, 40.1, 40.6));
+    const from = { x: 960 - (gw + 70) / 2, y: gcy - (gw * .47 + 70) / 2, w: gw + 70, h: gw * .47 + 70 };
+    const R = lerpRect(from, ICON, settle);
+    const rad = lerp(46, 68, clamp(settle));
+    ctx.save();
+    ctx.globalAlpha = ia;
+    ctx.shadowColor = 'rgba(255,255,255,.10)'; ctx.shadowBlur = 90;
+    rr(ctx, R.x, R.y, R.w, R.h, rad);
+    const gr = ctx.createLinearGradient(0, R.y, 0, R.y + R.h);
+    gr.addColorStop(0, '#2b2c30'); gr.addColorStop(1, '#111113');
+    ctx.fillStyle = gr; ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.clip();
+    const hl = ctx.createLinearGradient(0, R.y, 0, R.y + 40);
+    hl.addColorStop(0, 'rgba(255,255,255,.12)'); hl.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = hl; ctx.fillRect(R.x, R.y, R.w, 40);
+    // A light passes across the finished icon.
+    const sw = prog(t, 42.7, 43.7);
+    if (sw > 0 && sw < 1) {
+      const x = lerp(R.x - 200, R.x + R.w + 200, E.inOut(sw));
+      const sh = ctx.createLinearGradient(x - 120, R.y, x + 120, R.y + R.h);
+      sh.addColorStop(0, 'rgba(255,255,255,0)'); sh.addColorStop(.5, 'rgba(255,255,255,.13)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = sh; ctx.fillRect(R.x, R.y, R.w, R.h);
+    }
+    ctx.restore();
+  }
+  if (t < 38.55) {
+    drawHero(notch, { fillA: 1, fillC: 0, sw: 1.4, strokeA: .42, glow: 0, blur: 0 });
+  } else if (t < 40.1) {
+    const small = notchGlyph(cam);
+    if (t < 39.3) {
+      const A = align(notch, glyphAt(960, small.cy, small.w));
+      const v = E.inOutExpo(prog(t, 38.55, 39.3));
+      drawHero(morph(notch, A.pts, v), { fillA: 1 - v, fillC: 0, sw: lerp(1.4, small.sw, v), strokeA: lerp(.42, 1, v), glow: lerp(0, .55, v), blur: lerp(0, 26, v) });
+    } else {
+      const v = E.inOutExpo(prog(t, 39.3, 40.1));
+      drawHero(glyphAt(960, lerp(small.cy, 540, v), lerp(small.w, GW, v)),
+        { fillA: 0, sw: lerp(small.sw, GSW, v), glow: .55 + .3 * Math.sin(Math.PI * v), blur: 26 });
+    }
+  } else {
+    drawHero(glyph, { fillA: 0, sw: gsw, stroke: 'rgb(242,242,240)', glow: lerp(.55, .25, clamp(settle)), blur: 22 });
+  }
+  dropWord(t);
+  riseLine(t, 'Your apps, one keystroke away.', 960, 790, 34, 42.35);
+  gatherLine(t, 'FREE AND OPEN SOURCE  ·  FOR MACOS', 960, 962, 43.2);
+  ctx.restore();
+}
+
+// ---------- inserted scenes ----------
+const MONO = '"SF Mono", ui-monospace, Menlo, monospace';
+function appFrame(g, R, rad = 16, fill = '#0e0e10') {
+  rr(g, R.x, R.y, R.w, R.h, rad); g.fillStyle = fill; g.fill();
+  g.strokeStyle = 'rgba(255,255,255,.1)'; g.lineWidth = 1.2; g.stroke(); g.clip();
+}
+function windowDots(g, x, y) {
+  for (let i = 0; i < 3; i++) { g.beginPath(); g.arc(x + i * 20, y, 6, 0, 6.283); g.fillStyle = 'rgba(255,255,255,.2)'; g.fill(); }
+}
+
+// Music: a record slides out of its sleeve and spins; the equalizer hits on the beat.
+function drawMusic(g, R, lt) {
+  g.save(); appFrame(g, R);
+  const art = Math.max(60, Math.min(R.h - 44, 210));
+  const ax = R.x + 28, ay = R.y + (R.h - art) / 2;
+  const slide = E.outExpo(prog(lt, .12, .7)) * art * .42;
+  const vx = ax + art / 2 + slide, vy = ay + art / 2, vr = art * .47;
+  g.save(); g.translate(vx, vy); g.rotate(AMB * 2.4);
+  g.beginPath(); g.arc(0, 0, vr, 0, 6.283); g.fillStyle = '#060607'; g.fill();
+  for (let k = 1; k < 7; k++) { g.beginPath(); g.arc(0, 0, vr * (.38 + k * .085), 0, 6.283); g.strokeStyle = `rgba(255,255,255,${.04 + (k % 2) * .03})`; g.lineWidth = 1; g.stroke(); }
+  g.strokeStyle = 'rgba(255,255,255,.24)'; g.lineWidth = 3;
+  g.beginPath(); g.arc(0, 0, vr * .9, -.5, .35); g.stroke();
+  g.beginPath(); g.arc(0, 0, vr * .9, 2.64, 3.49); g.stroke();
+  g.beginPath(); g.arc(0, 0, vr * .3, 0, 6.283); g.fillStyle = '#f2f2f0'; g.fill();
+  g.beginPath(); g.arc(vr * .14, 0, vr * .045, 0, 6.283); g.fillStyle = '#9a9aa0'; g.fill();
+  g.beginPath(); g.arc(0, 0, vr * .045, 0, 6.283); g.fillStyle = '#000'; g.fill();
+  g.restore();
+  g.save(); rr(g, ax, ay, art, art, 12); g.clip();
+  const cg = g.createLinearGradient(0, ay, 0, ay + art); cg.addColorStop(0, '#1c1c1f'); cg.addColorStop(1, '#050506');
+  g.fillStyle = cg; g.fillRect(ax, ay, art, art);
+  const sx = ax + art * .62, sy = ay + art * .58;
+  const sg = g.createRadialGradient(sx, sy, 0, sx, sy, art * .5);
+  sg.addColorStop(0, '#fff'); sg.addColorStop(.18, 'rgba(255,255,255,.95)'); sg.addColorStop(.22, 'rgba(255,255,255,.25)'); sg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = sg; g.fillRect(ax, ay, art, art);
+  g.beginPath(); g.moveTo(ax, ay + art);
+  for (let x = 0; x <= art; x += 4) g.lineTo(ax + x, ay + art * .7 - Math.sin(x * .05 + 1) * art * .06 - Math.sin(x * .13) * art * .03);
+  g.lineTo(ax + art, ay + art); g.fillStyle = '#030304'; g.fill();
+  g.restore();
+  rr(g, ax, ay, art, art, 12); g.strokeStyle = 'rgba(255,255,255,.14)'; g.lineWidth = 1; g.stroke();
+  const eqW = Math.min(250, R.w * .22), tx = ax + art * 1.5 + 34, tw = Math.max(80, R.x + R.w - eqW - 56 - tx), ty = R.y + R.h / 2;
+  text(g, 'The Long Light', tx, ty - 34, 30, 700, `rgba(${FG},.97)`, 'left', -.4);
+  text(g, 'Northbound', tx, ty - 6, 18, 500, `rgba(${FG},.5)`);
+  const pos = .28 + lt * .02;
+  g.fillStyle = 'rgba(255,255,255,.16)'; rr(g, tx, ty + 18, tw, 4, 2); g.fill();
+  g.fillStyle = `rgba(${FG},.92)`; rr(g, tx, ty + 18, tw * pos, 4, 2); g.fill();
+  text(g, '1:12', tx, ty + 52, 13, 500, `rgba(${FG},.4)`);
+  text(g, '-2:47', tx + tw, ty + 52, 13, 500, `rgba(${FG},.4)`, 'right');
+  const cx = tx + tw / 2, cy = ty + 47;
+  g.fillStyle = `rgba(${FG},.92)`;
+  g.fillRect(cx - 7, cy - 10, 5, 20); g.fillRect(cx + 2, cy - 10, 5, 20);
+  const tri = (x, d) => { for (const o of [0, 11]) { g.beginPath(); g.moveTo(x + d * o, cy - 8); g.lineTo(x + d * (o + 11), cy); g.lineTo(x + d * o, cy + 8); g.closePath(); g.fill(); } };
+  tri(cx + 40, 1); tri(cx - 40, -1);
+  const ex = R.x + R.w - eqW - 30, n = 16, bw = eqW / n;
+  for (let i = 0; i < n; i++) {
+    const v = clamp(.18 + .55 * Math.abs(Math.sin(AMB * (2.3 + i * .29) + i * 1.7)) * (.7 + .3 * Math.sin(AMB * 1.3 + i * .5)));
+    const bh = Math.max(6, (R.h - 80) * v);
+    rr(g, ex + i * bw + 2, ty - bh / 2, bw - 6, bh, (bw - 6) / 2); g.fillStyle = `rgba(${FG},${.3 + .65 * v})`; g.fill();
+  }
+  g.restore();
+}
+
+// Messages: bubbles pop in from their corners, then someone starts typing.
+const BUBBLES = [['l', 'Is the launch film done?', .12], ['r', 'Rendering it now.', .42], ['l', 'Make it more fun!', .74], ['r', 'Way ahead of you.', 1.04]];
+function drawMessages(g, R, lt) {
+  g.save(); appFrame(g, R);
+  const hx = R.x + R.w / 2;
+  g.beginPath(); g.arc(hx, R.y + 48, 24, 0, 6.283);
+  const ag = g.createLinearGradient(0, R.y + 24, 0, R.y + 72); ag.addColorStop(0, '#ececee'); ag.addColorStop(1, '#8e8e94');
+  g.fillStyle = ag; g.fill();
+  text(g, 'M', hx, R.y + 56, 22, 700, '#0b0b0c', 'center');
+  text(g, 'Maya', hx, R.y + 96, 15, 600, `rgba(${FG},.9)`, 'center');
+  g.fillStyle = 'rgba(255,255,255,.07)'; g.fillRect(R.x, R.y + 114, R.w, 1);
+  let y = R.y + 140;
+  for (const [side, s, t0] of BUBBLES) {
+    if (lt < t0) break;
+    const p = spring(lt - t0, 18, .52);
+    g.font = `500 18px ${FONT}`;
+    const bw = g.measureText(s).width + 34, bh = 44;
+    const bx = side === 'r' ? R.x + R.w - 22 - bw : R.x + 22;
+    const ox = side === 'r' ? bx + bw : bx, oy = y + bh;
+    g.save(); g.globalAlpha *= clamp((lt - t0) / .1);
+    g.translate(ox, oy); g.scale(p, p); g.translate(-ox, -oy);
+    rr(g, bx, y, bw, bh, 22); g.fillStyle = side === 'r' ? '#f2f2f4' : '#1e1e21'; g.fill();
+    text(g, s, bx + 17, y + 29, 18, 500, side === 'r' ? '#0a0a0b' : `rgba(${FG},.92)`);
+    g.restore();
+    y += (bh + 12) * Math.min(1, p);
+  }
+  if (lt > 1.36) {
+    const p = spring(lt - 1.36, 18, .55), bx = R.x + 22;
+    g.save(); g.translate(bx, y + 40); g.scale(p, p); g.translate(-bx, -(y + 40));
+    rr(g, bx, y, 76, 40, 20); g.fillStyle = '#1e1e21'; g.fill();
+    for (let i = 0; i < 3; i++) {
+      const b = Math.max(0, Math.sin(AMB * 9 - i * .8));
+      g.beginPath(); g.arc(bx + 22 + i * 16, y + 20 - b * 5, 5, 0, 6.283); g.fillStyle = `rgba(${FG},${.4 + .5 * b})`; g.fill();
+    }
+    g.restore();
+  }
+  rr(g, R.x + 18, R.y + R.h - 58, R.w - 36, 40, 20); g.strokeStyle = 'rgba(255,255,255,.14)'; g.lineWidth = 1.2; g.stroke();
+  text(g, 'Message', R.x + 38, R.y + R.h - 32, 16, 500, `rgba(${FG},.35)`);
+  g.restore();
+}
+
+// Terminal: Dropy's own command line, switching the animation to a bouncy one.
+const TERM = [['$', 'dropy animation check bouncy.json', .1], ['>', '✓ bouncy.json is valid · 0.42 s · overshoot 18%', .7], ['$', 'dropy animation use bouncy', .8], ['>', '✓ Dropy now opens with “Bouncy”', 1.26]];
+const TYPE_RATE = 62;
+function drawTerminal(g, R, lt) {
+  g.save(); appFrame(g, R, 14, '#060607');
+  windowDots(g, R.x + 22, R.y + 22);
+  text(g, 'zsh — dropy', R.x + R.w / 2, R.y + 27, 13, 600, `rgba(${FG},.4)`, 'center');
+  g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(R.x, R.y + 44, R.w, 1);
+  const fs = clamp(R.w / 38, 16, 24), lh = fs * 1.8, pr = fs * 2.6;
+  let y = R.y + 44 + lh * 1.4, caret = null;
+  const x = R.x + 28;
+  g.font = `500 ${fs}px ${MONO}`; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+  for (const [kind, s, t0] of TERM) {
+    if (lt < t0) break;
+    if (kind === '$') {
+      const shown = s.slice(0, Math.min(s.length, Math.floor((lt - t0) * TYPE_RATE)));
+      g.fillStyle = `rgba(${FG},.42)`; g.fillText('~ %', x, y);
+      g.fillStyle = `rgba(${FG},.96)`; g.fillText(shown, x + pr, y);
+      caret = [x + pr + g.measureText(shown).width + 2, y];
+    } else {
+      const u = clamp((lt - t0) / .12);
+      g.fillStyle = `rgba(${FG},${.65 * u})`; g.fillText(s, x, y);
+      caret = [x + pr, y + lh];
+      g.fillStyle = `rgba(${FG},.42)`; g.fillText('~ %', x, y + lh);
+    }
+    y += lh;
+  }
+  if (caret && Math.floor(AMB * 2.4) % 2 === 0) { g.fillStyle = `rgba(${FG},.85)`; g.fillRect(caret[0], caret[1] - fs * .85, fs * .55, fs * 1.15); }
+  g.restore();
+}
+function drawNotesAt(g, R, tOld) {
+  g.save(); appFrame(g, R);
+  g.translate(R.x, R.y); const s = R.w / CW; g.scale(s, s);
+  drawNotesContent(g, tOld);
+  g.restore();
+}
+const APPS = { music: drawMusic, messages: drawMessages, terminal: drawTerminal, notes: (g, R) => drawNotesAt(g, R, NOTES_AT) };
+// The notes as they stand when a scene shows them (before or after the typing).
+let NOTES_AT = 13;
+function drawApp(g, app, R, lt, a, s, blur) {
+  if (a <= .003) return;
+  g.save();
+  g.globalAlpha = a;
+  g.filter = blur > .3 ? `blur(${blur.toFixed(1)}px)` : 'none';
+  const cx = R.x + R.w / 2, cy = R.y + R.h / 2;
+  g.translate(cx, cy); g.scale(s, s); g.translate(-cx, -cy);
+  APPS[app](g, R, lt);
+  g.restore();
+}
+
+// Scene one: the overlay reshapes itself for each app, then bounces home to Notes.
+const MONTAGE = [
+  { t: 0, app: 'notes', w: 960, h: 574, name: 'Notes' },
+  { t: .35, app: 'music', w: 1180, h: 300, name: 'Music' },
+  { t: 1.85, app: 'messages', w: 600, h: 700, name: 'Messages' },
+  { t: 3.35, app: 'terminal', w: 920, h: 450, name: 'Terminal' },
+  { t: 4.85, app: 'notes', w: 960, h: 574, name: 'Notes', bouncy: true },
+];
+function montageGeom(l) {
+  let w = MONTAGE[0].w, h = MONTAGE[0].h;
+  for (let i = 1; i < MONTAGE.length; i++) {
+    const M = MONTAGE[i], P = MONTAGE[i - 1];
+    w += (M.w - P.w) * spring(l - M.t, M.bouncy ? 12 : 14, M.bouncy ? .46 : .7);
+    h += (M.h - P.h) * spring(l - M.t, M.bouncy ? 10 : 12, M.bouncy ? .5 : .74);
+  }
+  return { w, h };
+}
+const montageIndex = l => { let c = 0; MONTAGE.forEach((M, i) => { if (l >= M.t) c = i; }); return c; };
+const SCENES = {};
+SCENES.montage = {
+  menu: l => MONTAGE[montageIndex(l)].name,
+  draw(g, l, cam) {
+    NOTES_AT = INS.montage.at;
+    const { w, h } = montageGeom(l), cur = montageIndex(l);
+    const pts = notchShape(960, w, h, 34, 18);
+    drawShell(g, pts, cam, 1, () => {
+      const R = { x: 960 - w / 2 + 18, y: 52, w: w - 36, h: h - 70 };
+      if (cur > 0) {
+        const u = prog(l, MONTAGE[cur].t, MONTAGE[cur].t + .2), P = MONTAGE[cur - 1];
+        if (u < 1) drawApp(g, P.app, R, l - P.t, 1 - u, lerp(1, .9, u), u * 14);
+      }
+      const M = MONTAGE[cur], u = cur ? E.out(prog(l, M.t + .06, M.t + .4)) : 1;
+      drawApp(g, M.app, R, l - M.t, u, lerp(1.1, 1, u), (1 - u) * 14);
+    });
+  },
+  caption(l) {
+    [['Music.', .42, 1.7], ['Messages.', 1.92, 3.2], ['Terminal.', 3.42, 4.7], ['Anything.', 4.92, 6.15]].forEach(([s, a, b]) =>
+      kinetic(l, { text: s, x: 960, y: 925, size: 92, weight: 750, track: -2.5, tIn: a, tOut: b, glow: .16, drop: 60 }));
+  },
+};
+
+// Scene two: Dropy's overlay pours out of the notch and flows, as one liquid shape,
+// to each position it can take: the right edge, both bottom corners, the left edge.
+// Then it flows home into the notch.
+const STOPS = [
+  { pos: 'right', app: 'messages', name: 'Messages', label: 'RIGHT EDGE', along: 640, away: 500, anchor: [1920, 540] },
+  { pos: 'bottomRight', app: 'music', name: 'Music', label: 'BOTTOM RIGHT', along: 840, away: 290, anchor: [1920, 1080] },
+  { pos: 'bottomLeft', app: 'terminal', name: 'Terminal', label: 'BOTTOM LEFT', along: 760, away: 400, anchor: [0, 1080] },
+  { pos: 'left', app: 'notes', name: 'Notes', label: 'LEFT EDGE', along: 440, away: 470, anchor: [0, 540] },
+];
+// Each stop: the shape starts flowing there (d), arrives (a), and leaves for the next (c).
+const FLOW = .85, STAY = .95;
+STOPS.forEach((S, k) => { S.d = .12 + k * (FLOW + STAY); S.a = S.d + FLOW; S.c = S.a + STAY; });
+const HOME = { d: STOPS[3].c, a: STOPS[3].c + FLOW };
+function edgeShape(S, along, away, r, e) {
+  if (S.pos === 'right' || S.pos === 'left') {
+    const P = notchShape(0, along, away, r, e);
+    return S.pos === 'right' ? P.map(([x, y]) => [1920 - y, 540 + x]) : P.map(([x, y]) => [y, 540 - x]);
+  }
+  const w = along, h = away;
+  r = Math.min(r, w * .5, h * .5); e = Math.max(0, Math.min(e, w - r - 1, h - r - 1));
+  const P = [[1920, 1080 - h - e]];
+  quadPts(P, 1920, 1080 - h, 1920 - e, 1080 - h);
+  P.push([1920 - w + r, 1080 - h]);
+  arcPts(P, 1920 - w + r, 1080 - h + r, r, -Math.PI / 2, -Math.PI);
+  P.push([1920 - w, 1080 - e]);
+  quadPts(P, 1920 - w, 1080, 1920 - w - e, 1080);
+  P.push([1920, 1080]);
+  return S.pos === 'bottomRight' ? P : P.map(([x, y]) => [1920 - x, y]);
+}
+function edgeBody(S, along, away) {
+  if (S.pos === 'right') return { x: 1920 - away, y: 540 - along / 2, w: away, h: along };
+  if (S.pos === 'left') return { x: 0, y: 540 - along / 2, w: away, h: along };
+  if (S.pos === 'bottomRight') return { x: 1920 - along, y: 1080 - away, w: along, h: away };
+  return { x: 0, y: 1080 - away, w: along, h: away };
+}
+// Shapes for morphing: N points, all wound the same way, each rotated to start where
+// it best meets the shape it flows from.
+const signedArea = P => P.reduce((s, p, i) => { const q = P[(i + 1) % P.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0) / 2;
+const centroid = P => P.reduce((c, p) => [c[0] + p[0] / P.length, c[1] + p[1] / P.length], [0, 0]);
+const wound = P => signedArea(P) < 0 ? P.slice().reverse() : P;
+function alignTo(A, B) {
+  const ca = centroid(A), cb = centroid(B);
+  const { k } = align(A, B.map(([x, y]) => [x - cb[0] + ca[0], y - cb[1] + ca[1]]));
+  return B.map((_, i) => B[(i + k) % N]);
+}
+const NOTCH_SHAPE = wound(resample(notchShape(960, 230, 38, 12, 7), N, true));
+const STOP_SHAPES = STOPS.map(S => wound(resample(edgeShape(S, S.along, S.away, 30, 16), N, true)));
+// One flow per move. Points at the front of the move set off first and the back follows,
+// so the shape stretches as it goes and gathers itself as it lands.
+const FLOWS = (() => {
+  const seq = [NOTCH_SHAPE, ...STOP_SHAPES, NOTCH_SHAPE];
+  const times = [...STOPS.map(S => S.d), HOME.d];
+  const out = [];
+  let from = seq[0];
+  for (let k = 0; k < times.length; k++) {
+    const to = alignTo(from, seq[k + 1]);
+    const c0 = centroid(from), c1 = centroid(to);
+    const len = Math.hypot(c1[0] - c0[0], c1[1] - c0[1]) || 1, dir = [(c1[0] - c0[0]) / len, (c1[1] - c0[1]) / len];
+    const proj = from.map(([x, y]) => (x - c0[0]) * dir[0] + (y - c0[1]) * dir[1]);
+    const lo = Math.min(...proj), hi = Math.max(...proj);
+    out.push({ from, to, d: times[k], delay: proj.map(p => (1 - (p - lo) / (hi - lo || 1)) * .26), x0: c0[0], x1: c1[0] });
+    from = to;
+  }
+  return out;
+})();
+// Circular moving average, run twice (close to a Gaussian): rounds a shape into a blob.
+function soften(P, r) {
+  if (r < 1) return P;
+  const pass = Q => {
+    const n = Q.length, sx = [0], sy = [0];
+    for (let i = 0; i < n * 3; i++) { sx.push(sx[i] + Q[i % n][0]); sy.push(sy[i] + Q[i % n][1]); }
+    return Q.map((_, i) => { const a = i + n - r, b = i + n + r + 1; return [(sx[b] - sx[a]) / (b - a), (sy[b] - sy[a]) / (b - a)]; });
+  };
+  return pass(pass(P));
+}
+// How much of a flow is under way right now (0 at rest, 1 mid-move).
+function flowMotion(l) {
+  let m = 0;
+  for (const f of FLOWS) m = Math.max(m, Math.sin(Math.PI * prog(l, f.d, f.d + FLOW + .1)));
+  return m;
+}
+function flowShape(l) {
+  let F = null;
+  for (const f of FLOWS) if (l >= f.d) F = f;
+  if (!F) return null;
+  const P = F.from.map((p, i) => {
+    const u = spring(l - F.d - F.delay[i], 9.5, .8);
+    return [lerp(p[0], F.to[i][0], u), lerp(p[1], F.to[i][1], u)];
+  });
+  // Liquid on the way, crisp again as it lands.
+  return soften(P, Math.round(46 * Math.pow(flowMotion(l), .8)));
+}
+// A small label naming the position, just off the overlay's inner edge.
+function drawStopLabel(g, S, l) {
+  const a = E.out(prog(l, S.a + .2, S.a + .55)) * (1 - E.in(prog(l, S.c - .3, S.c - .05)));
+  if (a <= 0) return;
+  const { along, away } = S;
+  const at = {
+    right: [1920 - away - 34, 548, 'right'], left: [away + 34, 548, 'left'],
+    bottomRight: [1920 - along / 2, 1080 - away - 30, 'center'], bottomLeft: [along / 2, 1080 - away - 30, 'center'],
+  }[S.pos];
+  g.save(); g.globalAlpha = a;
+  text(g, S.label, at[0], at[1] + (1 - a) * 8, 21, 650, `rgba(${FG},.72)`, at[2], 4);
+  g.restore();
+}
+SCENES.edges = {
+  menu(l) {
+    for (const S of STOPS) if (l >= S.a + .1 && l < S.c) return S.name;
+    return 'Finder';
+  },
+  draw(g, l, cam) {
+    // The notch gives a little as the shape pours out of it, and takes it back in.
+    const wob = (t0, a, f, d) => { const u = l - t0; return u > 0 ? a * Math.sin(u * f) * Math.exp(-u * d) : 0; };
+    NOTCH_JIGGLE = { w: wob(.3, 12, 11, 4) + wob(HOME.a - .1, 26, 11, 3.4), h: wob(HOME.a - .1, 7, 11, 3.4) - wob(.3, 3, 11, 4) };
+    NOTES_AT = 13;
+    drawOverlay(g, INS.edges.at, cam);
+    NOTCH_JIGGLE = { w: 0, h: 0 };
+    const pts = flowShape(l);
+    if (!pts || l > HOME.a + .3) return;
+    const k = STOPS.findIndex(S => l >= S.a && l < S.c + .2);
+    const S = k >= 0 ? STOPS[k] : null;
+    // Lift fades as the shape settles back into the notch.
+    const lift = 1 - E.inOut(prog(l, HOME.d + .3, HOME.a + .4));
+    g.save(); g.globalAlpha = 1 - E.inOut(prog(l, HOME.a - .05, HOME.a + .25));
+    SHELL_EDGE = 1 - .55 * flowMotion(l);
+    SHELL_BODY = Math.pow(flowMotion(l), .6);
+    drawShell(g, pts, cam, lift, S ? () => {
+      const b = edgeBody(S, S.along, S.away), R = { x: b.x + 16, y: b.y + 16, w: b.w - 32, h: b.h - 32 };
+      const a = E.out(prog(l, S.a - .05, S.a + .3)) * (1 - E.inOut(prog(l, S.c - .05, S.c + .15)));
+      drawApp(g, S.app, R, l - S.a, a, lerp(.97, 1, a), (1 - a) * 10);
+    } : null);
+    SHELL_EDGE = 1; SHELL_BODY = 0;
+    g.restore();
+    for (const s of STOPS) drawStopLabel(g, s, l);
+  },
+  caption(l) {
+    const [s0, s1, , s3] = STOPS;
+    [['Any edge.', s0.a - .3, s1.d + .1], ['Any corner.', s1.a - .3, s3.d + .1], ['Anywhere.', s3.a - .3, HOME.a]].forEach(([s, a, b]) =>
+      kinetic(l, { text: s, x: 960, y: 572, size: 76, weight: 700, track: -2, tIn: a, tOut: b, glow: .12, drop: 30 }));
+  },
+};
+function renderInsert(L, cam) {
+  const g = wg, l = L.l, scene = SCENES[L.ins.kind];
+  MENU_APP = scene.menu(l);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, W, H);
+  g.setTransform(cam.s, 0, 0, cam.s, cam.cx - 960 * cam.s, cam.cy - 540 * cam.s);
+  g.save();
+  rr(g, 0, 0, 1920, 1080, 26); g.clip();
+  drawWallpaper(g);
+  drawMenuBar(g, L.o, 1);
+  scene.draw(g, l, cam);
+  g.restore();
+  ctx.drawImage(world, 0, 0);
+  scene.caption(l);
+}
+
+// The music's pulse starts as Dropy first opens, at the right edge.
+const gridStart = () => realOf(insertStart(INS.edges) + STOPS[0].a);
+
+// ---------- end titles ----------
+// "Dropy": each letter drops out from under the icon, falling faster as it goes,
+// stretched by the fall, and lands with a small squash before it settles.
+const DROP = { text: 'Dropy', size: 128, track: -4, base: 718, t0: 41.2, gap: .085, fall: .42 };
+const dropLand = i => DROP.t0 + i * DROP.gap + DROP.fall;
+function dropWord(t) {
+  const font = `700 ${DROP.size}px ${FONT}`, L = layout(DROP.text, font, DROP.track);
+  const x0 = 960 - L.width / 2, top = ICON.y + ICON.h - 6;
+  ctx.save();
+  // Only below the icon: the letters seem to come out from underneath it.
+  ctx.beginPath(); ctx.rect(0, top, W, H - top); ctx.clip();
+  ctx.font = font; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = `rgb(${FG})`;
+  for (let i = 0; i < DROP.text.length; i++) {
+    const s0 = DROP.t0 + i * DROP.gap;
+    if (t < s0) continue;
+    const u = prog(t, s0, dropLand(i)), after = t - dropLand(i);
+    const fallY = -260 * (1 - u * u);
+    let sx = 1 - .1 * u * (u < 1 ? 1 : 0), sy = 1 + .22 * u * (u < 1 ? 1 : 0);
+    if (after > 0) {
+      const sq = Math.exp(-after * 7) * Math.cos(after * 22);
+      sy = 1 - .16 * sq; sx = 1 + .1 * sq;
+    }
+    const ch = DROP.text[i], cw = L.xs[i + 1] - L.xs[i] - DROP.track, cx = x0 + L.xs[i] + cw / 2;
+    ctx.save();
+    ctx.translate(cx, DROP.base + (after > 0 ? 0 : fallY));
+    ctx.scale(sx, sy);
+    ctx.globalAlpha = clamp(u * 3);
+    ctx.fillText(ch, -cw / 2, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+// A line that rises word by word out of a hidden baseline, without blur.
+function riseLine(t, s, x, y, size, t0) {
+  const font = `500 ${size}px ${FONT}`, L = layout(s, font, -.3), x0 = x - L.width / 2;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, y - size * 1.1, W, size * 1.45); ctx.clip();
+  ctx.font = font; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = 'rgba(245,245,247,.62)'; ctx.letterSpacing = '-.3px';
+  let i0 = 0, k = 0;
+  for (let i = 0; i <= s.length; i++) if (i === s.length || s[i] === ' ') {
+    const u = E.outQuint(prog(t, t0 + k * .07, t0 + k * .07 + .7));
+    if (u > 0) ctx.fillText(s.slice(i0, i), x0 + L.xs[i0], y + (1 - u) * size * 1.2);
+    i0 = i + 1; k++;
+  }
+  ctx.restore();
+}
+// Small capitals that start spread wide and draw together into place.
+function gatherLine(t, s, x, y, t0) {
+  const u = E.outQuint(prog(t, t0, t0 + 1.4));
+  if (u <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = u;
+  text(ctx, s, x, y, 15, 600, 'rgba(245,245,247,.42)', 'center', lerp(14, 3.2, u));
+  ctx.restore();
+}
+
+// ---------- finishing ----------
+const grain = document.createElement('canvas');
+grain.width = grain.height = 256;
+{
+  const gg = grain.getContext('2d'), img = gg.createImageData(256, 256), r = rng(42);
+  for (let i = 0; i < img.data.length; i += 4) { const v = r() * 7; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255; }
+  gg.putImageData(img, 0, 0);
+}
+let vignette;
+function finish(t, rt) {
+  if (!vignette) {
+    vignette = ctx.createRadialGradient(960, 540, 380, 960, 540, 1180);
+    vignette.addColorStop(0, 'rgba(0,0,0,0)'); vignette.addColorStop(1, 'rgba(0,0,0,.62)');
+  }
+  ctx.fillStyle = vignette; ctx.fillRect(0, 0, W, H);
+  const f = Math.round(rt * 60), r = rng(f + 1);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const ox = -Math.floor(r() * 256), oy = -Math.floor(r() * 256);
+  for (let y = oy; y < H; y += 256) for (let x = ox; x < W; x += 256) ctx.drawImage(grain, x, y);
+  ctx.restore();
+  const end = E.inOut(prog(t, 46.9, 48.2));
+  if (end > 0) { ctx.fillStyle = `rgba(0,0,0,${end})`; ctx.fillRect(0, 0, W, H); }
+}
+
+function render(rt) {
+  const m = masterOf(rt), L = locate(m), t = L.o;
+  AMB = m; MENU_APP = null; NOTCH_JIGGLE = { w: 0, h: 0 };
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const cam = camera(t);
+  if (L.ins) { renderInsert(L, cam); finish(t, rt); return; }
+  const wa = E.inOut(prog(t, 5.2, 6.6)) * (1 - E.inOut(prog(t, 38.0, 38.9)));
+  if (wa > 0) {
+    drawWorld(t, cam);
+    ctx.save(); ctx.globalAlpha = wa;
+    if (wa < .98) ctx.filter = `blur(${((1 - wa) * 18).toFixed(1)}px)`;
+    ctx.drawImage(world, 0, 0); ctx.restore();
+  }
+  drawIntro(t, cam);
+  drawKeys(t);
+  drawMotionPanel(t);
+  drawCaptions(t, cam);
+  drawFinale(t);
+  finish(t, rt);
+}
+
+// ---------- score ----------
+// An original score, synthesised and cued to the picture: a pad under everything, a
+// pulse from the moment the notch opens, and a sound for every morph, click and key.
+// All cue times are story seconds, converted with real().
+const NOTE = n => 440 * Math.pow(2, (n - 69) / 12);
+const CHORDS = [ // [story start, bass, tones] as MIDI notes
+  [0, 35, [50, 54, 57, 61]],      // Bm(maj9) colour
+  [6.6, 31, [47, 50, 54, 57]],    // Gmaj7
+  [12.15, 38, [50, 54, 57, 61]],  // Dmaj7
+  [17.0, 33, [50, 52, 57, 59]],   // Asus
+  [21.6, 35, [50, 54, 57, 62]],   // Bm7
+  [25.0, 31, [47, 50, 54, 59]],   // Gmaj7
+  [28.3, 40, [52, 55, 59, 62]],   // Em7
+  [33.0, 33, [49, 52, 57, 59]],   // A
+  [38.0, 31, [47, 50, 54, 57]],   // Gmaj7
+  [40.1, 38, [50, 54, 57, 61, 64]], // Dmaj9
+];
+function compose(ac) {
+  const R = real, end = REAL_DUR;
+  const rand = rng(2026);
+  const noise = (() => {
+    const b = ac.createBuffer(1, ac.sampleRate * 3, ac.sampleRate), d = b.getChannelData(0), r = rng(99);
+    for (let i = 0; i < d.length; i++) d[i] = r() * 2 - 1;
+    return b;
+  })();
+  const ir = (() => {
+    const len = Math.floor(ac.sampleRate * 3.4), b = ac.createBuffer(2, len, ac.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = b.getChannelData(c), r = rng(5 + c); for (let i = 0; i < len; i++) d[i] = (r() * 2 - 1) * Math.pow(1 - i / len, 2.8); }
+    return b;
+  })();
+  const comp = ac.createDynamicsCompressor();
+  comp.threshold.value = -16; comp.ratio.value = 3; comp.attack.value = .008; comp.release.value = .22;
+  const master = ac.createGain();
+  master.gain.setValueAtTime(0, 0); master.gain.linearRampToValueAtTime(.85, .4);
+  master.gain.setValueAtTime(.85, R(40.6)); master.gain.linearRampToValueAtTime(.5, R(44.8)); master.gain.linearRampToValueAtTime(0, end);
+  master.connect(comp); comp.connect(ac.destination);
+  const verb = ac.createConvolver(); verb.buffer = ir;
+  const verbOut = ac.createGain(); verbOut.gain.value = .5; verb.connect(verbOut); verbOut.connect(master);
+  const delay = ac.createDelay(2); delay.delayTime.value = BEAT * .75;
+  const fb = ac.createGain(); fb.gain.value = .36;
+  const dlp = ac.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 3000;
+  delay.connect(dlp); dlp.connect(fb); fb.connect(delay);
+  const dOut = ac.createGain(); dOut.gain.value = .45; dlp.connect(dOut); dOut.connect(master); dOut.connect(verb);
+  // The music (not the sound effects) runs through one filter, so pausing the film can
+  // muffle it.
+  const music = ac.createBiquadFilter(); music.type = 'lowpass'; music.frequency.value = 18000; music.connect(master);
+  const bus = (to, dry, wet, del = 0) => {
+    const g = ac.createGain(); g.gain.value = dry; g.connect(to);
+    const s = ac.createGain(); s.gain.value = wet; g.connect(s); s.connect(verb);
+    if (del) { const d = ac.createGain(); d.gain.value = del; g.connect(d); d.connect(delay); }
+    return g;
+  };
+  const padF = ac.createBiquadFilter(); padF.type = 'lowpass'; padF.Q.value = .8;
+  padF.frequency.setValueAtTime(520, 0); padF.frequency.linearRampToValueAtTime(900, R(6.6));
+  padF.frequency.linearRampToValueAtTime(1300, R(21.6)); padF.frequency.linearRampToValueAtTime(1700, R(27.0));
+  padF.frequency.linearRampToValueAtTime(800, R(30)); padF.frequency.linearRampToValueAtTime(1100, R(38));
+  padF.frequency.linearRampToValueAtTime(2600, R(40.4)); padF.frequency.linearRampToValueAtTime(500, end);
+  padF.connect(bus(music, .3, .75));
+  const pluckBus = bus(music, .22, .3, .55);
+  const drums = bus(music, .75, .06);
+  const fx = bus(master, .5, .55);
+  const ui = bus(master, .35, .12);
+  const bells = bus(master, .2, .9, .35);
+
+  const src = (t, d) => { const s = ac.createBufferSource(); s.buffer = noise; s.loop = true; s.start(t, rand() * 2); s.stop(t + d); return s; };
+  const osc = (type, f, t, d) => { const o = ac.createOscillator(); o.type = type; o.frequency.value = f; o.start(t); o.stop(t + d); return o; };
+  const amp = (t, a, peak, d) => {
+    const g = ac.createGain();
+    g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(.0001, t + a + d);
+    return g;
+  };
+  const filt = (type, f, q = .7) => { const b = ac.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
+
+  function pad(notes, t0, t1) {
+    for (const n of notes) for (const det of [-8, 7]) {
+      const o = osc('sawtooth', NOTE(n), t0, t1 - t0 + 2); o.detune.value = det;
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.045, t0 + 1.0);
+      g.gain.setValueAtTime(.045, t1); g.gain.linearRampToValueAtTime(0, t1 + 1.8);
+      o.connect(g); g.connect(padF);
+    }
+  }
+  function sub(n, t0, t1, v = .2) {
+    const o = osc('sine', NOTE(n), t0, t1 - t0 + 1.2), g = ac.createGain();
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(v, t0 + .4);
+    g.gain.setValueAtTime(v, t1); g.gain.linearRampToValueAtTime(0, t1 + 1);
+    o.connect(g); g.connect(music);
+  }
+  function pluck(n, t, v = 1) {
+    const o = osc('triangle', NOTE(n), t, .6), g = amp(t, .005, .3 * v, .42), f = filt('lowpass', 2600);
+    o.connect(f); f.connect(g); g.connect(pluckBus);
+  }
+  function kick(t, v = 1) {
+    const o = osc('sine', 150, t, .5); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(44, t + .13);
+    const g = amp(t, .004, .95 * v, .42); o.connect(g); g.connect(drums);
+  }
+  function hat(t, v = 1) { const s = src(t, .09), f = filt('highpass', 8200), g = amp(t, .002, .16 * v, .06); s.connect(f); f.connect(g); g.connect(drums); }
+  function clap(t, v = 1) {
+    const s = src(t, .3), f = filt('bandpass', 1500, .9), g = ac.createGain();
+    g.gain.setValueAtTime(.0001, t);
+    for (const k of [0, .012, .024]) { g.gain.exponentialRampToValueAtTime(.45 * v, t + k + .002); g.gain.exponentialRampToValueAtTime(.08, t + k + .01); }
+    g.gain.exponentialRampToValueAtTime(.0001, t + .22);
+    s.connect(f); f.connect(g); g.connect(drums);
+    const w = ac.createGain(); w.gain.value = .5; g.connect(w); w.connect(verb);
+  }
+  function whoosh(t, d, up = true, v = 1) {
+    const s = src(t, d + .1), f = filt('bandpass', 300, 1.4), g = ac.createGain();
+    f.frequency.setValueAtTime(up ? 260 : 4800, t); f.frequency.exponentialRampToValueAtTime(up ? 4800 : 260, t + d);
+    g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.55 * v, t + d * .65); g.gain.exponentialRampToValueAtTime(.0001, t + d + .08);
+    s.connect(f); f.connect(g); g.connect(fx);
+  }
+  function riser(t0, t1, v = 1) {
+    const d = t1 - t0, s = src(t0, d + .05), f = filt('highpass', 200), g = ac.createGain();
+    f.frequency.setValueAtTime(200, t0); f.frequency.exponentialRampToValueAtTime(7000, t1);
+    g.gain.setValueAtTime(.0001, t0); g.gain.exponentialRampToValueAtTime(.32 * v, t1); g.gain.linearRampToValueAtTime(0, t1 + .03);
+    s.connect(f); f.connect(g); g.connect(fx);
+    const o = osc('sawtooth', 110, t0, d + .05), of = filt('lowpass', 1400), og = ac.createGain();
+    o.frequency.setValueAtTime(110, t0); o.frequency.exponentialRampToValueAtTime(880, t1);
+    og.gain.setValueAtTime(.0001, t0); og.gain.exponentialRampToValueAtTime(.05 * v, t1); og.gain.linearRampToValueAtTime(0, t1 + .03);
+    o.connect(of); of.connect(og); og.connect(fx);
+  }
+  function impact(t, v = 1) {
+    const o = osc('sine', 70, t, 2); o.frequency.setValueAtTime(70, t); o.frequency.exponentialRampToValueAtTime(36, t + .9);
+    const g = amp(t, .006, .9 * v, 1.7); o.connect(g); g.connect(fx);
+    const s = src(t, .8), f = filt('lowpass', 1100), sg = amp(t, .003, .5 * v, .6); s.connect(f); f.connect(sg); sg.connect(fx);
+  }
+  function bell(t, n, v = 1) {
+    [[1, 1, 3], [2.0, .35, 2], [3.01, .14, 1.4], [4.2, .06, .9]].forEach(([m, a, d]) => {
+      const o = osc('sine', NOTE(n) * m, t, d + .1), g = amp(t, .004, .22 * v * a, d); o.connect(g); g.connect(bells);
+    });
+  }
+  function tick(t, v = 1) {
+    const o = osc('sine', 2300, t, .05), g = amp(t, .001, .25 * v, .03); o.connect(g); g.connect(ui);
+    const s = src(t, .03), f = filt('highpass', 4000), sg = amp(t, .001, .12 * v, .015); s.connect(f); f.connect(sg); sg.connect(ui);
+  }
+  function key(t, v = 1) {
+    const s = src(t, .06), f = filt('bandpass', 2400 + rand() * 900, 2.2), g = amp(t, .001, .32 * v, .035); s.connect(f); f.connect(g); g.connect(ui);
+  }
+  function pop(t, n, v = 1) {
+    const o = osc('sine', NOTE(n) * .6, t, .3); o.frequency.setValueAtTime(NOTE(n) * .6, t); o.frequency.exponentialRampToValueAtTime(NOTE(n), t + .035);
+    const g = amp(t, .003, .3 * v, .16); o.connect(g); g.connect(bells);
+  }
+  function boing(t, v = 1) {
+    const o = osc('sine', 150, t, .9); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(230, t + .5);
+    const lfo = osc('sine', 13, t, .9), depth = ac.createGain();
+    depth.gain.setValueAtTime(55, t); depth.gain.exponentialRampToValueAtTime(1, t + .7);
+    lfo.connect(depth); depth.connect(o.frequency);
+    const g = amp(t, .01, .42 * v, .6); o.connect(g); g.connect(fx);
+  }
+  function thump(t, v = 1) {
+    const o = osc('sine', 95, t, .3); o.frequency.setValueAtTime(95, t); o.frequency.exponentialRampToValueAtTime(52, t + .18);
+    const g = amp(t, .004, .55 * v, .22); o.connect(g); g.connect(fx);
+  }
+  // A whoosh that travels across the stereo field, from x0 to x1 (0 left, 1920 right).
+  function sweep(t, d, x0, x1, v = 1) {
+    const s = src(t, d + .1), f = filt('bandpass', 400, 1.3), g = ac.createGain(), pan = ac.createStereoPanner();
+    f.frequency.setValueAtTime(400, t); f.frequency.exponentialRampToValueAtTime(3800, t + d * .55); f.frequency.exponentialRampToValueAtTime(900, t + d);
+    g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.5 * v, t + d * .5); g.gain.exponentialRampToValueAtTime(.0001, t + d + .06);
+    pan.pan.setValueAtTime(x0 / 960 - 1, t); pan.pan.linearRampToValueAtTime(x1 / 960 - 1, t + d);
+    s.connect(f); f.connect(g); g.connect(pan); pan.connect(fx);
+  }
+  function thock(t) {
+    const o = osc('sine', 150, t, .15); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(85, t + .08);
+    const g = amp(t, .002, .5, .09); o.connect(g); g.connect(ui);
+    const s = src(t, .07), f = filt('bandpass', 1300, 1.5), sg = amp(t, .001, .35, .045); s.connect(f); f.connect(sg); sg.connect(ui);
+  }
+
+  // Harmony: pads, sub and an arpeggio on eighths once the notch is there. The
+  // inserted scenes bring their own changes, one per app.
+  const at = (kind, l) => realOf(insertStart(INS[kind]) + l);
+  const BM7 = [35, [50, 54, 57, 62]], GM7 = [31, [47, 50, 54, 59]], EM7 = [40, [52, 55, 59, 62]], DM7 = [38, [50, 54, 57, 61]], ASUS = [33, [50, 52, 57, 59]];
+  const TL = [
+    ...CHORDS.filter(([s]) => !CUTS.some(C => s > C.at && s < C.at + C.len)).map(([s, b, n]) => [R(s), b, n]),
+    ...[[.35, BM7], [1.85, GM7], [3.35, EM7], [4.85, DM7]].map(([l, c]) => [at('montage', l), ...c]),
+    ...[BM7, GM7, DM7, ASUS].map((c, k) => [at('edges', STOPS[k].a), ...c]),
+  ].sort((a, b) => a[0] - b[0]);
+  TL.forEach(([t0, bass, tones], i) => {
+    const t1 = i + 1 < TL.length ? TL[i + 1][0] : end - 1;
+    pad(tones, t0, t1);
+    if (t0 >= R(6.6)) sub(bass, t0, t1, i === TL.length - 1 ? .13 : .18);
+  });
+  const grid = gridStart();
+  const chordAt = rt => { let c = TL[0]; for (const k of TL) if (k[0] <= rt + .01) c = k; return c; };
+  const ARP = [0, 2, 1, 3, 2, 1, 3, 2];
+  for (let k = -8; ; k++) {
+    const t = grid + k * BEAT / 2;
+    if (t < R(6.6)) continue;
+    if (t >= R(38.0)) break;
+    const tones = chordAt(t)[2];
+    pluck(tones[ARP[((k % 8) + 8) % 8] % tones.length] + 12, t, t < grid ? .6 : 1);
+  }
+  // Drums: the pulse arrives as the notch opens, grows at full screen, stops for the icon.
+  for (let k = 0; ; k++) {
+    const t = grid + k * BEAT;
+    if (t >= R(38.0)) break;
+    kick(t, k === 0 ? 1.2 : .85);
+    if (t >= R(10.55)) hat(t + BEAT / 2, .9);
+    if (t >= R(21.6) && k % 2 === 1) clap(t, .8);
+    if (t >= R(23.0)) hat(t + BEAT / 4, .45);
+  }
+
+  // Cues.
+  bell(R(.45), 83, .7);
+  whoosh(R(1.35), R(2.45) - R(1.35), true, .5);
+  bell(R(3.85), 78, .55); bell(R(3.9), 81, .45);
+  bell(R(4.2), 90, .25);
+  riser(R(4.6), R(5.95), .8);
+  whoosh(R(5.85), .5, false, .6);
+  impact(R(6.6), .7);
+  whoosh(R(9.0) - .08, .45, true, .9);
+  for (const c of CLICKS) tick(R(c), 1);
+  for (const k of K1) key(R(k), .85);
+  [17.7, 17.85, 19.42, 19.55].forEach(s => thock(R(s)));
+  whoosh(R(18.05), .32, false, .8);
+  whoosh(R(19.7), .36, true, .8);
+  whoosh(R(20.65), .3, false, .6);
+  riser(R(20.75), R(28.3) + .25, .45);
+  whoosh(R(28.3), R(29.6) - R(28.3), false, .5);
+  SEL.forEach((s, i) => {
+    tick(R(s), .9);
+    const d = [.2, .34, .6][i];
+    whoosh(R(s + OPEN_DELAY) - .03, d, true, .8);
+    whoosh(R(s + OPEN_DELAY + 1.2), d, false, .6);
+  });
+  whoosh(R(36.55), R(37.75) - R(36.55), true, .45);
+  riser(R(38.0), R(40.1), 1);
+  impact(R(40.1), 1.1);
+  [62, 66, 69, 73, 76].forEach((n, i) => bell(R(40.1) + i * .05, n + 12, .5));
+  [86, 83, 81, 78, 76].forEach((n, i) => pop(R(dropLand(i)), n, .55));
+  bell(R(42.35), 81, .22);
+
+  // Scene one: an app per change, bubbles that pop, a terminal that types, a boing home.
+  MONTAGE.slice(1).forEach((M, i) => {
+    whoosh(at('montage', M.t) - .04, .3, i % 2 === 0, .8);
+    pop(at('montage', M.t + .06), [79, 76, 74, 81][i], .9);
+  });
+  BUBBLES.forEach(([side, , t0]) => pop(at('montage', 1.85 + t0), side === 'r' ? 86 : 81, .75));
+  for (const [kind, s, t0] of TERM) {
+    if (kind === '$') for (let j = 0; j < s.length; j++) key(at('montage', 3.35 + t0 + j / TYPE_RATE), .55);
+    else tick(at('montage', 3.35 + t0), .8);
+  }
+  boing(at('montage', 4.85), .9);
+  // Scene two: the bead's run pans across the speakers; each position thumps open.
+  for (const F of FLOWS) sweep(at('edges', F.d), at('edges', F.d + FLOW) - at('edges', F.d), F.x0, F.x1, .7);
+  for (const S of STOPS) {
+    thump(at('edges', S.a), .7);
+    pop(at('edges', S.a + .05), 81, .45);
+  }
+  boing(at('edges', HOME.a), .6);
+}
+let scorePromise;
+function renderScore(sampleRate = 48000) {
+  if (!scorePromise) {
+    const ac = new OfflineAudioContext(2, Math.ceil(REAL_DUR * sampleRate), sampleRate);
+    compose(ac);
+    scorePromise = ac.startRendering();
+  }
+  return scorePromise;
+}
+// The score as 16-bit stereo PCM in base64, for render.mjs.
+window.scorePCM = async () => {
+  const buf = await renderScore();
+  const L = buf.getChannelData(0), Rc = buf.getChannelData(1), out = new Int16Array(L.length * 2);
+  let peak = 0;
+  for (let i = 0; i < L.length; i++) {
+    peak = Math.max(peak, Math.abs(L[i]), Math.abs(Rc[i]));
+    out[2 * i] = Math.max(-1, Math.min(1, L[i])) * 32767;
+    out[2 * i + 1] = Math.max(-1, Math.min(1, Rc[i])) * 32767;
+  }
+  const bytes = new Uint8Array(out.buffer);
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return { sampleRate: buf.sampleRate, peak, data: btoa(s) };
+};
+
+// ---------- playback ----------
+const acc = document.createElement('canvas');
+acc.width = W; acc.height = H;
+const accg = acc.getContext('2d');
+function renderBlurred(rt, n = 4, shutter = .5) {
+  if (n <= 1) return render(rt);
+  for (let i = 0; i < n; i++) {
+    render(rt + ((i + .5) / n - .5) * shutter / 60);
+    accg.globalAlpha = 1 / (i + 1); accg.drawImage(cv, 0, 0);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(acc, 0, 0);
+}
+const SUB = +(new URLSearchParams(location.search).get('sub') || 1);
+window.renderAt = t => renderBlurred(t, SUB);
+window.FILM = { duration: REAL_DUR, fps: 60 };
+if (new URLSearchParams(location.search).has('render')) {
+  document.body.classList.add('render');
+} else {
+  const play = document.getElementById('play'), scrub = document.getElementById('scrub'), clock = document.getElementById('clock');
+  scrub.max = REAL_DUR;
+  let playing = false, t0 = performance.now(), pos = 0, audio, voice;
+  const seek = t => { pos = t; t0 = performance.now() - t * 1000; };
+  const stopVoice = () => { if (voice) { voice.stop(); voice = null; } };
+  async function startVoice() {
+    stopVoice();
+    audio = audio || new AudioContext();
+    const buf = await renderScore(audio.sampleRate);
+    if (!playing) return;
+    voice = audio.createBufferSource(); voice.buffer = buf; voice.connect(audio.destination);
+    voice.start(0, pos);
+    seek(pos);
+  }
+  const setPlaying = p => {
+    playing = p; play.textContent = p ? 'Pause' : 'Play';
+    if (p) { seek(pos >= REAL_DUR ? 0 : pos); startVoice(); } else stopVoice();
+  };
+  play.onclick = () => setPlaying(!playing);
+  scrub.oninput = () => { seek(+scrub.value); render(pos); if (playing) startVoice(); };
+  addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); } });
+  const tick = now => {
+    if (playing) { pos = (now - t0) / 1000; if (pos >= REAL_DUR) { pos = REAL_DUR; setPlaying(false); } render(pos); scrub.value = pos; }
+    clock.textContent = `${pos.toFixed(2)} / ${REAL_DUR.toFixed(2)}`;
+    requestAnimationFrame(tick);
+  };
+  render(0);
+  play.textContent = 'Play';
+  requestAnimationFrame(tick);
+}
+</script>
+</body>
+</html>

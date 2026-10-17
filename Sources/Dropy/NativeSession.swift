@@ -16,6 +16,7 @@ final class NativeSession: NSObject {
     private var dockLayout: DockLayout?
     private var monitors: [Any] = []
     private var session: UUID?
+    private var permissionWatch: Timer?
 
     init(host: OverlaySessionHost, journal: PlacementJournal, stage: Stage?) {
         self.host = host
@@ -65,12 +66,12 @@ final class NativeSession: NSObject {
 
     /// Where the docked window should go for the current size preference.
     func targetLayout(for docked: WindowDock.Docked, on screen: NSScreen) -> DockLayout {
-        targetLayout(windowSize: dock.originalSize ?? docked.frame.size, on: screen)
+        targetLayout(windowSize: dock.originalSize ?? docked.frame.size, on: screen, bundleID: docked.identity.bundleIdentifier)
     }
 
     /// The same, for a window of `current` size that Dropy has not moved yet.
-    func targetLayout(windowSize current: CGSize, on screen: NSScreen) -> DockLayout {
-        let preferences = host.preferences.value
+    func targetLayout(windowSize current: CGSize, on screen: NSScreen, bundleID: String? = nil) -> DockLayout {
+        let preferences = host.preferences.value.presentation(for: bundleID ?? host.selectedIdentity?.bundleIdentifier ?? host.preferences.value.openTargetBundleIdentifier)
         let size = DockGeometry.windowSize(preset: preferences.sizePreset,
                                            adaptsToWindow: preferences.automaticWindowSize,
                                            current: current, screen: room(on: screen), clearance: clearance(on: screen))
@@ -83,14 +84,17 @@ final class NativeSession: NSObject {
     /// first opening). Uses the window Dropy already manages for that app, or the app's
     /// main window. Nil when the app has no window to measure.
     func predictedLayout(for bundleID: String, on screen: NSScreen) -> (layout: DockLayout, windowID: UInt32?, size: CGSize)? {
-        if let docked = dock.current, docked.identity.bundleIdentifier == bundleID {
+        if let docked = dock.current, docked.identity.bundleIdentifier == bundleID,
+           docked.identity == host.preferences.value.rememberedWindow(for: bundleID) {
             return (targetLayout(for: docked, on: screen), docked.identity.windowID, docked.frame.size)
         }
         guard let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
                 .first(where: { !$0.isTerminated }),
-              let window = WindowPlacer.mainWindow(of: application.processIdentifier),
+              let remembered = host.preferences.value.rememberedWindow(for: bundleID),
+              remembered.processID == application.processIdentifier, remembered.processLaunchDate == application.launchDate,
+              case .found(let window) = try? WindowPlacer.find(remembered),
               let size = try? WindowPlacer.sizeValue(window, kAXSizeAttribute), size.width > 0 else { return nil }
-        return (targetLayout(windowSize: size, on: screen), WindowPlacer.windowID(of: window), size)
+        return (targetLayout(windowSize: size, on: screen, bundleID: bundleID), WindowPlacer.windowID(of: window), size)
     }
 
     /// Covers the window's place with the icon of the app with `processID`, for an
@@ -201,11 +205,17 @@ final class NativeSession: NSObject {
 
     /// Cuts the overlay open over the real window and hands it the pointer.
     private func reveal() {
-        guard let workspace = host.workspace, let dockLayout else { return }
+        guard host.workspace != nil, let dockLayout else { return }
         host.setState(.docked)
         updateHole()
         installWatchers()
-        // The cover fades away over the real window.
+        uncover()
+        NSLog("Dropy dock: live body=%.0fx%.0f", dockLayout.body.width, dockLayout.body.height)
+    }
+
+    /// The cover fades away over the real window (or, in Live mode, its mirror).
+    func uncover() {
+        guard let workspace = host.workspace else { return }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = OverlayMotion.reduced ? 0 : Self.coverFade
             workspace.previewShell.animator().alphaValue = 0
@@ -215,7 +225,6 @@ final class NativeSession: NSObject {
                 workspace?.previewShell.alphaValue = 1
             }
         })
-        NSLog("Dropy dock: live body=%.0fx%.0f", dockLayout.body.width, dockLayout.body.height)
     }
 
     /// The cut-out in the outline, exactly over the docked window.
@@ -279,9 +288,8 @@ final class NativeSession: NSObject {
         let fade = wasDocked && !OverlayMotion.reduced ? Self.coverFade : 0
         _ = dock.finishSession(session, coverFade: fade, putsBack: putsBack, keepsOnStage: { identity in
             let value = preferences.value
-            guard value.interaction == .fullApp, value.keepsPinnedAppReady,
-                  let pinned = value.pinnedBundleIdentifier else { return false }
-            return pinned == identity.bundleIdentifier
+            guard value.interaction == .fullApp, value.keepsPinnedAppReady else { return false }
+            return value.favoriteApps.contains { $0.id == identity.bundleIdentifier }
         }, willRestore: { docked in
             guard let workspace else { return }
             workspace.cover.show(processID: docked.identity.processID)
@@ -321,6 +329,8 @@ final class NativeSession: NSObject {
     }
 
     /// Puts a docked or staged window back where the person had it, for quitting.
+    func releaseForSystemChange() { dock.releaseAll() }
+
     func releaseNow() {
         dock.releaseNow()
         dock.returnAllNow()
@@ -336,7 +346,7 @@ final class NativeSession: NSObject {
     func pinnedAppChanged() {
         let preferences = host.preferences.value
         guard dock.isStaged, !host.state.isDocking,
-              !preferences.keepsPinnedAppReady || dock.current?.identity.bundleIdentifier != preferences.pinnedBundleIdentifier
+              !preferences.keepsPinnedAppReady || !preferences.favoriteApps.contains(where: { $0.id == dock.current?.identity.bundleIdentifier })
         else { return }
         _ = dock.release()
     }
@@ -355,6 +365,13 @@ final class NativeSession: NSObject {
     private func installWatchers() {
         host.removeSessionWatchers()
         removeWatchers()
+        permissionWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !WindowPlacer.isTrusted else { return }
+                self.host.close(returnsFocus: false, putsBack: true)
+                self.releaseForSystemChange()
+            }
+        }
         host.panel?.ignoresMouseEvents = true
         // The overlay takes the pointer only over its own outline (the band with the
         // controls and the border); everywhere over the window it lets clicks through.
@@ -374,6 +391,8 @@ final class NativeSession: NSObject {
     }
 
     private func removeWatchers() {
+        permissionWatch?.invalidate()
+        permissionWatch = nil
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
     }
@@ -413,7 +432,9 @@ final class NativeSession: NSObject {
     /// the overlay closes and the window goes back.
     func applicationActivated(pid: pid_t, bundleIdentifier: String?) {
         if host.state == .closed { dock.applicationActivated(pid: pid) }
-        guard let docked = dock.current, host.state.isDocking,
+        // Over a full-screen app both apps are in use: the overlay stays open while the
+        // person works in the app underneath.
+        guard let docked = dock.current, host.state.isDocking, host.state != .live,
               DockPolicy.activationCloses(processID: pid, bundleIdentifier: bundleIdentifier,
                                           sourceProcessID: docked.identity.processID,
                                           ownProcessID: getpid()) else { return }

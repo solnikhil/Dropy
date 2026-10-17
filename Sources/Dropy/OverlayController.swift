@@ -7,7 +7,7 @@ import ScreenCaptureKit
 /// preview (`PreviewSession`) or the docked real window (`NativeSession`), as
 /// `SessionModePolicy` decides.
 @MainActor
-final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
+final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, OverlaySessionHost {
     let preferences: PreferenceStore
     private let stage: Stage?
     private var preview: PreviewSession!
@@ -48,7 +48,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// The Dock this opening hides (it slides away as the overlay grows), if any.
     private(set) var hiddenDock: DockSide?
     /// Asked at each opening which Dock to hide, if any.
-    var dockToHide: (() -> DockSide?)?
+    var dockToHide: ((DropyPreferences) -> DockSide?)?
     /// What the controls band leaves room for: the housing at the notch (or a
     /// notch-wide space on a screen without one), only the controls elsewhere.
     private var bandNotch: CGSize { notchSize ?? CGSize(width: position == .notch ? 180 : 0, height: 32) }
@@ -61,6 +61,22 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     private(set) var coversAt = Date.distantPast
     private(set) var renderer: MetalFrameView?
     private var available: [CapturableWindow] = []
+    private var requestedFavorite: String?
+    private var forcesPicker = false
+    private var pickerQuery = ""
+    private var catalogRequest = UUID()
+    private var openTarget: String? { forcesPicker ? nil : requestedFavorite ?? preferences.value.openTargetBundleIdentifier }
+    var presentation: DropyPreferences {
+        preferences.value.presentation(for: selectedIdentity?.bundleIdentifier ?? openTarget)
+    }
+    private var visibleWindows: [CapturableWindow] {
+        let identities = WorkspaceSearch.results(available.map {
+            WindowSearchItem(identity: $0.identity, applicationName: $0.applicationName, title: $0.window.title ?? "")
+        }, query: pickerQuery, favorites: preferences.value.favoriteApps.map(\.id),
+           recents: preferences.value.rememberedWindows.map(\.identity))
+        let windows = Dictionary(uniqueKeysWithValues: available.map { ($0.identity, $0) })
+        return identities.compactMap { windows[$0] }
+    }
     var selectedIdentity: WindowIdentity?
     /// The window-list row Return opens; the first row until the arrows move it.
     private var highlightedIdentity: WindowIdentity?
@@ -75,6 +91,19 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// how many times the layout changed before the window was ready.
     private var openedAt: CFTimeInterval = 0
     private var openReadyLogged = true
+    private var benchmarkReadyMs: Double?
+    private var benchmarkFirstFrameMs: Double?
+    /// Read only through the explicitly enabled benchmark channel.
+    var benchmarkSnapshot: [String: Any] {
+        ["state": state.diagnosticName,
+         "windowID": selectedIdentity.map { Int($0.windowID) } ?? 0,
+         "readyMs": benchmarkReadyMs as Any? ?? NSNull(),
+         "firstFrameMs": benchmarkFirstFrameMs as Any? ?? NSNull(),
+         "layoutChanges": layoutChangesBeforeReady]
+    }
+    var benchmarkCapture: [String: Any]? {
+        state == .live ? live?.benchmarkSnapshot() : preview.benchmarkSnapshot()
+    }
     /// The notch display's desktop when this opening started; only a change of it
     /// closes a docked window (adding the Stage display also posts a desktop change).
     private var desktopAtOpen: UInt64?
@@ -92,7 +121,14 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// Closes the overlay when Mission Control, App Exposé or Show Desktop begins.
     private let missionControl = MissionControlWatcher()
     /// The overlay's display as it was at opening; a change to it closes the overlay.
-    private var displayAtOpen: (id: CGDirectDisplayID, frame: CGRect)?
+    private var displays: [DisplayConfiguration] = []
+
+    private func displayConfigurations() -> [DisplayConfiguration] {
+        NSScreen.screens.filter { stage?.ownedDisplayIDs.contains(Self.displayID(of: $0)) != true }.map {
+            DisplayConfiguration(id: Self.displayID(of: $0), frame: $0.frame, visibleFrame: $0.visibleFrame,
+                                 scale: $0.backingScaleFactor, refreshRate: $0.maximumFramesPerSecond)
+        }.sorted { $0.id < $1.id }
+    }
 
     /// The exact window being previewed, for development drivers.
     var currentSelection: WindowIdentity? { selectedIdentity }
@@ -154,29 +190,59 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.screensChanged() }
         })
+        displays = displayConfigurations()
         missionControl.onBegin = { [weak self] in self?.dismiss(.missionControl) }
     }
 
     deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
 
     private func sessionEnded(_ reason: String) {
-        guard state != .closed else { return }
         NSLog("Dropy dismiss: %@", reason)
         dismiss(.sessionEnded)
+        native.releaseForSystemChange()
     }
 
     private func screensChanged() {
-        guard state != .closed, let display = displayAtOpen else { return }
-        let screen = NSScreen.screens.first { Self.displayID(of: $0) == display.id }
-        guard screen?.frame != display.frame else { return }
-        NSLog("Dropy dismiss: the overlay's display %@", screen == nil ? "went away" : "changed")
+        let updated = displayConfigurations()
+        guard updated != displays else { return }
+        // The Dock moving during our own auto-hide is expected; frame, scale and
+        // refresh changes still invalidate the rendering and pointer transforms.
+        let topologyChanged = updated.count != displays.count || zip(updated, displays).contains {
+            $0.id != $1.id || $0.frame != $1.frame || $0.scale != $1.scale || $0.refreshRate != $1.refreshRate
+        }
+        displays = updated
+        guard topologyChanged else { return }
+        NSLog("Dropy dismiss: display configuration changed")
         dismiss(.displayChanged)
+        native.releaseForSystemChange()
     }
 
     /// Called when a docked window's restore could not finish yet.
     var onDeferredRestore: ((WindowIdentity) -> Void)? {
         get { native.onDeferredRestore }
         set { native.onDeferredRestore = newValue }
+    }
+
+    func openFavorite(_ bundleID: String) {
+        guard preferences.value.favoriteApps.contains(where: { $0.id == bundleID }) else { return }
+        if state != .closed, selectedIdentity?.bundleIdentifier == bundleID { close(); return }
+        let switching = state != .closed
+        let previous = previousApplication
+        if switching { close() }
+        open(for: bundleID)
+        if switching { previousApplication = previous }
+    }
+
+    @objc private func chooseWindows() {
+        let previous = previousApplication
+        if state != .closed { close() }
+        open(picker: true)
+        previousApplication = previous
+    }
+
+    @objc private func favoriteClicked(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String else { return }
+        openFavorite(id)
     }
 
     func toggle() {
@@ -189,21 +255,27 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         close(returnsFocus: !event.isSystemChange)
     }
 
-    func open() {
+    func open(for favorite: String? = nil, picker: Bool = false) {
         guard state == .closed else { return }
+        requestedFavorite = favorite
+        forcesPicker = picker
+        pickerQuery = ""
+        predictedWindowID = nil
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
                 ?? NSScreen.main else { return }
         generation = UUID()
         overlaySession = UUID()
         overlayScreen = screen
         expandedPreview = false
-        position = preferences.value.position
-        hiddenDock = dockToHide?()
+        position = presentation.position
+        hiddenDock = dockToHide?(presentation)
         notchSize = position == .notch ? Self.notchSize(on: screen) : nil
         openedAt = CACurrentMediaTime()
         openReadyLogged = false
+        benchmarkReadyMs = nil
+        benchmarkFirstFrameMs = nil
         desktopAtOpen = Spaces.current(on: Self.displayID(of: screen))
-        displayAtOpen = (Self.displayID(of: screen), screen.frame)
+        displays = displayConfigurations()
         missionControl.start()
         layoutChangesBeforeReady = 0
         captureAllowed = false
@@ -227,7 +299,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         let openNumber = opensInProcess
         // Reveal: open request to the first captured frame on screen. "Warm" means
         // this process has opened the overlay before.
-        renderer?.onNextPresented = { presentedTime in
+        renderer?.onNextPresented = { [weak self] presentedTime in
+            if self?.openedAt == openedAt { self?.benchmarkFirstFrameMs = (presentedTime - openedAt) * 1_000 }
             NSLog("Dropy reveal: firstFrame=%.1fms open=%ld warm=%@",
                   (presentedTime - openedAt) * 1_000, openNumber, openNumber > 1 ? "yes" : "no")
         }
@@ -243,6 +316,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         // still gets the keyboard, but Dropy never becomes the active app and its menu
         // bar never flashes over the app the person was in (or the one being docked).
         panel.makeKeyAndOrderFront(nil)
+        if prediction == nil { panel.makeFirstResponder(workspace?.search) }
         if let prediction {
             awaitingAutoSelection = true
             predictedWindowID = prediction.windowID
@@ -272,15 +346,15 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         selectedIdentity = identity
         selectedWindowSize = prediction.windowSize
         selectedApplicationName = name
-        remember(bundleID: application.bundleIdentifier)
+        remember(identity)
         native.start(identity, applicationName: name, request: generation)
     }
 
     /// The app chosen last, for the next direct or last-used opening.
-    private func remember(bundleID: String?) {
-        guard let bundleID else { return }
+    private func remember(_ identity: WindowIdentity) {
+        guard let bundleID = identity.bundleIdentifier else { return }
         preferences.update {
-            $0.lastUsedBundleIdentifier = bundleID
+            $0.rememberWindow(identity)
             if $0.openBehavior == .direct { $0.selectedBundleIdentifier = bundleID }
         }
     }
@@ -297,7 +371,9 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     /// The final layout of an opening that goes straight to a known app's window.
     private func predictOpening(on screen: NSScreen) -> OpeningPrediction? {
         guard ProcessInfo.processInfo.environment["DROPY_DEBUG_WINDOW_ID"] == nil,
-              let bundleID = preferences.value.openTargetBundleIdentifier,
+              let bundleID = openTarget,
+              let remembered = preferences.value.rememberedWindow(for: bundleID),
+              WindowCatalog.isRunning(remembered),
               let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
                 .first(where: { !$0.isTerminated }) else { return nil }
         let name = application.localizedName ?? ""
@@ -313,7 +389,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
                 as? [[String: Any]] ?? []
             guard let row = rows.first(where: { ($0[kCGWindowOwnerPID as String] as? pid_t) == application.processIdentifier
-                    && ($0[kCGWindowLayer as String] as? Int) == 0 }),
+                    && ($0[kCGWindowLayer as String] as? Int) == 0
+                    && ($0[kCGWindowNumber as String] as? UInt32) == remembered.windowID }),
                   let bounds = (row[kCGWindowBounds as String] as? NSDictionary).flatMap(CGRect.init(dictionaryRepresentation:)),
                   bounds.width > 60 else { return nil }
             let layout = previewLayout(for: bounds.size, on: screen)
@@ -403,7 +480,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// The window list's body at the size preset, at this opening's position.
     private func pickerBody(on screen: NSScreen) -> CGRect {
-        placedBody(size: OverlayGeometry.frame(on: room(on: screen), preferredSize: preferences.value.sizePreset.dimensions).size,
+        placedBody(size: OverlayGeometry.frame(on: room(on: screen), preferredSize: presentation.sizePreset.dimensions).size,
                    on: screen)
     }
 
@@ -553,19 +630,23 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
     func refreshWindows() {
         guard state != .closed else { return }
         let request = generation
+        let catalog = UUID()
+        catalogRequest = catalog
         let shouldAutoSelect = state == .selecting || awaitingAutoSelection
         if !hasSelection { status?.stringValue = "Finding open windows…" }
         Task {
             do {
                 let windows = try await WindowCatalog.availableWindows()
-                guard request == generation, state != .closed else { return }
+                guard request == generation, catalogRequest == catalog, state != .closed else { return }
                 available = windows
                 rebuildWindowList()
                 if awaitingAutoSelection {
                     awaitingAutoSelection = false
-                    let target = preferences.value.openTargetBundleIdentifier
-                    let exact = predictedWindowID.flatMap { id in windows.firstIndex { $0.window.windowID == id } }
-                    if let index = exact ?? windows.firstIndex(where: { $0.bundleIdentifier == target }) {
+                    let target = openTarget
+                    let exact = predictedWindowID.flatMap { id in windows.firstIndex {
+                        $0.window.windowID == id && $0.identity == preferences.value.rememberedWindow(for: target ?? "")
+                    } }
+                    if let index = exact {
                         selectWindow(at: index)
                         return
                     }
@@ -575,7 +656,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                     guard !hasSelection else { return }
                 }
                 setState(.selecting)
-                let preferredBundleID = preferences.value.openTargetBundleIdentifier
+                let preferredBundleID = openTarget
                 if shouldAutoSelect,
                    let requested = ProcessInfo.processInfo.environment["DROPY_DEBUG_WINDOW_ID"],
                    let windowID = UInt32(requested) {
@@ -584,15 +665,15 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                     } else {
                         NSLog("Dropy device check: requested exact window unavailable")
                     }
-                } else if shouldAutoSelect, let pinned = preferences.value.pinnedBundleIdentifier {
+                } else if shouldAutoSelect, let pinned = openTarget,
+                          preferences.value.favoriteApps.contains(where: { $0.id == pinned }) {
                     showPinnedApp(pinned, request: request)
-                } else if shouldAutoSelect, let bundleID = preferredBundleID,
-                   let index = windows.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
-                    selectWindow(at: index)
+                } else if shouldAutoSelect, let bundleID = preferredBundleID {
+                    selectRememberedWindow(for: bundleID)
                 }
                 if shouldAutoSelect { startDebugAlternationIfRequested() }
             } catch {
-                guard request == generation, state != .closed, !hasSelection || awaitingAutoSelection else { return }
+                guard request == generation, catalogRequest == catalog, state != .closed, !hasSelection || awaitingAutoSelection else { return }
                 if awaitingAutoSelection {
                     awaitingAutoSelection = false
                     resetToPickerLayout()
@@ -618,19 +699,33 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// Shows the pinned app's window, launching the app or asking it for a window
     /// first. Stops as soon as anything else happens: a selection, a close, a refresh.
+    private func selectRememberedWindow(for bundleID: String) {
+        let choice = WindowSelection.resolve(bundleIdentifier: bundleID,
+            remembered: preferences.value.rememberedWindow(for: bundleID), candidates: available.map(\.identity))
+        if case .selected(let identity) = choice, let index = available.firstIndex(where: { $0.identity == identity }) {
+            selectWindow(at: index)
+        } else {
+            resetToPickerLayout()
+            status?.stringValue = choice == .noWindows ? "No window is available for this app. Choose another window."
+                : "Choose the window to use for this app. Your previous window is no longer available or the app has several windows."
+            panel?.makeFirstResponder(workspace?.search)
+        }
+    }
+
     private func showPinnedApp(_ bundleID: String, request: UUID) {
+        let catalog = catalogRequest
         let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
         let name = url.map { FileManager.default.displayName(atPath: $0.path) }
             .map { $0.hasSuffix(".app") ? String($0.dropLast(4)) : $0 } ?? bundleID
         Task {
             var asked = false
             let started = Date()
-            while request == generation, state == .selecting {
+            while request == generation, catalog == catalogRequest, state == .selecting {
                 let index = available.firstIndex { $0.bundleIdentifier == bundleID }
                 switch PinnedAppPlan.next(installed: url != nil, hasWindow: index != nil, asked: asked,
                                           waited: Date().timeIntervalSince(started)) {
                 case .select:
-                    if let index { selectWindow(at: index) }
+                    selectRememberedWindow(for: bundleID)
                     return
                 case .open:
                     guard let url else { return }
@@ -651,7 +746,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
                     return
                 }
                 try? await Task.sleep(for: .seconds(PinnedAppPlan.pollInterval))
-                guard request == generation, state == .selecting,
+                guard request == generation, catalog == catalogRequest, state == .selecting,
                       let windows = try? await WindowCatalog.availableWindows(),
                       request == generation, state == .selecting else { return }
                 available = windows
@@ -680,6 +775,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         }
         if !openReadyLogged, showing {
             openReadyLogged = true
+            benchmarkReadyMs = (CACurrentMediaTime() - openedAt) * 1000
             // One line per opening, read by the benchmark: request to usable window, and
             // how often the outline had to change size on the way (0 is the goal).
             NSLog("Dropy timing: ready mode=%@ ms=%.1f layoutChanges=%ld predicted=%@", next.diagnosticName,
@@ -701,11 +797,12 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         // Closing keeps the layout it had: switching to the window list here flashed
         // the list inside the outline as it collapsed.
         if next != .closed {
-            // Live streams into the preview area; the other docking states show the real window.
-            workspace?.showsPreview = next.isCapturing || next == .live
-            workspace?.docked = next.isDocking && next != .live
+            // Docking states show the real window, or in Live mode its one-to-one mirror,
+            // through the outline's cut-out; the preview area is for the view-only preview.
+            workspace?.showsPreview = next.isCapturing
+            workspace?.docked = next.isDocking
             workspace?.elsewhere.isHidden = { if case .dockedElsewhere = next { false } else { true } }()
-            renderer?.isHidden = next.isDocking && next != .live
+            renderer?.isHidden = next.isDocking
             status?.isHidden = next == .viewing || next == .docked || next == .live
                 || { if case .docking = next { true } else { false } }()
         }
@@ -734,6 +831,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         status = workspace.status
         interactionStatus = workspace.interaction
         privacyButton = workspace.privacy
+        workspace.search.delegate = self
         workspace.privacy.target = self
         workspace.privacy.action = #selector(privacyClicked)
         workspace.expand.target = self
@@ -775,8 +873,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// The preview's layout for a window of `source` size.
     private func previewLayout(for source: CGSize, on screen: NSScreen) -> WorkspaceLayout {
-        let preset = preferences.value.sizePreset
-        if preferences.value.automaticWindowSize || preset == .nativeSize || expandedPreview {
+        let preset = presentation.sizePreset
+        if presentation.automaticWindowSize || preset == .nativeSize || expandedPreview {
             return WorkspaceLayout.make(source: source, screen: room(on: screen).size,
                 notch: bandNotch, expanded: expandedPreview,
                 maximumSize: preset.maximumSize)
@@ -857,7 +955,7 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         workspace.needsLayout = true
         workspace.layoutSubtreeIfNeeded()
         backdrop?.frame = root.bounds
-        if state == .docked { native.updateHole() }
+        if state == .docked || state == .live { native.updateHole() }
         if state == .live {
             live?.updateLayout(body: workspace.frame.offsetBy(dx: actual.minX, dy: actual.minY),
                                viewport: workspace.previewRect.offsetBy(dx: workspace.frame.minX + actual.minX,
@@ -878,6 +976,24 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         selectWindow(at: index)
     }
 
+    func controlTextDidChange(_ notification: Notification) {
+        guard notification.object as? NSSearchField === workspace?.search else { return }
+        pickerQuery = workspace?.search.stringValue ?? ""
+        highlightedIdentity = nil
+        rebuildWindowList()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === workspace?.search else { return false }
+        switch selector {
+        case #selector(NSResponder.moveDown(_:)): movePickerHighlight(1); return true
+        case #selector(NSResponder.moveUp(_:)): movePickerHighlight(-1); return true
+        case #selector(NSResponder.insertNewline(_:)): chooseHighlightedWindow(); return true
+        case #selector(NSResponder.cancelOperation(_:)): close(); return true
+        default: return false
+        }
+    }
+
     private func rebuildWindowList() {
         guard let list, let workspace else { return }
         for view in list.arrangedSubviews { list.removeArrangedSubview(view); view.removeFromSuperview() }
@@ -891,7 +1007,20 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             label.image = icon
         }
         menu.addItem(label)
-        for window in available {
+        let choose = NSMenuItem(title: "Search Windows…", action: #selector(chooseWindows), keyEquivalent: "")
+        choose.target = self
+        menu.addItem(choose)
+        for (index, favorite) in preferences.value.favoriteApps.enumerated() {
+            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: favorite.id)
+            let name = url.map { FileManager.default.displayName(atPath: $0.path) } ?? favorite.id
+            let shortcut = preferences.value.favoriteShortcutsEnabled && index < 9 ? " · ⌃⌥\(index + 1)" : ""
+            let item = NSMenuItem(title: "★ \(name)\(shortcut)", action: #selector(favoriteClicked), keyEquivalent: "")
+            item.target = self
+            item.representedObject = favorite.id
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        for window in visibleWindows {
             let button = WindowChoiceButton(title: window.displayName, target: self, action: #selector(windowClicked))
             button.frame = CGRect(x: 0, y: 0, width: max(1, workspace.bounds.width - 32), height: 52)
             button.identity = window.identity
@@ -902,6 +1031,8 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
             list.addArrangedSubview(button)
             button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
             button.heightAnchor.constraint(equalToConstant: 52).isActive = true
+        }
+        for window in available {
             let item = NSMenuItem(title: window.displayName, action: #selector(menuWindowClicked), keyEquivalent: "")
             item.target = self
             item.representedObject = window.identity
@@ -914,6 +1045,10 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         menu.addItem(close)
         workspace.apps.menu = menu
         workspace.needsLayout = true
+        if state == .selecting {
+            status?.stringValue = visibleWindows.isEmpty && !pickerQuery.isEmpty ? "No windows match your search."
+                : "\(visibleWindows.count) windows · Favorites first, then recent"
+        }
         applyHighlight()
     }
 
@@ -952,6 +1087,16 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         awaitingAutoSelection = false
         // Choosing the window that is already in the overlay changes nothing.
         if state.isDocking, selected.identity == selectedIdentity, native.dockedIdentity == selected.identity { return }
+        if preferences.value.presentation(for: selected.bundleIdentifier).position != position {
+            // A different edge needs a new outline and Dock-auto-hide lifecycle.
+            // Keep the explicit selection and original focus across that transition.
+            remember(selected.identity)
+            let previous = previousApplication
+            close()
+            open(for: selected.bundleIdentifier)
+            previousApplication = previous
+            return
+        }
         let request = UUID()
         generation = request
         preview.reset()
@@ -960,7 +1105,11 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
         selectedWindowSize = selected.window.frame.size
         selectedApplicationName = selected.applicationName
         rebuildWindowList()
-        remember(bundleID: selected.bundleIdentifier)
+        remember(selected.identity)
+        if let screen = overlayScreen {
+            position = presentation.position
+            notchSize = position == .notch ? Self.notchSize(on: screen) : nil
+        }
         renderer.clear()
         let conditions = sessionConditions
         switch SessionModePolicy.mode(for: conditions) {
@@ -1062,23 +1211,34 @@ final class OverlayController: NSObject, NSMenuDelegate, OverlaySessionHost {
 
     /// The window list from the keyboard: arrows, Return, 1–9.
     private func handlePickerKey(_ event: NSEvent) -> Bool {
-        guard !available.isEmpty,
-              let key = PickerKey(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers,
-                                  commandControlOrOption: !event.modifierFlags.intersection([.command, .control, .option]).isEmpty)
-        else { return false }
-        let current = available.firstIndex { $0.identity == highlightedIdentity }
+        guard let key = PickerKey(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers,
+            commandControlOrOption: !event.modifierFlags.intersection([.command, .control, .option]).isEmpty) else { return false }
         switch key {
-        case .move(let step):
-            guard let next = PickerKey.highlight(current, moving: step, count: available.count) else { return true }
-            highlightedIdentity = available[next].identity
-            applyHighlight(scrolling: true)
-        case .choose:
-            selectWindow(at: current ?? 0)
+        case .move(let step): movePickerHighlight(step)
+        case .choose: chooseHighlightedWindow()
         case .row(let index):
-            guard available.indices.contains(index) else { return true }
-            selectWindow(at: index)
+            guard visibleWindows.indices.contains(index) else { return true }
+            chooseWindow(visibleWindows[index].identity)
         }
         return true
+    }
+
+    private func movePickerHighlight(_ step: Int) {
+        let windows = visibleWindows
+        guard let next = PickerKey.highlight(windows.firstIndex { $0.identity == highlightedIdentity },
+                                             moving: step, count: windows.count) else { return }
+        highlightedIdentity = windows[next].identity
+        applyHighlight(scrolling: true)
+    }
+
+    private func chooseHighlightedWindow() {
+        guard let identity = highlightedIdentity ?? visibleWindows.first?.identity else { return }
+        chooseWindow(identity)
+    }
+
+    private func chooseWindow(_ identity: WindowIdentity) {
+        guard let index = available.firstIndex(where: { $0.identity == identity }) else { return }
+        selectWindow(at: index)
     }
 
     /// Tints the highlighted row (the first when none is) and keeps it in view.

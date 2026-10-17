@@ -145,3 +145,8 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 
 # Isolation of third-party apps under test (throwaway tree; no app is launched).
 "$repo_dir/Tests/LocalAppIsolationCheck.zsh"
+
+# Opt-in benchmark IPC: real notification/reply and malformed command rejection, no UI.
+swiftc -swift-version 6 -o "$build_dir/BenchmarkControlChecks" \
+  "$repo_dir/Tests/LocalBenchmarkControlCheck.swift" "$repo_dir/Sources/Dropy/BenchmarkControl.swift"
+"$build_dir/BenchmarkControlChecks"

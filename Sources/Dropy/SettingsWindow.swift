@@ -22,6 +22,7 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var dockProblem: String?
     /// The Dock's edge, read when Settings shows the position choice.
     var dockSide: DockSide { DockAutoHide.side }
+    @Published var favoriteShortcutProblems: [String] = []
     @Published var isChoosingApp = false
     @Published private(set) var catalog: [CatalogApp] = []
     @Published private(set) var isLoadingApps = false
@@ -432,7 +433,7 @@ final class SettingsModel: ObservableObject {
 
     func pin(_ bundleIdentifier: String) {
         isChoosingApp = false
-        change { $0.pinnedBundleIdentifier = bundleIdentifier }
+        change { $0.addFavorite(bundleIdentifier) }
     }
 
     func showAbout() {
@@ -525,11 +526,35 @@ final class SettingsModel: ObservableObject {
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url,
                   let bundleID = Bundle(url: url)?.bundleIdentifier else { return }
-            MainActor.assumeIsolated { self?.change { $0.pinnedBundleIdentifier = bundleID } }
+            MainActor.assumeIsolated { self?.change { $0.addFavorite(bundleID) } }
         }
     }
 
     func unpin() { change { $0.pinnedBundleIdentifier = nil } }
+
+    func removeFavorite(_ id: String) { change { $0.removeFavorite(id) } }
+    func makeDefault(_ id: String) { change { $0.pinnedBundleIdentifier = id } }
+    func forgetWindows() { change { $0.rememberedWindows = [] } }
+    func favoriteSize(_ id: String, _ size: SizePreset?) {
+        change {
+            $0.favorites = $0.favoriteApps
+            if let index = $0.favorites.firstIndex(where: { $0.id == id }) { $0.favorites[index].sizePreset = size }
+        }
+    }
+    func favoritePosition(_ id: String, _ position: OverlayPosition?) {
+        change {
+            $0.favorites = $0.favoriteApps
+            if let index = $0.favorites.firstIndex(where: { $0.id == id }) { $0.favorites[index].position = position }
+        }
+    }
+    func moveFavorite(_ id: String, by offset: Int) {
+        change {
+            $0.favorites = $0.favoriteApps
+            guard let index = $0.favorites.firstIndex(where: { $0.id == id }),
+                  $0.favorites.indices.contains(index + offset) else { return }
+            $0.favorites.swapAt(index, index + offset)
+        }
+    }
 
     /// macOS applies a new Screen Recording grant only to a fresh process.
     func relaunch() {

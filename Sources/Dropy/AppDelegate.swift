@@ -8,7 +8,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var overlay: OverlayController!
     private var statusItem: NSStatusItem?
     private var trigger: NotchTrigger?
+    private var benchmarkControl: BenchmarkControl?
     private var hotKey: GlobalHotKey?
+    private var favoriteHotKeys: [GlobalHotKey] = []
     private let placementJournal = PlacementJournal()
     private let parkingTabs = ParkingTabs()
     /// The hidden display where pinned apps wait between openings.
@@ -258,16 +260,16 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.onOpen = { [weak self, weak trigger] in
             trigger?.overlayOpened()
             guard let self, !Self.launchedByCheck else { return }
-            self.dockAutoHide.overlayOpened(self.preferences.value)
+            self.dockAutoHide.overlayOpened(self.overlay.presentation)
         }
         overlay.onClose = { [weak self, weak trigger] in
             trigger?.overlayClosed()
             guard let self, !Self.launchedByCheck else { return }
             self.dockAutoHide.overlayClosed(after: OverlayMotion.wall(OverlayMotion.morph.close.duration))
         }
-        overlay.dockToHide = { [weak self] in
-            guard let self, !Self.launchedByCheck else { return nil }
-            return DockAutoHide.sideToHide(for: self.preferences.value)
+        overlay.dockToHide = { presentation in
+            guard !Self.launchedByCheck else { return nil }
+            return DockAutoHide.sideToHide(for: presentation)
         }
         if wantsDockIcon { NSApp.activate(ignoringOtherApps: true) }
         if CommandLine.arguments.contains("--show") {
@@ -305,7 +307,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Keep the Stage between openings: only for a pinned app kept ready.
     private var keepsStage: Bool {
         let value = preferences.value
-        return value.interaction == .fullApp && value.keepsPinnedAppReady && value.pinnedBundleIdentifier != nil
+        return value.interaction == .fullApp && value.keepsPinnedAppReady && !value.favoriteApps.isEmpty
             && !value.protectsVideo
     }
 
@@ -357,6 +359,27 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///   capture logs its metrics summary.
     private func startDebugDriversIfRequested() {
         let environment = ProcessInfo.processInfo.environment
+        if let directory = environment["DROPY_DEBUG_BENCHMARK"] {
+            benchmarkControl = BenchmarkControl(directory: directory) { [weak self] action in
+                guard let self else { return ["error": "app unavailable"] }
+                switch action {
+                case "open": self.overlay.open()
+                case "close": self.overlay.close()
+                case "toggle": self.overlay.toggle()
+                case "quit": DispatchQueue.main.async { NSApp.terminate(nil) }
+                case "snapshot", "capture": break
+                default: return ["error": "unknown benchmark action"]
+                }
+                var result = self.overlay.benchmarkSnapshot
+                if action == "capture" { result["capture"] = self.overlay.benchmarkCapture as Any? ?? NSNull() }
+                result["stageReady"] = self.stage?.isReady ?? false
+                result["stageOccupied"] = self.stage?.isOccupied ?? false
+                result["pendingPlacements"] = self.placementJournal.entries.count
+                result["accessibility"] = WindowPlacer.isTrusted
+                result["screenRecording"] = CGPreflightScreenCaptureAccess()
+                return result
+            }
+        }
         if let spec = environment["DROPY_DEBUG_CYCLES"] {
             let parts = spec.split(separator: ",").compactMap { Int($0) }
             let cycles = max(parts.first ?? 10, 1)
@@ -402,6 +425,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dockAutoHide.restoreNow()
         trigger?.stop()
         hotKey?.unregister()
+        favoriteHotKeys.forEach { $0.unregister() }
         recovery.stop()
         // A deferred entry stays in the journal; the next launch keeps trying.
         placementJournal.restoreAll()
@@ -673,12 +697,14 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlay.pinnedAppChanged()
             startStageIfUseful()
         }
-        if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier {
+        if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier || new.favoriteApps != old.favoriteApps {
             overlay.pinnedAppChanged()
             startStageIfUseful()
             // An open overlay still choosing a window shows the newly pinned app now.
             if new.pinnedBundleIdentifier != nil, overlay.state == .selecting { overlay.refreshWindows() }
         }
+        if new.favoriteApps != old.favoriteApps || new.favoriteShortcutsEnabled != old.favoriteShortcutsEnabled
+            || new.shortcut != old.shortcut { registerFavoriteShortcuts() }
         syncMenuChecks()
         settings.model.preferencesChanged(preferences.value)
     }
@@ -820,8 +846,30 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.overlay.toggle()
         }
         for item in openItems { item.title = openTitle }
+        registerFavoriteShortcuts()
         settings.model.shortcutRegistered = hotKey != nil
         return hotKey != nil
+    }
+
+    private func registerFavoriteShortcuts() {
+        favoriteHotKeys.forEach { $0.unregister() }
+        favoriteHotKeys = []
+        settings.model.favoriteShortcutProblems = []
+        guard preferences.value.favoriteShortcutsEnabled else { return }
+        let codes: [UInt32] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
+        let modifiers = KeyShortcut.control | KeyShortcut.option
+        for (index, favorite) in preferences.value.favoriteApps.prefix(9).enumerated() {
+            let main = preferences.value.shortcut
+            guard !(main.keyCode == codes[index] && main.modifiers == modifiers),
+                  !GlobalHotKey.systemConflict(keyCode: codes[index], modifiers: modifiers),
+                  let key = GlobalHotKey(keyCode: codes[index], modifiers: modifiers, action: { [weak self] in
+                      self?.overlay.openFavorite(favorite.id)
+                  }) else {
+                settings.model.favoriteShortcutProblems.append("⌃⌥\(index + 1) is unavailable for \(settings.model.appName(favorite.id)).")
+                continue
+            }
+            favoriteHotKeys.append(key)
+        }
     }
 
     private var openTitle: String {

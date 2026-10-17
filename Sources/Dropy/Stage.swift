@@ -31,6 +31,9 @@ final class Stage {
 
     private var display: NSObject?
     private(set) var displayID: CGDirectDisplayID?
+    /// Includes a Stage still being announced/removed by WindowServer. Keeping its
+    /// ID after removal prevents a late NSScreen notification treating it as hardware.
+    private(set) var ownedDisplayIDs: Set<CGDirectDisplayID> = []
     private var curtain: NSPanel?
     private var barrier: CFMachPort?
     private var barrierSource: CFRunLoopSource?
@@ -113,6 +116,7 @@ final class Stage {
         }) else { throw Failure.refused }
         display = object
         let id = DropyStageDisplayID(object)
+        ownedDisplayIDs.insert(id)
         // macOS reports a new display asynchronously; once it took over 3 s (spike S1).
         // Wait for the report rather than assume.
         for _ in 0..<160 {
@@ -222,7 +226,7 @@ final class Stage {
     /// corner) is put back on the nearest real display, unless Live mode handed it over.
     private func installBarrier() {
         let mask = (1 << CGEventType.mouseMoved.rawValue) | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
+            | (1 << CGEventType.rightMouseDragged.rawValue) | (1 << CGEventType.otherMouseDragged.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
             let owner = Unmanaged<Stage>.fromOpaque(context).takeUnretainedValue()
