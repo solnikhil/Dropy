@@ -31,8 +31,8 @@ swiftc -swift-version 6 $optimization -I "$build_dir" -L "$build_dir" -lDropyCor
 cp "$build_dir/libDropyCore.dylib" "$app_dir/Contents/Frameworks/"
 cp "$repo_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 mkdir -p "$app_dir/Contents/Resources"
-# Regenerate with `swift Scripts/make-icon.swift`.
-cp "$repo_dir/Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
+# Generate from the current brand artwork on every build; never ship a stale icon.
+swift "$repo_dir/Scripts/make-icon.swift" --output "$app_dir/Contents/Resources/AppIcon.icns" >/dev/null
 # Sign with a real identity when one exists: macOS ties Screen Recording and
 # Accessibility to the designated requirement. An ad-hoc signature's requirement is
 # the build's hash, so every rebuild was a new app and lost both permissions while
