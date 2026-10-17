@@ -12,6 +12,7 @@ Recovery now covers display scale/topology transitions and session resume, and L
 
 ## What works today
 
+- **Pinned monitoring.** Use the pin in the overlay’s top bar to keep a view-only monitor visible while working in other apps or switching desktops. A docked source is restored before capture begins. Unpin to return to normal interaction and dismissal; Escape or the global shortcut closes either mode. Pinning lasts until the overlay closes. Screen Recording permission is required, and the existing video-player capture guard still applies. Mission Control, screen lock, sleep and display reconfiguration close the monitor.
 - **Signed automatic updates.** Sparkle downloads, verifies and installs updates, with manual checks and automatic check/download controls in Settings › Updates. A reachable signed update channel still needs to be configured; the private source repository is not a public download channel. See [update configuration and publishing](docs/UPDATES.md).
 
 - **First-launch setup.** A four-step tour introduces Dropy, explains Accessibility and Screen Recording, lets you choose your shortcut, and offers a sample-content demo on your screen. Permission requests happen only when you choose Allow Access. Closing the tour saves your place; finishing or choosing Set Up Later stops automatic presentation. Reopen it from **Help › Setup…** or the menu-bar menu. Development launches can use `--onboarding`; benchmark/debug and explicit Settings/Studio launches skip automatic onboarding.

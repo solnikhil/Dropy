@@ -4,6 +4,8 @@ import CoreGraphics
 /// native point size; large sources scale down proportionally. Expand uses the display.
 public struct WorkspaceLayout: Equatable, Sendable {
     public static let appSwitcherWidth: CGFloat = 40
+    public static let trailingControlsWidth: CGFloat = 60
+    public static let controlWingWidth: CGFloat = max(appSwitcherWidth, trailingControlsWidth)
     public static let topControlInset: CGFloat = 10
     public static let contentInset: CGFloat = 8
     public static let bottomInset: CGFloat = 8
@@ -26,9 +28,12 @@ public struct WorkspaceLayout: Equatable, Sendable {
         let fit = min(max(1, widthLimit - 2 * contentInset) / sourceWidth, heightLimit / sourceHeight)
         let scale = max(0.001, expanded ? fit : min(1, fit))
         let image = CGSize(width: sourceWidth * scale, height: sourceHeight * scale)
-        let controls = 2 * (appSwitcherWidth + topControlInset + housingControlGap)
+        let controls = 2 * (controlWingWidth + topControlInset + housingControlGap)
         let width = min(widthLimit, max(notch.width + controls, image.width + 2 * contentInset))
         let size = CGSize(width: width, height: image.height + clearance + bottomInset)
-        return WorkspaceLayout(size: size, preview: preview(in: size, notch: notch))
+        // The controls may require a wider body than the image. Center the image
+        // without stretching a narrow source to fill that extra room.
+        return WorkspaceLayout(size: size, preview: CGRect(x: (width - image.width) / 2,
+            y: bottomInset, width: image.width, height: image.height))
     }
 }

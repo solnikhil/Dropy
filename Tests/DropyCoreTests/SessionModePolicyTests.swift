@@ -9,6 +9,25 @@ final class SessionModePolicyTests: XCTestCase {
                                                       fullScreenInFront: fullScreen, stageAvailable: stage))
     }
 
+    func testPinningAlwaysMonitorsWithoutOwningTheSourceWindow() {
+        for interaction in [InteractionMode.fullApp, .previewOnly] {
+            for trusted in [true, false] {
+                for fullScreen in [true, false] {
+                    for stage in [true, false] {
+                        var conditions = SessionConditions(interaction: interaction, accessibilityTrusted: trusted,
+                            fullScreenInFront: fullScreen, stageAvailable: stage, isPinned: true)
+                        XCTAssertEqual(SessionModePolicy.mode(for: conditions), .preview)
+                        XCTAssertEqual(SessionModePolicy.previewNote(for: conditions), "Pinned · View only")
+                        conditions.isPinned = false
+                        if interaction == .fullApp && trusted && !fullScreen {
+                            XCTAssertEqual(SessionModePolicy.mode(for: conditions), .native)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     func testFullAppDocksTheRealWindow() {
         XCTAssertEqual(mode(), .native)
         XCTAssertEqual(mode(stage: true), .native, "the Stage changes where a window waits, not how it is used")
