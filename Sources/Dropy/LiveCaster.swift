@@ -3,11 +3,12 @@ import CoreMedia
 import DropyCore
 import ScreenCaptureKit
 
-/// Live mode's stream: the region of the Stage where the window is, captured as a
-/// display region rather than a single window, so the app's menus, popovers and
-/// sheets that open over the window are in the picture too. Dropy's own windows are
-/// excluded. The stream lives exactly as long as one Live session: a forgotten
-/// stream keeps the window server busy.
+/// Live mode's stream: the whole Stage, one to one, with only the windows on it that
+/// belong to apps (the docked app's window and its menus, popovers and sheets, and
+/// system panels it opens such as input-method candidates). The Stage's desktop, its
+/// menu bar and Dropy's own windows are left out, on a clear background, so the mirror
+/// over the person's display shows the app exactly where it is. The stream lives
+/// exactly as long as one Live session: a forgotten stream keeps the window server busy.
 @MainActor
 final class LiveCaster {
     enum Failure: Error { case stageNotCapturable }
@@ -17,9 +18,11 @@ final class LiveCaster {
     private var recorder: CaptureMetricsRecorder?
     private var observer: StreamStopObserver?
     private var requestID = UUID()
+    func benchmarkSnapshot() -> [String: Any]? { recorder?.benchmarkSnapshot() }
 
-    /// Streams `region` (points, relative to the Stage's top-left) into `renderer`.
-    func start(stage: CGDirectDisplayID, region: CGRect, windowID: UInt32, renderer: MetalFrameView,
+    /// Streams the Stage `stage` (`size` in points) into `renderer`, showing the app
+    /// with `appProcess` and floating surfaces (`PointerHandoff.shows`).
+    func start(stage: CGDirectDisplayID, size: CGSize, windowID: UInt32, appProcess: Int32, renderer: MetalFrameView,
                refreshRate: Int, onUnexpectedStop: @escaping @MainActor (Error) -> Void) async throws {
         let stopping = stop(reason: "replaced")
         let request = requestID
@@ -31,24 +34,34 @@ final class LiveCaster {
         guard let display = content.displays.first(where: { $0.displayID == stage }) else {
             throw Failure.stageNotCapturable
         }
-        let dropy = content.applications.filter { $0.processID == getpid() }
-        let filter = SCContentFilter(display: display, excludingApplications: dropy, exceptingWindows: [])
+        // Left out once at the start: windows created later (menus, popovers) are the
+        // app's and stay in. The desktop, menu bar, Dropy's curtain and other apps'
+        // windows waiting on the Stage to go home are all there before the stream starts.
+        let stageBounds = CGDisplayBounds(stage)
+        let excluded = content.windows.filter { window in
+            let processID = window.owningApplication?.processID ?? 0
+            if processID == getpid() { return true }
+            guard window.frame.intersects(stageBounds) else { return false }
+            return !PointerHandoff.shows(.init(bounds: window.frame, layer: window.windowLayer, processID: processID),
+                                         appProcess: appProcess)
+        }
+        let filter = SCContentFilter(display: display, excludingWindows: excluded)
         let configuration = SCStreamConfiguration()
         let scale = renderer.window?.backingScaleFactor ?? 2
-        configuration.sourceRect = region
-        configuration.width = max(64, Int(region.width * scale))
-        configuration.height = max(64, Int(region.height * scale))
+        configuration.width = max(64, Int(size.width * scale))
+        configuration.height = max(64, Int(size.height * scale))
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        configuration.backgroundColor = .clear
         // Full rate while the person uses the app: the idle downshift of the preview
         // would sit on the input path (BENCHMARK, idle trace).
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(30, refreshRate)))
-        configuration.queueDepth = 4
+        configuration.queueDepth = 3
         configuration.capturesAudio = false
         // Dropy draws its own cursor at once; a captured one would lag a frame or two.
         configuration.showsCursor = false
         let recorder = CaptureMetricsRecorder(windowID: windowID, requestedAt: requestedAt)
         let mailbox = FrameMailbox(renderer: renderer, metrics: recorder) { _, _ in }
-        mailbox.setGeometry(CaptureGeometry(windowID: windowID, windowSize: region.size,
+        mailbox.setGeometry(CaptureGeometry(windowID: windowID, windowSize: size,
                                             pixelSize: CGSize(width: configuration.width, height: configuration.height)))
         let observer = StreamStopObserver { [weak self] error in
             Task { @MainActor [weak self] in
@@ -75,7 +88,7 @@ final class LiveCaster {
                 throw CancellationError()
             }
             recorder.startReturned()
-            NSLog("Dropy live: streaming %.0fx%.0f from the Stage", region.width, region.height)
+            NSLog("Dropy live: streaming the Stage %.0fx%.0f, %ld windows left out", size.width, size.height, excluded.count)
         } catch {
             mailbox.invalidate()
             recorder.finish(reason: "startFailed(\((error as NSError).code))")

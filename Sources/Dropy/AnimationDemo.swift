@@ -1,9 +1,10 @@
 import AppKit
 import DropyCore
 
-/// Plays an animation on the notch with stand-in content: opening, a resize, and
-/// closing, with the overlay's own outline and content code. The Animation Studio's
-/// "Play on Notch" and `Dropy animation play` use it. Nothing is captured or docked.
+/// Plays an animation on the notch (or wherever the overlay opens from) with stand-in
+/// content: opening, a resize, and closing, with the overlay's own outline and content
+/// code. The Animation Studio's "Play on Notch" and `Dropy animation play` use it.
+/// Nothing is captured or docked.
 @MainActor
 final class AnimationDemo {
     /// The overlay's two sizes in the demo: the window list, then a chosen window.
@@ -19,17 +20,22 @@ final class AnimationDemo {
     /// Plays `animation` `slowdown` times slower than real time. Returns how long it
     /// takes in seconds.
     @discardableResult
-    func play(_ animation: DropyAnimation, slowdown: Double = 1) -> TimeInterval {
+    func play(_ animation: DropyAnimation, slowdown: Double = 1, at position: OverlayPosition = .notch) -> TimeInterval {
         guard let slowdown = AnimationPlayback.slowdown(slowdown) else { return 0 }
         stop()
-        guard let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else { return 0 }
+        let screen = position == .notch
+            ? NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main
+            : NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
+        guard let screen else { return 0 }
         let token = UUID()
         generation = token
-        let notch = OverlayController.notchSize(on: screen)
+        let notch = position == .notch ? OverlayController.notchSize(on: screen) : nil
         let margin = NotchMorph.overshootMargin(for: Self.secondSize, reach: animation.morph.reach)
-        let size = CGSize(width: Self.secondSize.width + 2 * margin, height: Self.secondSize.height + margin)
-        let frame = OverlayGeometry.pixelAligned(CGRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height,
-                                                        width: size.width, height: size.height),
+        // Both bodies on screen, then the panel around the larger one.
+        let screenBody = { (size: CGSize) in position.body(size: size, screen: screen.frame, visible: screen.visibleFrame) }
+        let frame = OverlayGeometry.pixelAligned(position.canvas(around: screenBody(Self.secondSize).union(screenBody(Self.firstSize)),
+                                                                 margin: margin, screen: screen.frame,
+                                                                 visible: screen.visibleFrame),
                                                  scale: screen.backingScaleFactor)
         let panel = OverlayPanel.make(contentRect: frame)
         panel.ignoresMouseEvents = true
@@ -40,18 +46,18 @@ final class AnimationDemo {
         let backdrop = MorphBackdropView(frame: root.bounds)
         backdrop.slowdown = slowdown
         root.addSubview(backdrop)
-        func body(_ size: CGSize) -> CGRect {
-            CGRect(x: (frame.width - size.width) / 2, y: frame.height - size.height, width: size.width, height: size.height)
-        }
+        func body(_ size: CGSize) -> CGRect { screenBody(size).offsetBy(dx: -frame.minX, dy: -frame.minY) }
         let content = PreviewContentView(frame: body(Self.firstSize), notchHeight: notch?.height ?? 32)
         root.addSubview(content)
-        let closed = NotchShape.notch(size: notch ?? CGSize(width: 180, height: NSStatusBar.system.thickness), in: frame.size)
+        let closed = position == .notch
+            ? NotchShape.notch(size: notch ?? CGSize(width: 180, height: NSStatusBar.system.thickness), in: frame.size)
+            : NotchShape.nub(for: body(Self.firstSize), at: position)
         panel.orderFrontRegardless()
         self.panel = panel
 
-        let open = backdrop.morph(from: closed, to: .open(body: body(Self.firstSize)), motion: animation.morph.open,
-                                  clipping: content)
-        OverlayMotion.revealContent(content, motion: animation.content, slowdown: slowdown)
+        let open = backdrop.morph(from: closed, to: .open(body: body(Self.firstSize), at: position),
+                                  motion: animation.morph.open, clipping: content)
+        OverlayMotion.revealContent(content, motion: animation.content, slowdown: slowdown, position: position)
         if notch == nil {
             panel.alphaValue = 0
             NSAnimationContext.runAnimationGroup { $0.duration = 0.25 * slowdown; panel.animator().alphaValue = 1 }
@@ -61,15 +67,17 @@ final class AnimationDemo {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds((open + Self.holdOpen) * slowdown))
             guard let self, self.generation == token else { return }
-            let start = backdrop.visibleShape ?? .open(body: body(Self.firstSize))
+            let start = backdrop.visibleShape ?? .open(body: body(Self.firstSize), at: position)
             content.frame = body(Self.secondSize)
-            backdrop.morph(from: start, to: .open(body: body(Self.secondSize)), motion: animation.morph.resize, clipping: content)
+            backdrop.morph(from: start, to: .open(body: body(Self.secondSize), at: position),
+                           motion: animation.morph.resize, clipping: content)
             OverlayMotion.relayoutContent(content, motion: animation.content)
             try? await Task.sleep(for: .seconds((resize + Self.holdResized) * slowdown))
             guard self.generation == token else { return }
-            OverlayMotion.hideContent(content, motion: animation.content)
-            let duration = backdrop.morph(from: backdrop.visibleShape ?? .open(body: body(Self.secondSize)), to: closed,
-                                          motion: animation.morph.close, clipping: content)
+            OverlayMotion.hideContent(content, motion: animation.content, position: position)
+            let end = position == .notch ? closed : NotchShape.nub(for: body(Self.secondSize), at: position)
+            let duration = backdrop.morph(from: backdrop.visibleShape ?? .open(body: body(Self.secondSize), at: position),
+                                          to: end, motion: animation.morph.close, clipping: content)
             let fadeStart = notch == nil ? 0 : duration * 0.55
             OverlayMotion.fadeOut(panel, after: fadeStart, over: duration - fadeStart, slowdown: slowdown)
             try? await Task.sleep(for: .seconds(duration * slowdown))
@@ -129,7 +137,7 @@ enum PreviewContentLayout {
 
     static let bar = Kind(color: NSColor(white: 1, alpha: 0.16).cgColor, radius: 5)
     static let row = Kind(color: NSColor(white: 1, alpha: 0.1).cgColor, radius: 9)
-    static let picture = Kind(color: NSColor(srgbRed: 0.27, green: 0.42, blue: 0.68, alpha: 1).cgColor, radius: 12)
+    static let picture = Kind(color: NSColor(srgbRed: 0.17, green: 0.18, blue: 0.21, alpha: 1).cgColor, radius: 12)
     /// Top to bottom: two header pills, four rows, the picture.
     static let kinds: [Kind] = [bar, bar, row, row, row, row, picture]
 

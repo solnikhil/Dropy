@@ -66,13 +66,24 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 "$build_dir/PlacementJournalTests"
 
 # AppKit-level regression checks for the overlay panel (no window is shown).
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/UpdateChecks" \
+  "$repo_dir/Tests/LocalUpdateCheck.swift" "$repo_dir/Sources/Dropy/ReleaseUpdateClient.swift" \
+  "$repo_dir/Sources/Dropy/UpdateChecker.swift"
+"$build_dir/UpdateChecks"
+
+swiftc -swift-version 6 -o "$build_dir/OnboardingChecks" \
+  "$repo_dir/Tests/LocalOnboardingCheck.swift" "$repo_dir/Sources/Dropy/OnboardingProgress.swift"
+"$build_dir/OnboardingChecks"
+
 swiftc -swift-version 6 -o "$build_dir/OverlayPanelChecks" \
   "$repo_dir/Tests/LocalOverlayPanelCheck.swift" "$repo_dir/Sources/Dropy/OverlayPanel.swift"
 "$build_dir/OverlayPanelChecks"
 
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/WorkspaceChecks" \
-  "$repo_dir/Tests/LocalWorkspaceCheck.swift" "$repo_dir/Sources/Dropy/OverlayWorkspaceView.swift"
+  "$repo_dir/Tests/LocalWorkspaceCheck.swift" "$repo_dir/Sources/Dropy/OverlayWorkspaceView.swift" \
+  "$repo_dir/Sources/Dropy/DropyAppearance.swift"
 "$build_dir/WorkspaceChecks"
 
 # Deterministic close/reopen, interrupted adoption and Live-to-preview ownership.
@@ -134,3 +145,8 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 
 # Isolation of third-party apps under test (throwaway tree; no app is launched).
 "$repo_dir/Tests/LocalAppIsolationCheck.zsh"
+
+# Opt-in benchmark IPC: real notification/reply and malformed command rejection, no UI.
+swiftc -swift-version 6 -o "$build_dir/BenchmarkControlChecks" \
+  "$repo_dir/Tests/LocalBenchmarkControlCheck.swift" "$repo_dir/Sources/Dropy/BenchmarkControl.swift"
+"$build_dir/BenchmarkControlChecks"

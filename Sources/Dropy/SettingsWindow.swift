@@ -18,6 +18,11 @@ final class SettingsModel: ObservableObject {
     @Published var cursorRestrictionStatus = "Off"
     @Published private(set) var isRecordingShortcut = false
     @Published private(set) var shortcutProblem: String?
+    /// Why the Dock could not be hidden, if it could not.
+    @Published private(set) var dockProblem: String?
+    /// The Dock's edge, read when Settings shows the position choice.
+    var dockSide: DockSide { DockAutoHide.side }
+    @Published var favoriteShortcutProblems: [String] = []
     @Published var isChoosingApp = false
     @Published private(set) var catalog: [CatalogApp] = []
     @Published private(set) var isLoadingApps = false
@@ -42,6 +47,10 @@ final class SettingsModel: ObservableObject {
         didSet { animationsObservation = animations?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() } }
     }
     private var animationsObservation: AnyCancellable?
+    var updater: UpdateChecker? {
+        didSet { updaterObservation = updater?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() } }
+    }
+    private var updaterObservation: AnyCancellable?
     /// Plays an animation on the notch; returns how long it takes.
     var playOnNotch: ((DropyAnimation, Double) -> TimeInterval)?
     /// The animation in use, and why when it is not the one chosen.
@@ -324,6 +333,7 @@ final class SettingsModel: ObservableObject {
     }
 
     func shortcutRejected(_ problem: String) { shortcutProblem = problem }
+    func dockProblemChanged(_ problem: String?) { dockProblem = problem }
 
     private func recorded(_ event: NSEvent) {
         if event.keyCode == 53 {
@@ -423,12 +433,12 @@ final class SettingsModel: ObservableObject {
 
     func pin(_ bundleIdentifier: String) {
         isChoosingApp = false
-        change { $0.pinnedBundleIdentifier = bundleIdentifier }
+        change { $0.addFavorite(bundleIdentifier) }
     }
 
     func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .credits: NSAttributedString(string: "Your apps, near the notch.\nFree and MIT-licensed."),
+            .credits: NSAttributedString(string: "macOS app workspace.\nFree and MIT-licensed."),
         ])
     }
 
@@ -516,11 +526,35 @@ final class SettingsModel: ObservableObject {
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url,
                   let bundleID = Bundle(url: url)?.bundleIdentifier else { return }
-            MainActor.assumeIsolated { self?.change { $0.pinnedBundleIdentifier = bundleID } }
+            MainActor.assumeIsolated { self?.change { $0.addFavorite(bundleID) } }
         }
     }
 
     func unpin() { change { $0.pinnedBundleIdentifier = nil } }
+
+    func removeFavorite(_ id: String) { change { $0.removeFavorite(id) } }
+    func makeDefault(_ id: String) { change { $0.pinnedBundleIdentifier = id } }
+    func forgetWindows() { change { $0.rememberedWindows = [] } }
+    func favoriteSize(_ id: String, _ size: SizePreset?) {
+        change {
+            $0.favorites = $0.favoriteApps
+            if let index = $0.favorites.firstIndex(where: { $0.id == id }) { $0.favorites[index].sizePreset = size }
+        }
+    }
+    func favoritePosition(_ id: String, _ position: OverlayPosition?) {
+        change {
+            $0.favorites = $0.favoriteApps
+            if let index = $0.favorites.firstIndex(where: { $0.id == id }) { $0.favorites[index].position = position }
+        }
+    }
+    func moveFavorite(_ id: String, by offset: Int) {
+        change {
+            $0.favorites = $0.favoriteApps
+            guard let index = $0.favorites.firstIndex(where: { $0.id == id }),
+                  $0.favorites.indices.contains(index + offset) else { return }
+            $0.favorites.swapAt(index, index + offset)
+        }
+    }
 
     /// macOS applies a new Screen Recording grant only to a fresh process.
     func relaunch() {
@@ -617,7 +651,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     var isVisible: Bool { window?.isVisible ?? false }
 
     func show() {
-        let saved = UserDefaults.standard.string(forKey: "NSWindow Frame DropySettings3") != nil
+        let saved = UserDefaults.standard.string(forKey: "NSWindow Frame \(Self.frameName)") != nil
         let created = window == nil
         let window = self.window ?? makeWindow()
         self.window = window
@@ -628,38 +662,32 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    static let contentSize = CGSize(width: 780, height: 640)
+    static let contentSize = CGSize(width: 920, height: 620)
+    private static let frameName = "DropySettings5"
 
     private func makeWindow() -> NSWindow {
         let host = NSHostingController(rootView: SettingsView(model: model))
-        // The window keeps one size; SwiftUI content does not resize it.
+        // AppKit owns the window size; content adapts without resizing the window.
         host.sizingOptions = []
         let window = NSWindow(contentViewController: host)
         window.title = "Settings"
-        // Not resizable: one fixed size, like System Settings. Zoom and full screen
-        // are unavailable as a result.
-        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.collectionBehavior.insert(.fullScreenNone)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        // Transparent so the sidebar's glass shows what is behind the window. The
-        // content column paints its own opaque gray.
-        window.isOpaque = false
-        window.backgroundColor = .clear
+        window.isOpaque = true
+        window.backgroundColor = DropyAppearance.background
         // An empty unified toolbar gives the taller title area, which centers the
         // traffic lights beside the Back and Forward capsule drawn by SwiftUI.
         let toolbar = NSToolbar(identifier: "DropySettings")
-        toolbar.showsBaselineSeparator = false
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.titlebarSeparatorStyle = .none
-        // Only the position is remembered: the fixed size is applied after the saved
-        // frame is restored, so a frame saved while the window was resizable is ignored.
-        window.setFrameAutosaveName("DropySettings3")
         window.setContentSize(Self.contentSize)
-        window.standardWindowButton(.zoomButton)?.isEnabled = false
+        window.contentMinSize = CGSize(width: 800, height: 560)
+        window.setFrameAutosaveName(Self.frameName)
         window.delegate = self
         return window
     }

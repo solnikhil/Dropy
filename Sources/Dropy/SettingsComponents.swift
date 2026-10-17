@@ -2,150 +2,83 @@ import AppKit
 import SwiftUI
 import DropyCore
 
-/// Colors for the settings window. A flat neutral gray fills the content column and
-/// the sidebar is Liquid Glass; every surface on top is a translucent tint of the label
-/// color, so light, dark and increased contrast follow from the system appearance.
+/// SwiftUI adapters for the shared semantic palette, plus interaction surface tints.
 enum SettingsTheme {
-    static let accent = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.94, green: 0.36, blue: 0.36, alpha: 1)
-            : NSColor(srgbRed: 0.88, green: 0.27, blue: 0.29, alpha: 1)
-    })
-
-    static let background = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.155, green: 0.155, blue: 0.162, alpha: 1)
-            : NSColor(srgbRed: 0.940, green: 0.940, blue: 0.945, alpha: 1)
-    })
-
-    /// The sidebar when Reduce Transparency replaces its glass: one step lighter than
-    /// the window in dark mode and one step darker in light mode.
-    static let sidebar = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.190, green: 0.190, blue: 0.198, alpha: 1)
-            : NSColor(srgbRed: 0.905, green: 0.905, blue: 0.912, alpha: 1)
-    })
-
-    static let badge = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.45, green: 0.66, blue: 1.0, alpha: 1)
-            : NSColor(srgbRed: 0.10, green: 0.42, blue: 0.90, alpha: 1)
-    })
-
-    static let card = Color.primary.opacity(0.045)
-    static let separator = Color.primary.opacity(0.08)
-    static let control = Color.primary.opacity(0.08)
-    static let controlHover = Color.primary.opacity(0.13)
-    static let selection = Color.primary.opacity(0.08)
+    static let accent = Color(nsColor: DropyAppearance.accent)
+    static let background = Color(nsColor: DropyAppearance.background)
+    static let sidebar = Color(nsColor: DropyAppearance.sidebar)
+    static let card = Color(nsColor: DropyAppearance.card)
+    static let badge = Color(nsColor: DropyAppearance.information)
+    static let text = Color(nsColor: DropyAppearance.text)
+    static let secondaryText = Color(nsColor: DropyAppearance.secondaryText)
+    static let separator = Color.primary.opacity(0.06)
+    static let control = Color(nsColor: DropyAppearance.control)
+    static let controlHover = Color(nsColor: DropyAppearance.controlHover)
+    static let selection = Color(nsColor: DropyAppearance.selection)
     static let iconTile = Color(white: 0.30)
 }
 
 /// The one type scale and set of dimensions every settings view draws from, so the
 /// sidebar, cards, rows and controls line up with each other.
 enum SettingsMetrics {
-    // Type: macOS's 13-point body with an 11-point secondary line.
+    // Type: a 13-point body with a readable 12-point supporting line.
     static let body = Font.system(size: 13)
     static let bodyEmphasis = Font.system(size: 13, weight: .medium)
     static let header = Font.system(size: 13, weight: .semibold)
-    static let detail = Font.system(size: 11)
+    static let detail = Font.system(size: 12)
     static let badge = Font.system(size: 10, weight: .medium)
 
     // Controls: every button, menu and choice is the same height and corner.
-    static let controlHeight: CGFloat = 24
-    static let controlRadius: CGFloat = 6
+    static let controlHeight: CGFloat = 28
+    static let controlRadius: CGFloat = 8
     static let controlSpacing: CGFloat = 8
 
     // Cards and rows.
     static let cardRadius: CGFloat = 12
     static let cardSpacing: CGFloat = 20
-    static let rowHeight: CGFloat = 40
-    static let rowInset: CGFloat = 12
-    static let rowVerticalPadding: CGFloat = 8
+    static let rowHeight: CGFloat = 44
+    static let rowInset: CGFloat = 16
+    static let rowVerticalPadding: CGFloat = 9
 
     // Window layout.
     static let titleBarHeight: CGFloat = 52
-    static let pageInset: CGFloat = 20
+    static let pageInset: CGFloat = 28
     static let iconSize: CGFloat = 20
 
     // Sidebar.
     static let sidebarInset: CGFloat = 10
-    static let sidebarRowHeight: CGFloat = 28
+    static let sidebarRowHeight: CGFloat = 32
     static let sidebarWidth: ClosedRange<CGFloat> = 180...320
-    static let sidebarDefaultWidth: CGFloat = 220
+    static let sidebarDefaultWidth: CGFloat = 208
 }
 
-/// The sidebar's Liquid Glass under a gray layer, so the desktop is only a faint hint.
-/// The window is transparent behind the sidebar, so the glass refracts whatever is
-/// behind it. Before macOS 26 it falls back to the frosted sidebar material; with
-/// Reduce Transparency it is a solid surface.
-struct SettingsSidebarGlass: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        if reduceTransparency {
-            SettingsTheme.sidebar
-        } else {
-            SidebarGlassView(dark: colorScheme == .dark)
-                // The glass tint alone lets the wallpaper through almost unchanged;
-                // this gray layer leaves only a faint hint of it.
-                .overlay {
-                    (colorScheme == .dark ? Color(white: 0.13).opacity(0.8) : Color(white: 0.93).opacity(0.75))
-                        .allowsHitTesting(false)
-                }
-        }
-    }
+/// Opaque by design: the navigation surface is stable against every wallpaper and
+/// does not require a separate Reduce Transparency fallback.
+struct SettingsSidebarSurface: View {
+    var body: some View { SettingsTheme.sidebar }
 }
 
-/// Frosted glass with a dark tint, so the desktop shows only as muted color.
-private struct SidebarGlassView: NSViewRepresentable {
-    let dark: Bool
-
-    private var tint: NSColor {
-        dark ? NSColor(white: 0.08, alpha: 0.42) : NSColor(white: 0.25, alpha: 0.14)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            // Regular glass frosts the desktop; clear glass showed too much of it.
-            glass.style = .regular
-            glass.cornerRadius = 0
-            glass.tintColor = tint
-            return glass
-        }
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
-            glass.tintColor = tint
-        }
-    }
-}
-
-/// A scrolling column of cards. Pages carry no header of their own: the selected
-/// sidebar row already names the page.
+/// A centered, bounded reading column. The page heading follows its navigation context.
 struct SettingsPage<Content: View>: View {
     @ViewBuilder var content: Content
+    @Environment(\.settingsPane) private var pane
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsMetrics.cardSpacing) {
+                if let pane { SettingsPageHeading(pane: pane) }
                 content
             }
             .padding(.horizontal, SettingsMetrics.pageInset)
             .padding(.bottom, SettingsMetrics.pageInset)
-            .frame(maxWidth: 720, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+            .frame(maxWidth: 800, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .scrollIndicators(.automatic)
         .toggleStyle(.switch)
         .tint(SettingsTheme.accent)
+        .foregroundStyle(SettingsTheme.text)
     }
 }
 
@@ -156,6 +89,7 @@ struct SettingsCard<Content: View>: View {
     var badge: String?
     var footer: String?
     @ViewBuilder var content: Content
+    @Environment(\.colorSchemeContrast) private var contrast
 
     init(_ title: String? = nil, badge: String? = nil, footer: String? = nil,
          @ViewBuilder content: () -> Content) {
@@ -179,6 +113,11 @@ struct SettingsCard<Content: View>: View {
             DividedRows { content }
                 .background(SettingsTheme.card,
                             in: RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.045), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
             if let footer {
                 SettingsFootnote(footer)
                     .padding(.horizontal, SettingsMetrics.rowInset).padding(.top, 8)
@@ -273,7 +212,7 @@ struct SettingsToggleRow: View {
             SettingsLabel(title, detail: detail, badge: badge)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .controlSize(.mini)
+        .controlSize(.small)
         .settingsRow()
         .accessibilityLabel(badge.map { "\(title), \($0)" } ?? title)
         .accessibilityHint(detail ?? "")
@@ -292,13 +231,13 @@ struct SettingsLabel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: SettingsMetrics.controlSpacing) {
-                Text(title).font(SettingsMetrics.body)
+                Text(title).font(SettingsMetrics.bodyEmphasis)
                 if let badge { SettingsBadge(badge) }
             }
             if let detail {
-                Text(detail).font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                Text(detail).font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -311,7 +250,7 @@ struct SettingsValue: View {
     init(_ text: String) { self.text = text }
 
     var body: some View {
-        Text(text).font(SettingsMetrics.body.monospacedDigit()).foregroundStyle(.secondary)
+        Text(text).font(SettingsMetrics.body.monospacedDigit()).foregroundStyle(SettingsTheme.secondaryText)
     }
 }
 
@@ -328,7 +267,7 @@ struct SettingsFootnote: View {
     var body: some View {
         Text(text)
             .font(SettingsMetrics.detail)
-            .foregroundStyle(isError ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
+            .foregroundStyle(isError ? AnyShapeStyle(Color.red) : AnyShapeStyle(SettingsTheme.secondaryText))
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -360,7 +299,7 @@ struct SettingsGlyph: View {
     var body: some View {
         Image(systemName: symbol)
             .font(.system(size: 14))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(SettingsTheme.secondaryText)
             .frame(width: SettingsMetrics.iconSize)
             .accessibilityHidden(true)
     }
@@ -399,7 +338,7 @@ struct SettingsNotice<Accessory: View>: View {
             SettingsGlyph(symbol: symbol)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(SettingsMetrics.bodyEmphasis)
-                Text(detail).font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                Text(detail).font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: SettingsMetrics.rowInset)
@@ -439,15 +378,17 @@ private struct SettingsButtonBody: View {
         let shape = RoundedRectangle(cornerRadius: circular ? height / 2 : SettingsMetrics.controlRadius,
                                      style: .continuous)
         configuration.label
-            .font(SettingsMetrics.body)
+            .font(outlined ? SettingsMetrics.bodyEmphasis : SettingsMetrics.body)
+            .foregroundStyle(outlined ? SettingsTheme.accent : Color.primary)
             .lineLimit(1)
             .padding(.horizontal, circular ? 0 : 10)
             .frame(minWidth: circular ? height : nil, minHeight: height)
-            .background(hover.isHovered || configuration.isPressed ? SettingsTheme.controlHover : SettingsTheme.control,
+            .background(outlined ? SettingsTheme.accent.opacity(hover.isHovered ? 0.22 : 0.13)
+                        : hover.isHovered || configuration.isPressed ? SettingsTheme.controlHover : SettingsTheme.control,
                         in: shape)
             .overlay {
                 if outlined || contrast == .increased {
-                    shape.strokeBorder(Color.primary.opacity(outlined ? 0.22 : 0.4), lineWidth: 1)
+                    shape.strokeBorder(outlined ? SettingsTheme.accent.opacity(0.30) : Color.primary.opacity(0.4), lineWidth: 1)
                 }
             }
             .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
@@ -484,7 +425,7 @@ struct SettingsMenu<Value: Hashable>: View {
                 Text(options.first { $0.value == selection }?.title ?? "")
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTheme.secondaryText)
             }
         }
         .menuStyle(.button)
@@ -511,10 +452,10 @@ struct SettingsChoiceTiles<Value: Hashable>: View {
                 } label: {
                     Text(option.title)
                         .font(selected ? SettingsMetrics.bodyEmphasis : SettingsMetrics.body)
-                        .foregroundStyle(selected ? .primary : .secondary)
+                        .foregroundStyle(selected ? SettingsTheme.accent : SettingsTheme.secondaryText)
                         .padding(.horizontal, 10)
                         .frame(minWidth: SettingsMetrics.controlHeight, minHeight: SettingsMetrics.controlHeight)
-                        .background(selected ? SettingsTheme.control : .clear,
+                        .background(selected ? SettingsTheme.selection : .clear,
                                     in: RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius, style: .continuous))
                         .contentShape(Rectangle())
                 }
@@ -524,6 +465,8 @@ struct SettingsChoiceTiles<Value: Hashable>: View {
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
+        .padding(3)
+        .background(SettingsTheme.control.opacity(0.5), in: RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 3))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
     }
@@ -550,110 +493,132 @@ struct ShortcutButton: View {
     }
 }
 
-/// The overlay size choices as artwork tiles. The selected tile is in color and its
-/// caption sits on a capsule; the others are grayscale. Each tile shows a schematic
-/// window at the preset's relative size, never real window contents.
+/// Visual choices share the same schematic screen, type and selection treatment.
 struct OverlaySizeTiles: View {
     @Binding var selection: SizePreset
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(alignment: .top, spacing: SettingsMetrics.rowInset) {
-            ForEach(SizePreset.allCases, id: \.self) { preset in
-                let selected = selection == preset
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selection = preset }
-                } label: {
-                    VStack(spacing: SettingsMetrics.controlSpacing) {
-                        SizeArtwork(preset: preset, selected: selected)
-                        Text(preset.title)
-                            .font(selected ? SettingsMetrics.bodyEmphasis : SettingsMetrics.body)
-                            .padding(.horizontal, 10)
-                            .frame(minHeight: SettingsMetrics.controlHeight)
-                            .background(selected ? SettingsTheme.controlHover : .clear, in: Capsule())
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(preset.title)
-                .accessibilityAddTraits(selected ? .isSelected : [])
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(SizePreset.allCases, id: \.self) { preset in option(preset).frame(minWidth: 108) }
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                ForEach(SizePreset.allCases, id: \.self) { preset in option(preset) }
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Overlay size")
     }
+
+    private func option(_ preset: SizePreset) -> some View {
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { selection = preset }
+        } label: {
+            SettingsVisualChoice(title: preset.title, subtitle: dimensions(preset), selected: selection == preset) {
+                WorkspaceIllustration(preset: preset)
+            }
+        }
+        .buttonStyle(SettingsVisualChoiceStyle())
+        .accessibilityLabel(preset.title)
+        .accessibilityValue(dimensions(preset))
+        .accessibilityAddTraits(selection == preset ? .isSelected : [])
+    }
+
+    private func dimensions(_ preset: SizePreset) -> String {
+        if preset == .nativeSize { return "Window size" }
+        let size = preset.dimensions
+        return "\(Int(size.width)) × \(Int(size.height))"
+    }
 }
 
-private struct SizeArtwork: View {
-    let preset: SizePreset
-    let selected: Bool
-
-    /// Window size as a share of the tile.
-    private var scale: CGSize {
-        switch preset {
-        case .compact: CGSize(width: 0.42, height: 0.36)
-        case .medium: CGSize(width: 0.58, height: 0.5)
-        case .wide: CGSize(width: 0.76, height: 0.62)
-        case .nativeSize: CGSize(width: 0.5, height: 0.66)
-        }
-    }
+struct OverlayPositionTiles: View {
+    @Binding var selection: OverlayPosition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        GeometryReader { proxy in
-            let size = proxy.size
-            ZStack(alignment: .top) {
-                background
-                // The notch the overlay grows from.
-                UnevenRoundedRectangle(bottomLeadingRadius: 4, bottomTrailingRadius: 4)
-                    .fill(.black.opacity(0.85))
-                    .frame(width: size.width * 0.24, height: 8)
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(selected ? Color(red: 0.12, green: 0.10, blue: 0.36).opacity(0.85) : .black.opacity(0.55))
-                    .overlay(alignment: .topLeading) {
-                        Circle().fill(.white.opacity(0.35)).frame(width: 5, height: 5).padding(6)
-                    }
-                    .overlay(alignment: .bottomTrailing) {
-                        Capsule().fill(.white.opacity(selected ? 0.22 : 0.15))
-                            .frame(width: size.width * scale.width * 0.22, height: 5).padding(6)
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
-                    }
-                    .frame(width: size.width * scale.width, height: size.height * scale.height)
-                    .padding(.top, 8)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 8) {
+                ForEach(OverlayPosition.allCases, id: \.self) { position in option(position).frame(minWidth: 100) }
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(OverlayPosition.allCases, id: \.self) { position in option(position) }
             }
         }
-        .aspectRatio(1.7, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius - 2, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: SettingsMetrics.cardRadius - 2, style: .continuous)
-                .strokeBorder(.white.opacity(selected ? 0.18 : 0.08), lineWidth: 1)
-        }
-        .accessibilityHidden(true)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Open from")
     }
 
-    @ViewBuilder private var background: some View {
-        if selected {
-            ZStack {
-                LinearGradient(colors: [Color(red: 0.16, green: 0.12, blue: 0.62), Color(red: 0.36, green: 0.30, blue: 0.95)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                RadialGradient(colors: [Color(red: 0.55, green: 0.40, blue: 1).opacity(0.9), .clear],
-                               center: .topLeading, startRadius: 0, endRadius: 120)
-                RadialGradient(colors: [Color(red: 0.20, green: 0.55, blue: 1).opacity(0.8), .clear],
-                               center: .bottomTrailing, startRadius: 0, endRadius: 110)
-                RadialGradient(colors: [Color(red: 0.05, green: 0.04, blue: 0.30).opacity(0.9), .clear],
-                               center: UnitPoint(x: 0.45, y: 0.85), startRadius: 0, endRadius: 70)
-            }
-        } else {
-            ZStack {
-                LinearGradient(colors: [Color(white: 0.30), Color(white: 0.12)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                RadialGradient(colors: [Color(white: 0.55).opacity(0.8), .clear],
-                               center: UnitPoint(x: 0.85, y: 0.15), startRadius: 0, endRadius: 90)
-                RadialGradient(colors: [Color(white: 0.05).opacity(0.9), .clear],
-                               center: UnitPoint(x: 0.3, y: 0.8), startRadius: 0, endRadius: 80)
+    private func option(_ position: OverlayPosition) -> some View {
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { selection = position }
+        } label: {
+            SettingsVisualChoice(title: position.title, selected: selection == position) {
+                WorkspaceIllustration(position: position)
             }
         }
+        .buttonStyle(SettingsVisualChoiceStyle())
+        .accessibilityLabel(position.title)
+        .accessibilityAddTraits(selection == position ? .isSelected : [])
+    }
+}
+
+struct SettingsVisualChoice<Artwork: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    let selected: Bool
+    @ViewBuilder var artwork: Artwork
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            artwork
+                .aspectRatio(1.85, contentMode: .fit)
+                .opacity(selected ? 1 : 0.65)
+            HStack(spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(selected ? Color.primary : SettingsTheme.secondaryText)
+                    .lineLimit(1).minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11)).foregroundStyle(SettingsTheme.accent)
+                }
+            }
+            if let subtitle {
+                Text(subtitle).font(.system(size: 11).monospacedDigit()).foregroundStyle(SettingsTheme.secondaryText)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 26, alignment: .topLeading)
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(selected ? SettingsTheme.selection : .clear,
+                    in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(selected ? SettingsTheme.accent.opacity(0.35)
+                              : Color.primary.opacity(contrast == .increased ? 0.35 : 0.075), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct SettingsVisualChoiceStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsVisualChoiceBody(configuration: configuration)
+    }
+}
+
+private struct SettingsVisualChoiceBody: View {
+    let configuration: ButtonStyleConfiguration
+    @StateObject private var hover = HoverState()
+
+    var body: some View {
+        configuration.label
+            .background(hover.isHovered ? SettingsTheme.control : .clear, in: RoundedRectangle(cornerRadius: 14))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .onHover { hover.isHovered = $0 }
     }
 }

@@ -31,6 +31,15 @@ public enum StageGeometry {
         CGPoint(x: stage.minX + margin, y: stage.minY + menuBarHeight + margin)
     }
 
+    /// Live mode: where a window shown at `rect` on `display` goes on the Stage so the
+    /// Stage mirrors that display one to one (same spot, same size). The Stage's own menu
+    /// bar keeps windows below it; a window that would reach under it moves down, and the
+    /// hand-off then uses the offset the window really has.
+    public static func mirrored(_ rect: CGRect, display: CGRect, stage: CGRect, menuBarHeight: CGFloat) -> CGRect {
+        let placed = rect.offsetBy(dx: stage.minX - display.minX, dy: stage.minY - display.minY)
+        return CGRect(origin: CGPoint(x: placed.minX, y: max(placed.minY, stage.minY + menuBarHeight)), size: rect.size)
+    }
+
     /// Maps `point` from rectangle `from` to the same relative spot in `to`.
     public static func map(_ point: CGPoint, from: CGRect, to: CGRect) -> CGPoint {
         guard from.width > 0, from.height > 0 else { return CGPoint(x: to.midX, y: to.midY) }

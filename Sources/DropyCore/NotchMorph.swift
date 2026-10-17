@@ -122,18 +122,38 @@ public enum NotchMorph {
     }
 
     /// The outline part way: width (and the ears) at `widthProgress`, height (and the
-    /// lower corners) at `heightProgress`. It stays centered and hangs from the top
-    /// edge; progress past 1 is the spring's overshoot.
+    /// lower corners) at `heightProgress`. It stays centered and attached to the
+    /// screen edge it grows from (at the notch it hangs from the top edge); progress
+    /// past 1 is the spring's overshoot. At a side edge "width" is the length along
+    /// the edge and "height" how far the outline reaches into the screen; in a corner
+    /// they are the horizontal and vertical size, with the corner fixed.
     public static func shape(from start: NotchShape, to end: NotchShape,
                              widthProgress p: Double, heightProgress q: Double) -> NotchShape {
         func mix(_ a: CGFloat, _ b: CGFloat, _ t: Double) -> CGFloat { a + (b - a) * CGFloat(t) }
-        let width = max(1, mix(start.body.width, end.body.width, p))
-        let height = max(1, mix(start.body.height, end.body.height, q))
-        let midX = mix(start.body.midX, end.body.midX, p)
-        let top = start.body.maxY
-        return NotchShape(body: CGRect(x: midX - width / 2, y: top - height, width: width, height: height),
+        let s = start.body, e = end.body
+        let body: CGRect
+        switch end.position {
+        case .notch:
+            let width = max(1, mix(s.width, e.width, p))
+            let height = max(1, mix(s.height, e.height, q))
+            let midX = mix(s.midX, e.midX, p)
+            body = CGRect(x: midX - width / 2, y: s.maxY - height, width: width, height: height)
+        case .left, .right:
+            let along = max(1, mix(s.height, e.height, p))
+            let depth = max(1, mix(s.width, e.width, q))
+            let midY = mix(s.midY, e.midY, p)
+            let x = end.position == .left ? s.minX : s.maxX - depth
+            body = CGRect(x: x, y: midY - along / 2, width: depth, height: along)
+        case .bottomLeft, .bottomRight:
+            let width = max(1, mix(s.width, e.width, p))
+            let height = max(1, mix(s.height, e.height, q))
+            let x = end.position == .bottomLeft ? s.minX : s.maxX - width
+            body = CGRect(x: x, y: s.minY, width: width, height: height)
+        }
+        return NotchShape(body: body,
                           bottomRadius: max(0, mix(start.bottomRadius, end.bottomRadius, q)),
-                          earRadius: max(0, mix(start.earRadius, end.earRadius, p)))
+                          earRadius: max(0, mix(start.earRadius, end.earRadius, p)),
+                          position: end.position)
     }
 
     /// Outlines sampled `framesPerSecond` times a second until both springs settle,
@@ -156,6 +176,18 @@ public enum NotchMorph {
             keyTimes.append(fraction)
         }
         return (shapes, keyTimes, duration)
+    }
+
+    /// Seconds into a morph after which every frame's body covers the end shape's body
+    /// to within `tolerance` points. A spring that overshoots gets there well before it
+    /// settles, because the rest of its travel is on the far side of the end, so a
+    /// window can move in beneath the outline that early.
+    public static func coverTime(shapes: [NotchShape], keyTimes: [Double], duration: TimeInterval,
+                                 tolerance: CGFloat = 1) -> TimeInterval {
+        guard let end = shapes.last?.body, shapes.count == keyTimes.count else { return duration }
+        let target = end.insetBy(dx: tolerance, dy: tolerance)
+        guard let short = shapes.lastIndex(where: { !$0.body.contains(target) }) else { return 0 }
+        return keyTimes[min(short + 1, keyTimes.count - 1)] * duration
     }
 
     /// Room around the open body for the outline's overshoot, so the window edge never

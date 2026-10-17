@@ -31,6 +31,7 @@ import Foundation
         try await closeBeforeAdoptionStarts()
         try await failedAdoptionStillRestores()
         try await previewRestorationPrecedesAnotherSelection()
+        try await systemReleasePrecedesFavoriteReopening()
         print("Window session ownership checks passed")
     }
 
@@ -123,4 +124,29 @@ import Foundation
         try await nextAdoption.value
         precondition(windows.restored == [1] && windows.current == 2)
     }
+    @MainActor static func systemReleasePrecedesFavoriteReopening() async throws {
+        let queue = WindowSessionQueue(), windows = Windows(), closingIO = Gate()
+        let old = UUID(), next = UUID()
+        try await queue.adopt(old) { windows.current = 1 }.value
+        let close = queue.finish(old) {
+            await closingIO.wait()
+            windows.restore()
+        }
+        await closingIO.entered()
+        // A display transition queues release after close, and a favorite selected
+        // meanwhile must be adopted only after that system cleanup completes.
+        let release = queue.enqueue { windows.restore() }
+        let adoption = queue.adopt(next) {
+            precondition(windows.current == nil)
+            windows.current = 2
+        }
+        closingIO.resume()
+        await close.value
+        try await release.value
+        try await adoption.value
+        precondition(windows.restored == [1] && windows.current == 2)
+        await queue.finish(old) { windows.restore() }.value
+        precondition(windows.current == 2, "An obsolete favorite's dismissal cannot release the new one")
+    }
+
 }

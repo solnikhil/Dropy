@@ -1,6 +1,6 @@
 # Dropy roadmap
 
-This is the working sequence for turning Dropy from a live window preview into a dependable notch container. The end goal is an existing app's UI inside a Dropy-owned overlay, with its session intact after dismissal. The current build is **view-only**, and the source window remains visible elsewhere. We will publish compatibility by tested workflow rather than imply universal support from an early demo.
+This is the working sequence for turning Dropy from a live window preview into a dependable notch container. The end goal is an existing app's UI inside a Dropy-owned overlay, with its session intact after dismissal. The current build docks the real window for native interaction, with Live streaming over full-screen Spaces and a view-only fallback. We will publish compatibility by tested workflow rather than imply universal support from an early demo.
 
 Milestones are **evidence gates**, not calendar promises. Work may move between phases when an experiment changes the architecture. Each milestone has an explicit completion condition so a narrow success cannot be mistaken for the full product.
 
@@ -13,6 +13,12 @@ Milestones are **evidence gates**, not calendar promises. Work may move between 
 | M4 · Product experience and performance | Direct/last/picker opening, app pinning, size and region controls, dismissal, shortcut and notchless entry, accessibility, multi-display/full-screen behavior, benchmark suite | End-to-end journeys pass on target hardware; latency and resource budgets are measured and met for supported workflows |
 | M5 · Release candidate | Compatibility matrix, signed/notarized packaging, update and rollback policy, documentation, privacy review, regression testing | Reproducible release with honest app/workflow support and no unresolved data-loss, security or source-window restoration failure |
 
+## Current workspace work (2026-10-17)
+
+Implemented in the local source: ordered favorites with a default-opening choice and optional per-favorite keyboard shortcuts, per-app size/position overrides, exact-process window memory, searchable favorite/recent ordering, and additional restoration/display/Live-layout safeguards. Behavior and remaining validation are in [WORKSPACE.md](docs/WORKSPACE.md). Only one favorite is kept warm at a time; other favorites launch on demand. These changes do not complete the real-app hardware validation gates.
+
+The M1 work order and pre-October-7 interaction gates below are historical context. Current interaction uses real windows, not the removed forwarding bridge. Installed-app pinning and launching are implemented; selected-region display remains open.
+
 ## Interaction decision (2026-10-07) and status (2026-10-08)
 
 The M3 input bridge is replaced by using the real window (see [ARCHITECTURE](ARCHITECTURE.md#interaction-the-real-window-in-the-overlay-decision-2026-10-07) and the [interaction plan](docs/design/2026-10-07-interaction-engine-plan.md)). Built: docking (Native), the hidden Stage display for pinned apps, and Live mode over full-screen apps, each smoke-tested once on device with TextEdit and Safari. Open:
@@ -20,13 +26,14 @@ The M3 input bridge is replaced by using the real window (see [ARCHITECTURE](ARC
 - **Manual testing by a person:** how the Live pointer hand-off feels, dragging from a Live window to another app, menus that extend past the window (the stream is clipped to the window's region), resizing or moving a window while Live.
 - **Measurements:** extend `benchmark-phases.sh` with the Stage states (closed with a staged app, Native, Live) and make the plan's budgets release gates.
 - **Not handled yet:** Stage Manager, several displays, more than one pinned app, a crash that leaves a staged window on desktop 1 (macOS rescues it there; the journal restores its frame but not its desktop).
+- **Capture, the Stage and video players (2026-10-11):** two things stop protected video. (1) Any ScreenCaptureKit capture, even a 20 ms screenshot of one other window, tells every app the screen is being recorded (WindowServer "screen capture added"; iPad-style apps see `UIScreen.isCaptured`), which Prime Video and WhatsApp check. (2) The Stage is a display without HDCP: while it exists, FairPlay finds no playable variant and Prime Video shows an HDCP error (its log: `hdcp0:Unprotected`, no filtered alternates). Docking now captures nothing (an icon cover replaced the window picture; corners use the macOS default). The preview, Live and the Stage first refuse when an app kept the display awake in the last 15 minutes (players do while playing; Prime Video confirmed), with Show Anyway; the Stage is removed when a video starts while the overlay is closed; Settings › Interaction › Protect Video Playback turns all of it off. Open: a browser's video assertion and which app it names; keep-awake utilities count as players; a nicer opening animation without a picture of the window.
 - **Distribution:** `CGVirtualDisplay` is private; Dropy is Developer ID only (it cannot be sandboxed anyway).
 
 ## Animations (2026-10-09)
 
 Built: the animation format and its limits, the Animation Studio (springs, keyframes, drawing the curve, content timing, undo, autosave), the gallery, share codes, playing on the notch, and the agent workflow (guide in the folder, a prompt in Settings, `Dropy animation` commands). See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). Open:
 
-- **Where the overlay opens from:** the notch today; corners and screen edges next, with the same animation format (an edge is the top-edge shape rotated; a corner needs its own shape).
+- **Where the overlay opens from (built 2026-10-11, not yet tried on device):** Settings › Overlay › Open From offers the notch, the left and right edges and the bottom corners. An edge is the top-edge outline turned; a corner has its own outline (an ear on each edge, one rounded corner). Every animation plays at every position (`width` along the edge, `height` into the screen), and `Dropy animation play` uses the chosen position. Away from the notch the outline grows from a small nub and fades in. Open: a person trying each position with the window list, the preview, Native and Live; a showing Dock moves the edge it sits on to its inner side (macOS draws the Dock above every window, so it covered a docked app), which leaves the outline's ears against the Dock's top rather than the screen edge; "Hide the Dock" (shown when the position shares the Dock's edge) instead turns on the system's Dock auto-hide through System Events while the overlay is open (each opening lays out as if the Dock were already gone) and restores it after each closing and on quit, so the overlay keeps the real edge. A release build signed with the hardened runtime will need the Apple Events entitlement for it; the Studio's preview still shows the notch only; notch hover stays notch-only (and paused).
 - **Manual testing by a person:** how editing feels in the Studio (keyframe dragging, the spring handle, the pen), and custom animations in daily use.
 - **Measurements:** `bun run bench -- --animation <file>` measures a build with a custom animation; no budgets for custom animations yet beyond the limits in the format.
 
@@ -72,7 +79,7 @@ The [feasibility record](docs/FEASIBILITY.md) explains why these gates exist. A 
 ## Product decisions
 
 - Keep the overlay owned by Dropy and expanded **in place** from the notch, temporarily covering menu-bar items beneath it.
-- Keep direct-open, last-used and picker flows distinct. App pinning, selected-region display and automatic dismissal are planned work, not current features.
+- Keep direct-open, last-used and picker flows distinct. Favorites, installed-app launching and automatic dismissal are implemented. Selected-region display remains planned.
 - Publish support as **view-only**, **interactive for named workflows**, or **unsupported**, with a dated app/OS/version matrix.
 - Use platform-specific backends. Windows may share the product contract and tests, but its capture/input/windowing architecture is a later track.
 

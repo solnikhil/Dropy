@@ -50,6 +50,12 @@ struct WorkspaceChecks {
         view.showsPreview = false
         view.layoutSubtreeIfNeeded()
         precondition(!view.scroll.isHidden && view.previewShell.isHidden, "the chooser must replace, not crowd, the preview")
+        precondition(!view.search.isHidden, "the chooser exposes search")
+        precondition(view.search.frame.minY >= view.scroll.frame.maxY, "search must not overlap the rows")
+        precondition(view.search.frame.maxY <= view.pickerHeading.frame.minY, "search must stay below the heading")
+        view.docked = true
+        view.layoutSubtreeIfNeeded()
+        precondition(view.search.isHidden && view.scroll.isHidden, "search must never intercept a docked app")
         print("Workspace layout checks passed (no windows shown)")
     }
 }

@@ -22,9 +22,16 @@ protocol OverlaySessionHost: AnyObject {
     var workspace: OverlayWorkspaceView? { get }
     var renderer: MetalFrameView? { get }
     var overlayScreen: NSScreen? { get }
+    /// The housing the overlay grows from; nil without one or away from the notch.
     var notchSize: CGSize? { get }
+    /// Where this opening sits on the screen.
+    var position: OverlayPosition { get }
+    /// The screen's visible frame as this opening has it (without a Dock it hides).
+    func visibleFrame(of screen: NSScreen) -> CGRect
     /// When the outline's current animation finishes.
     var settlesAt: Date { get }
+    /// When the outline has grown over its end place and stays over it (at or before `settlesAt`).
+    var coversAt: Date { get }
 
     /// Sizes the overlay to the previewed window.
     func layoutSelectedWindow()

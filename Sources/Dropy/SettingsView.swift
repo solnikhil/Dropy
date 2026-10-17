@@ -4,7 +4,7 @@ import SwiftUI
 import DropyCore
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, opening, overlay, animation, interaction, permissions, advanced, about
+    case general, opening, overlay, animation, interaction, permissions, updates, advanced, about
 
     var id: String { rawValue }
 
@@ -16,6 +16,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .animation: "Animation"
         case .interaction: "Interaction"
         case .permissions: "Permissions"
+        case .updates: "Updates"
         case .advanced: "Advanced"
         case .about: "About"
         }
@@ -29,6 +30,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .animation: "wand.and.stars"
         case .interaction: "hand.point.up.left.fill"
         case .permissions: "lock.shield.fill"
+        case .updates: "arrow.triangle.2.circlepath"
         case .advanced: "wrench.and.screwdriver.fill"
         case .about: "info.circle.fill"
         }
@@ -46,6 +48,9 @@ private struct SettingsTopic: Identifiable {
     let keywords: String
 
     static let all: [SettingsTopic] = [
+        SettingsTopic(id: "updates", pane: .updates, title: "Check for Updates",
+                      detail: "Checks published versions at startup and on request.",
+                      keywords: "update release version download startup latest software"),
         SettingsTopic(id: "login", pane: .general, title: "Open at Login",
                       detail: "Start Dropy when you log in.",
                       keywords: "login items startup launch"),
@@ -97,6 +102,9 @@ private struct SettingsTopic: Identifiable {
         SettingsTopic(id: "ready", pane: .interaction, title: "Keep Pinned App Ready",
                       detail: "The pinned app waits on a hidden display and opens on any desktop.",
                       keywords: "stage hidden display virtual desktop spaces full screen instant screenshot black extra"),
+        SettingsTopic(id: "protectVideo", pane: .interaction, title: "Protect Video Playback",
+                      detail: "Never capture the screen or add a hidden display, so video keeps playing.",
+                      keywords: "capture screen recording video prime netflix apple tv hdcp playback pause drm privacy stream"),
         SettingsTopic(id: "crossing", pane: .interaction, title: "Keep the Pointer Beside the Notch",
                       detail: "Experimental hold on sideways movement across the notch.",
                       keywords: "cursor pointer experimental accessibility option"),
@@ -136,9 +144,8 @@ struct SettingsView: View {
             SettingsSidebar(model: model)
                 .frame(width: model.sidebarWidth)
                 .frame(maxHeight: .infinity)
-                .background(SettingsSidebarGlass())
-                // Drawn over the glass's edge rather than as its own column: the window
-                // is transparent there, so a separate column showed the desktop.
+                .background(SettingsSidebarSurface())
+                // Keep the resize divider over the sidebar instead of adding a layout column.
                 .overlay(alignment: .trailing) { SettingsSidebarDivider(model: model) }
                 .zIndex(1)
 
@@ -149,6 +156,7 @@ struct SettingsView: View {
                 Group {
                     if trimmedQuery.isEmpty {
                         paneBody.id(model.pane)
+                            .environment(\.settingsPane, model.pane)
                     } else {
                         searchResults
                     }
@@ -157,6 +165,7 @@ struct SettingsView: View {
             }
             .background(SettingsTheme.background)
         }
+        .foregroundStyle(SettingsTheme.text)
         .ignoresSafeArea(.container, edges: .top)
         .onChange(of: model.settingsQuery) { _, query in
             if !query.isEmpty { model.stopRecordingShortcut() }
@@ -174,6 +183,8 @@ struct SettingsView: View {
         case .animation: AnimationSettingsPage(model: model)
         case .interaction: interaction
         case .permissions: permissions
+        case .updates:
+            if let updater = model.updater { UpdatesSettingsPage(checker: updater) }
         case .advanced: advanced
         case .about: about
         }
@@ -185,6 +196,12 @@ struct SettingsView: View {
                 ContentUnavailableView.search(text: trimmedQuery)
             } else {
                 SettingsPage {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Search Results").font(.system(size: 24, weight: .semibold))
+                            .accessibilityAddTraits(.isHeader)
+                        Text("\(matches.count) result\(matches.count == 1 ? "" : "s") for “\(trimmedQuery)”")
+                            .font(SettingsMetrics.body).foregroundStyle(SettingsTheme.secondaryText)
+                    }
                     ForEach(SettingsPane.allCases) { resultPane in
                         let topics = matches.filter { $0.pane == resultPane }
                         if !topics.isEmpty {
@@ -217,7 +234,7 @@ struct SettingsView: View {
 
     private var general: some View {
         SettingsPage {
-            SettingsCard(footer: "Dropy is always available in the menu bar. While Settings is open, it also appears in the Dock.") {
+            SettingsCard("Application", footer: "Available in the menu bar. Dropy also appears in the Dock while Settings is open.") {
                 SettingsToggleRow("Open at Login", isOn: model.opensAtLogin)
                 loginStatus
                 if !model.isInstalled {
@@ -281,8 +298,31 @@ struct SettingsView: View {
 
     private var opening: some View {
         SettingsPage {
-            SettingsCard(footer: "A pinned app opens every time. Dropy launches it for you when needed.") {
-                pinnedRow
+            SettingsCard("Favorite Apps", footer: "Choose a default for opening, or switch favorites from the window menu. Dropy launches closed favorites. Only the most recently used favorite stays ready on the hidden display; switching restores the previous window.") {
+                ForEach(model.preferences.favoriteApps) { favorite in
+                    favoriteRow(favorite)
+                }
+                HStack {
+                    Button("Add App…", action: model.prepareAppList).buttonStyle(SettingsButtonStyle(outlined: true))
+                    Spacer()
+                    if model.preferences.pinnedBundleIdentifier != nil {
+                        Button("Use Opening Choice", action: model.unpin).buttonStyle(SettingsButtonStyle())
+                    }
+                }.settingsRow()
+                SettingsToggleRow("Favorite Shortcuts", detail: "⌃⌥1 through ⌃⌥9 open favorites in their listed order.",
+                                  isOn: model.binding(\.favoriteShortcutsEnabled))
+                ForEach(model.favoriteShortcutProblems, id: \.self) { problem in
+                    SettingsFootnote(problem, isError: true)
+                }
+            }
+            SettingsCard("Remembered Windows", footer: "Dropy remembers the exact window while its app stays running. A closed document or relaunched app asks you to choose again. Document titles and contents are never saved.") {
+                HStack {
+                    SettingsLabel("Recent Windows", detail: "Favorites appear first, followed by recently used windows.")
+                    Spacer()
+                    Button("Forget Windows", action: model.forgetWindows)
+                        .buttonStyle(SettingsButtonStyle())
+                        .disabled(model.preferences.rememberedWindows.isEmpty)
+                }.settingsRow()
             }
 
             SettingsCard("Window Selection", footer: openDetail) {
@@ -326,23 +366,41 @@ struct SettingsView: View {
         }
     }
 
-    private var pinnedRow: some View {
-        HStack(spacing: SettingsMetrics.rowInset) {
-            if let pinned = model.pinnedApp {
-                if let icon = pinned.icon {
-                    Image(nsImage: icon).resizable().frame(width: 28, height: 28).accessibilityHidden(true)
+    private func favoriteRow(_ favorite: FavoriteApp) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                if let icon = model.icon(for: favorite.id) {
+                    Image(nsImage: icon).resizable().frame(width: 24, height: 24).accessibilityHidden(true)
                 }
-                SettingsLabel(pinned.name, detail: "Your go-to app, always within reach.")
-                Spacer(minLength: 8)
-                Button("Remove", action: model.unpin).buttonStyle(SettingsButtonStyle())
-                Button("Change…", action: model.prepareAppList).buttonStyle(SettingsButtonStyle(outlined: true))
-            } else {
-                SettingsLabel("Pinned App", detail: "Open straight into an app you use often.")
-                Spacer(minLength: 8)
-                Button("Choose App…", action: model.prepareAppList).buttonStyle(SettingsButtonStyle(outlined: true))
+                SettingsLabel(model.appName(favorite.id), detail:
+                    model.preferences.pinnedBundleIdentifier == favorite.id ? "Default on opening" : "Available in the window menu")
+                Spacer()
+                Button { model.moveFavorite(favorite.id, by: -1) } label: { Image(systemName: "arrow.up") }
+                    .help("Move favorite earlier").accessibilityLabel("Move favorite earlier")
+                    .disabled(model.preferences.favoriteApps.first?.id == favorite.id)
+                Button { model.moveFavorite(favorite.id, by: 1) } label: { Image(systemName: "arrow.down") }
+                    .help("Move favorite later").accessibilityLabel("Move favorite later")
+                    .disabled(model.preferences.favoriteApps.last?.id == favorite.id)
+                if model.preferences.pinnedBundleIdentifier != favorite.id {
+                    Button("Make Default") { model.makeDefault(favorite.id) }
+                }
+                Button("Remove") { model.removeFavorite(favorite.id) }
             }
-        }
-        .settingsRow()
+            HStack {
+                Text("Size").foregroundStyle(SettingsTheme.secondaryText)
+                Picker("Size for \(model.appName(favorite.id))", selection: Binding<SizePreset?>(
+                    get: { favorite.sizePreset }, set: { model.favoriteSize(favorite.id, $0) })) {
+                    Text("Use global setting").tag(Optional<SizePreset>.none)
+                    ForEach(SizePreset.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
+                }.labelsHidden().frame(maxWidth: 160)
+                Text("Position").foregroundStyle(SettingsTheme.secondaryText)
+                Picker("Position for \(model.appName(favorite.id))", selection: Binding<OverlayPosition?>(
+                    get: { favorite.position }, set: { model.favoritePosition(favorite.id, $0) })) {
+                    Text("Use global setting").tag(Optional<OverlayPosition>.none)
+                    ForEach(OverlayPosition.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
+                }.labelsHidden().frame(maxWidth: 160)
+            }
+        }.settingsRow()
     }
 
     private var triggerName: String {
@@ -379,7 +437,7 @@ struct SettingsView: View {
 
     private var overlay: some View {
         SettingsPage {
-            SettingsCard {
+            SettingsCard("Size") {
                 VStack(alignment: .leading, spacing: SettingsMetrics.rowInset) {
                     SettingsLabel("Overlay Size", detail: sizeDetail(model.preferences.sizePreset))
                     OverlaySizeTiles(selection: model.binding(\.sizePreset))
@@ -393,6 +451,22 @@ struct SettingsView: View {
                     .disabled(model.preferences.sizePreset == .nativeSize)
             }
 
+            SettingsCard("Position") {
+                VStack(alignment: .leading, spacing: SettingsMetrics.rowInset) {
+                    SettingsLabel("Open From", detail: positionDetail(model.preferences.position))
+                    OverlayPositionTiles(selection: model.binding(\.position))
+                }
+                .padding(SettingsMetrics.rowInset)
+                if model.preferences.position.sharesEdge(with: model.dockSide) {
+                    SettingsToggleRow("Hide the Dock",
+                                      detail: "The Dock sits on this edge. It slides away when the overlay opens and comes back when it closes.",
+                                      isOn: model.binding(\.hidesDock))
+                    if model.preferences.hidesDock, let problem = model.dockProblem {
+                        SettingsNotice(symbol: "exclamationmark.triangle", title: "The Dock is still showing", detail: problem)
+                    }
+                }
+            }
+
             SettingsCard("Appearance") {
                 SettingsRow("Content Scaling", detail: contentDetail) {
                     SettingsChoiceTiles(label: "Content scaling", selection: model.binding(\.contentMode), options: [
@@ -402,6 +476,14 @@ struct SettingsView: View {
                     ])
                 }
             }
+        }
+    }
+
+    private func positionDetail(_ position: OverlayPosition) -> String {
+        switch position {
+        case .notch: "Grows out of the notch, or the top of a screen without one."
+        case .left, .right: "Grows out of the side of the screen, centered between the menu bar and the Dock."
+        case .bottomLeft, .bottomRight: "Grows out of the corner of the screen, above the Dock when it is showing."
         }
     }
 
@@ -440,9 +522,13 @@ struct SettingsView: View {
                     ])
                 }
                 SettingsToggleRow("Keep Pinned App Ready",
-                                  detail: "Its window waits on a hidden display between openings, so it opens at once on any desktop. macOS counts that display, so a full-screen screenshot (⇧⌘3) also saves a black picture of it. Off, the hidden display exists only while Dropy needs it.",
+                                  detail: "Opens at once on any desktop. Uses a hidden display that full-screen screenshots include and protected video can’t play alongside.",
                                   isOn: model.binding(\.keepsPinnedAppReady))
-                    .disabled(model.preferences.interaction != .fullApp)
+                    .disabled(model.preferences.interaction != .fullApp || model.preferences.protectsVideo)
+                SettingsToggleRow("Protect Video Playback",
+                                  detail: "Avoid screen capture and hidden displays so protected video keeps playing.",
+                                  isOn: model.binding(\.protectsVideo))
+                SettingsExplanation(title: "How this affects displays and video", text: "Keeping an app ready uses a hidden display. macOS includes it in full-screen screenshots, so ⇧⌘3 can also save a black picture. Protected video cannot play while that display exists; Dropy removes it when a video starts. With Protect Video Playback on, Dropy never captures or creates a hidden display. Windows on another desktop or over a full-screen app stay where they are. Otherwise, Dropy asks before streaming when video played in the last 15 minutes.")
                 if model.preferences.interaction == .fullApp, !model.accessibilityGranted {
                     SettingsNotice(symbol: "hand.raised", title: "Accessibility access required",
                                    detail: "Allow Dropy to move the app's window into the overlay. Until then it is a preview.") {
@@ -472,7 +558,7 @@ struct SettingsView: View {
     }
 
     private var interactionFooter: String {
-        "With Full App, the app's own window moves into the overlay and its app comes to the front. Over a full-screen app, Dropy streams the window instead, so macOS shows its screen-recording indicator while it is open. A window you pick that isn't pinned goes back where it was."
+        "Unpinned windows return to their original place when Dropy closes. Over a full-screen app, Full App may stream the window and show macOS’s screen-recording indicator."
     }
 
     private var crossingStatus: String {
@@ -536,8 +622,8 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Dropy").font(.system(size: 17, weight: .semibold))
                             .accessibilityAddTraits(.isHeader)
-                        Text("Your apps, near the notch.")
-                            .font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                        Text("macOS app workspace")
+                            .font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     }
                     Spacer(minLength: SettingsMetrics.rowInset)
                     Button("About Dropy", action: model.showAbout)
@@ -612,7 +698,7 @@ private struct AppChooserSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Choose a pinned app").font(.title2.bold())
                     Text(model.isLoadingApps ? "Finding your apps…" : "Open directly into an app you use often.")
-                        .font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                        .font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                 }
                 Spacer()
             }
@@ -669,7 +755,7 @@ private struct AppChooserSheet: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(app.name)
                     if markRunning, app.running {
-                        Text("Running").font(SettingsMetrics.detail).foregroundStyle(.secondary)
+                        Text("Running").font(SettingsMetrics.detail).foregroundStyle(SettingsTheme.secondaryText)
                     }
                 }
             }

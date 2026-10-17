@@ -58,9 +58,9 @@ final class AnimationStageView: NSView {
         root.addSublayer(world)
 
         wallpaper.frame = world.bounds
-        wallpaper.colors = [NSColor(srgbRed: 0.16, green: 0.27, blue: 0.45, alpha: 1).cgColor,
-                            NSColor(srgbRed: 0.42, green: 0.32, blue: 0.52, alpha: 1).cgColor,
-                            NSColor(srgbRed: 0.85, green: 0.55, blue: 0.45, alpha: 1).cgColor]
+        wallpaper.colors = [NSColor(srgbRed: 0.06, green: 0.06, blue: 0.08, alpha: 1).cgColor,
+                            NSColor(srgbRed: 0.12, green: 0.12, blue: 0.15, alpha: 1).cgColor,
+                            NSColor(srgbRed: 0.22, green: 0.15, blue: 0.13, alpha: 1).cgColor]
         wallpaper.startPoint = CGPoint(x: 0, y: 0)
         wallpaper.endPoint = CGPoint(x: 1, y: 1)
         world.addSublayer(wallpaper)

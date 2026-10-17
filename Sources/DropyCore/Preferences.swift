@@ -144,6 +144,19 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var pinnedBundleIdentifier: String?
     /// Opens and closes the overlay from anywhere.
     public var shortcut: KeyShortcut
+    /// Where on the screen the overlay opens from.
+    public var position: OverlayPosition
+    /// While the overlay opens on the Dock's edge, turn on the system's "Automatically
+    /// hide and show the Dock" (and restore the person's setting when that ends).
+    public var hidesDock: Bool
+    /// Never capture the screen or add the hidden display (the Stage): no live preview,
+    /// no Live mode over a full-screen app, no Stage for a pinned app or for a window on
+    /// another desktop. A capture stops some video players, and a display without HDCP
+    /// stops every protected one (see `CaptureGuard`).
+    public var protectsVideo: Bool
+    public var favoriteShortcutsEnabled: Bool
+    public var favorites: [FavoriteApp]
+    public var rememberedWindows: [RememberedWindow]
 
     public init(
         trigger: Trigger = .notchHover,
@@ -161,7 +174,13 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         customAnimation: String? = nil,
         showInDock: Bool = true,
         pinnedBundleIdentifier: String? = nil,
-        shortcut: KeyShortcut = .default
+        shortcut: KeyShortcut = .default,
+        position: OverlayPosition = .notch,
+        hidesDock: Bool = false,
+        protectsVideo: Bool = false,
+        favoriteShortcutsEnabled: Bool = false,
+        favorites: [FavoriteApp] = [],
+        rememberedWindows: [RememberedWindow] = []
     ) {
         self.trigger = trigger
         self.openBehavior = openBehavior
@@ -179,6 +198,12 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.showInDock = showInDock
         self.pinnedBundleIdentifier = pinnedBundleIdentifier
         self.shortcut = shortcut
+        self.position = position
+        self.hidesDock = hidesDock
+        self.protectsVideo = protectsVideo
+        self.favoriteShortcutsEnabled = favoriteShortcutsEnabled
+        self.favorites = favorites
+        self.rememberedWindows = rememberedWindows
     }
 
     /// The app whose window an opening selects by itself, if any. A pinned app wins
@@ -195,7 +220,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case trigger, openBehavior, dismissBehavior, contentMode, sizePreset
         case selectedBundleIdentifier, lastUsedBundleIdentifier, interaction, keepsPinnedAppReady, motionStyle, customAnimation, showInDock
-        case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize
+        case pinnedBundleIdentifier, shortcut, restrictNotchCrossing, automaticWindowSize, position, hidesDock
+        case protectsVideo, favorites, rememberedWindows, favoriteShortcutsEnabled
     }
 
     /// Settings saved before a field existed keep every other choice; a new field takes
@@ -222,7 +248,14 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         customAnimation = try container.decodeIfPresent(String.self, forKey: .customAnimation)
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
         pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
+        favoriteShortcutsEnabled = try container.decodeIfPresent(Bool.self, forKey: .favoriteShortcutsEnabled) ?? false
+        favorites = try container.decodeIfPresent([FavoriteApp].self, forKey: .favorites) ?? []
+        rememberedWindows = try container.decodeIfPresent([RememberedWindow].self, forKey: .rememberedWindows) ?? []
         let savedShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .shortcut)
         shortcut = savedShortcut == KeyShortcut.previousDefault ? defaults.shortcut : savedShortcut ?? defaults.shortcut
+        position = (try? container.decodeIfPresent(OverlayPosition.self, forKey: .position)) ?? defaults.position
+        hidesDock = try container.decodeIfPresent(Bool.self, forKey: .hidesDock) ?? defaults.hidesDock
+        protectsVideo = try container.decodeIfPresent(Bool.self, forKey: .protectsVideo)
+            ?? defaults.protectsVideo
     }
 }

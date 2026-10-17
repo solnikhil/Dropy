@@ -8,18 +8,27 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var overlay: OverlayController!
     private var statusItem: NSStatusItem?
     private var trigger: NotchTrigger?
+    private var benchmarkControl: BenchmarkControl?
     private var hotKey: GlobalHotKey?
+    private var favoriteHotKeys: [GlobalHotKey] = []
     private let placementJournal = PlacementJournal()
     private let parkingTabs = ParkingTabs()
     /// The hidden display where pinned apps wait between openings.
     private let stage: Stage? = Stage.isSupported ? Stage() : nil
+    private let videoActivity = VideoActivity()
     private lazy var recovery = PlacementRecovery(journal: placementJournal)
+    /// Hides the Dock while the overlay opens on its edge, when the person asks.
+    private let dockAutoHide = DockAutoHide()
     /// The person's animation files, watched for changes.
     let animations = AnimationLibrary()
     /// Plays an animation on the notch for the Studio and `Dropy animation play`.
     private let demo = AnimationDemo()
     private lazy var studio = AnimationStudioController(library: animations)
     private var settings: SettingsWindowController!
+    private let onboardingProgress = OnboardingProgress()
+    private var onboarding: OnboardingWindowController?
+    private let updater = UpdateChecker()
+    private var updateMenuItems: [NSMenuItem] = []
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
     private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
     private var fullAppItems: [NSMenuItem] = []
@@ -59,6 +68,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         listenForAnimationRequests()
         overlay = OverlayController(preferences: preferences, journal: placementJournal, stage: stage)
         stage?.onLost = { [weak self] in self?.overlay.stageLost() }
+        overlay.videoActivity = videoActivity
+        stage?.mayStart = { [weak self] in self?.overlay.allowsStage ?? true }
+        videoActivity.onPlaybackStarted = { [weak self] in self?.videoStarted() }
+        videoActivity.start()
         overlay.onDeferredRestore = { [weak self] identity in self?.recovery.requestRecovery(for: identity) }
         // Undo placements left behind by a crash or forced quit before anything else.
         // Entries that cannot be reached yet (another Space, a busy app) are retried.
@@ -84,9 +97,36 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings = SettingsWindowController(model: SettingsModel(
             preferences: preferences.value, change: { [weak self] edit in self?.change(edit) }))
         settings.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        settings.model.updater = updater
+        updater.onChange = { [weak self] in
+            guard let self else { return }
+            for item in self.updateMenuItems {
+                item.title = self.updater.availableRelease == nil ? "Check for Updates…" : "Update Available…"
+            }
+        }
+        // Checks launched with --show never touch the person's Dock.
+        if !Self.launchedByCheck {
+            dockAutoHide.onProblem = { [weak self] problem in self?.settings?.model.dockProblemChanged(problem) }
+            dockAutoHide.settle()
+        }
         settings.model.animations = animations
         settings.model.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
         settings.model.openStudio = { [weak self] id in self?.studio.open(id) }
+        let onboardingModel = OnboardingModel(progress: onboardingProgress, settings: settings.model)
+        onboarding = OnboardingWindowController(model: onboardingModel)
+        onboarding?.onVisibilityChange = { [weak self] in self?.updateActivationPolicy() }
+        onboarding?.onClose = { [weak self] in self?.demo.stop() }
+        onboardingModel.onPreview = { [weak self] in
+            guard let self else { return }
+            _ = self.playOnNotch(self.animations.choice(for: self.preferences.value).animation, slowdown: 1)
+        }
+        onboardingModel.onFinish = { [weak self] skipped in
+            guard let self else { return }
+            self.onboarding?.close()
+            self.settings.model.navigate(to: skipped ? .general
+                : self.settings.model.accessibilityGranted && self.settings.model.screenRecordingGranted ? .opening : .permissions)
+            self.settings.show()
+        }
         studio.playOnNotch = { [weak self] animation, slowdown in self?.playOnNotch(animation, slowdown: slowdown) ?? 0 }
         studio.use = { [weak self] id in self?.change { $0.customAnimation = id } }
         studio.inUse = { [weak self] id in
@@ -191,6 +231,10 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fullAppItems.append(fullApp)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Setup…", action: #selector(showOnboarding), keyEquivalent: ""))
+        let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(updates)
+        updateMenuItems.append(updates)
         menu.addItem(NSMenuItem(title: "Quit Dropy", action: #selector(quit), keyEquivalent: "q"))
         for entry in menu.items { if entry.action != nil { entry.target = self } }
         for entry in sizes.items { entry.target = self }
@@ -213,8 +257,20 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         trigger.onRestrictionStatus = { [weak self] message in self?.settings.model.cursorRestrictionStatus = message }
         trigger.start()
         self.trigger = trigger
-        overlay.onOpen = { [weak trigger] in trigger?.overlayOpened() }
-        overlay.onClose = { [weak trigger] in trigger?.overlayClosed() }
+        overlay.onOpen = { [weak self, weak trigger] in
+            trigger?.overlayOpened()
+            guard let self, !Self.launchedByCheck else { return }
+            self.dockAutoHide.overlayOpened(self.overlay.presentation)
+        }
+        overlay.onClose = { [weak self, weak trigger] in
+            trigger?.overlayClosed()
+            guard let self, !Self.launchedByCheck else { return }
+            self.dockAutoHide.overlayClosed(after: OverlayMotion.wall(OverlayMotion.morph.close.duration))
+        }
+        overlay.dockToHide = { presentation in
+            guard !Self.launchedByCheck else { return nil }
+            return DockAutoHide.sideToHide(for: presentation)
+        }
         if wantsDockIcon { NSApp.activate(ignoringOtherApps: true) }
         if CommandLine.arguments.contains("--show") {
             DispatchQueue.main.async { [weak self] in self?.overlay.open() }
@@ -231,7 +287,12 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let index = arguments.firstIndex(of: "--studio"), index + 1 < arguments.count {
             studio.open(arguments[index + 1])
         }
+        if OnboardingProgress.shouldPresent(isComplete: onboardingProgress.isComplete,
+                                             arguments: arguments, isCheck: Self.launchedByCheck) {
+            onboarding?.show()
+        }
         startStageIfUseful()
+        if !Self.launchedByCheck { updater.check() }
         startDebugDriversIfRequested()
     }
 
@@ -246,7 +307,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Keep the Stage between openings: only for a pinned app kept ready.
     private var keepsStage: Bool {
         let value = preferences.value
-        return value.interaction == .fullApp && value.keepsPinnedAppReady && value.pinnedBundleIdentifier != nil
+        return value.interaction == .fullApp && value.keepsPinnedAppReady && !value.favoriteApps.isEmpty
+            && !value.protectsVideo
     }
 
     private var stageRetirement: Timer?
@@ -276,6 +338,17 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stage.stop()
     }
 
+    /// A video began playing (or Protect Video Playback was turned on). The Stage has no HDCP, so while it is connected protected
+    /// video refuses to play: unless an open overlay is using it, it goes now, with any
+    /// window waiting on it put back first. It comes back when an opening needs it.
+    private func videoStarted() {
+        guard let stage, stage.isReady, overlay.state == .closed else { return }
+        overlay.releaseStagedWindows()
+        stage.waitUntilEmpty()
+        NSLog("Dropy stage: removed, a video started playing")
+        stage.stop()
+    }
+
     /// Development-only drivers for repeatable measurements without input automation.
     /// - `DROPY_DEBUG_CYCLES=<n>[,<hold-ms>]`: open, wait for a live preview (or a failure,
     ///   up to ten seconds), hold, close; repeat n times.
@@ -286,6 +359,27 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///   capture logs its metrics summary.
     private func startDebugDriversIfRequested() {
         let environment = ProcessInfo.processInfo.environment
+        if let directory = environment["DROPY_DEBUG_BENCHMARK"] {
+            benchmarkControl = BenchmarkControl(directory: directory) { [weak self] action in
+                guard let self else { return ["error": "app unavailable"] }
+                switch action {
+                case "open": self.overlay.open()
+                case "close": self.overlay.close()
+                case "toggle": self.overlay.toggle()
+                case "quit": DispatchQueue.main.async { NSApp.terminate(nil) }
+                case "snapshot", "capture": break
+                default: return ["error": "unknown benchmark action"]
+                }
+                var result = self.overlay.benchmarkSnapshot
+                if action == "capture" { result["capture"] = self.overlay.benchmarkCapture as Any? ?? NSNull() }
+                result["stageReady"] = self.stage?.isReady ?? false
+                result["stageOccupied"] = self.stage?.isOccupied ?? false
+                result["pendingPlacements"] = self.placementJournal.entries.count
+                result["accessibility"] = WindowPlacer.isTrusted
+                result["screenRecording"] = CGPreflightScreenCaptureAccess()
+                return result
+            }
+        }
         if let spec = environment["DROPY_DEBUG_CYCLES"] {
             let parts = spec.split(separator: ",").compactMap { Int($0) }
             let cycles = max(parts.first ?? 10, 1)
@@ -325,10 +419,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // An edit made in the Animation Studio a moment ago is saved, not lost.
         studio.model?.saveNow()
+        updater.cancel()
         demo.stop()
         overlay.shutdown()
+        dockAutoHide.restoreNow()
         trigger?.stop()
         hotKey?.unregister()
+        favoriteHotKeys.forEach { $0.unregister() }
         recovery.stop()
         // A deferred entry stays in the journal; the next launch keeps trying.
         placementJournal.restoreAll()
@@ -507,10 +604,16 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func refresh() { if overlay.state == .closed { overlay.open() } else { overlay.refreshWindows() } }
     @objc private func quit() { overlay.shutdown(); NSApp.terminate(nil) }
     @objc private func showSettings() { settings.show() }
+    @objc private func showOnboarding() { onboarding?.show() }
+    @objc private func checkForUpdates() {
+        settings.model.navigate(to: .updates)
+        settings.show()
+        updater.check()
+    }
 
     @objc private func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .credits: NSAttributedString(string: "Your apps, near the notch.\nFree and MIT-licensed.")
+            .credits: NSAttributedString(string: "macOS app workspace.\nFree and MIT-licensed.")
         ])
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -588,16 +691,20 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             registerShortcut()
             settings.model.shortcutRejected("Another app already uses \(new.shortcut.display). Choose a different one.")
         }
+        // Turned on: the Stage goes now, as when a video starts.
+        if new.protectsVideo, !old.protectsVideo { videoStarted() }
         if new.keepsPinnedAppReady != old.keepsPinnedAppReady {
             overlay.pinnedAppChanged()
             startStageIfUseful()
         }
-        if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier {
+        if new.pinnedBundleIdentifier != old.pinnedBundleIdentifier || new.favoriteApps != old.favoriteApps {
             overlay.pinnedAppChanged()
             startStageIfUseful()
             // An open overlay still choosing a window shows the newly pinned app now.
             if new.pinnedBundleIdentifier != nil, overlay.state == .selecting { overlay.refreshWindows() }
         }
+        if new.favoriteApps != old.favoriteApps || new.favoriteShortcutsEnabled != old.favoriteShortcutsEnabled
+            || new.shortcut != old.shortcut { registerFavoriteShortcuts() }
         syncMenuChecks()
         settings.model.preferencesChanged(preferences.value)
     }
@@ -671,12 +778,13 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     func playOnNotch(_ animation: DropyAnimation, slowdown: Double) -> TimeInterval {
         guard let slowdown = AnimationPlayback.slowdown(slowdown) else { return 0 }
-        guard overlay.state != .closed else { return demo.play(animation, slowdown: slowdown) }
+        let position = overlay.preferences.value.position
+        guard overlay.state != .closed else { return demo.play(animation, slowdown: slowdown, at: position) }
         overlay.close()
         let wait = OverlayMotion.wall(OverlayMotion.morph.close.duration) + 0.1
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(wait))
-            self?.demo.play(animation, slowdown: slowdown)
+            self?.demo.play(animation, slowdown: slowdown, at: position)
         }
         return wait + (animation.morph.open.duration + animation.morph.resize.duration + animation.morph.close.duration
                        + AnimationDemo.holdOpen + AnimationDemo.holdResized) * slowdown
@@ -730,11 +838,38 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKey?.unregister()
         let shortcut = preferences.value.shortcut
         hotKey = GlobalHotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
-            self?.overlay.toggle()
+            guard let self else { return }
+            // Setup's Shortcut step asks for a press: answer with the animation alone.
+            if let onboarding = self.onboarding, onboarding.isVisible, onboarding.model.step == .shortcut {
+                return onboarding.model.shortcutPressed()
+            }
+            self.overlay.toggle()
         }
         for item in openItems { item.title = openTitle }
+        registerFavoriteShortcuts()
         settings.model.shortcutRegistered = hotKey != nil
         return hotKey != nil
+    }
+
+    private func registerFavoriteShortcuts() {
+        favoriteHotKeys.forEach { $0.unregister() }
+        favoriteHotKeys = []
+        settings.model.favoriteShortcutProblems = []
+        guard preferences.value.favoriteShortcutsEnabled else { return }
+        let codes: [UInt32] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
+        let modifiers = KeyShortcut.control | KeyShortcut.option
+        for (index, favorite) in preferences.value.favoriteApps.prefix(9).enumerated() {
+            let main = preferences.value.shortcut
+            guard !(main.keyCode == codes[index] && main.modifiers == modifiers),
+                  !GlobalHotKey.systemConflict(keyCode: codes[index], modifiers: modifiers),
+                  let key = GlobalHotKey(keyCode: codes[index], modifiers: modifiers, action: { [weak self] in
+                      self?.overlay.openFavorite(favorite.id)
+                  }) else {
+                settings.model.favoriteShortcutProblems.append("⌃⌥\(index + 1) is unavailable for \(settings.model.appName(favorite.id)).")
+                continue
+            }
+            favoriteHotKeys.append(key)
+        }
     }
 
     private var openTitle: String {
@@ -756,7 +891,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A Dock icon and Dropy's own menu bar when "Show in Dock" is on, and always while
     /// Settings is open so the window can be found with Command-Tab.
     private func updateActivationPolicy() {
-        let regular = wantsDockIcon || settings.isVisible || studio.isVisible
+        let regular = wantsDockIcon || settings.isVisible || studio.isVisible || onboarding?.isVisible == true
         guard NSApp.activationPolicy() != (regular ? .regular : .accessory) else { return }
         NSApp.setActivationPolicy(regular ? .regular : .accessory)
         if regular { NSApp.activate(ignoringOtherApps: true) }
@@ -765,6 +900,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Opening Dropy again from Finder, Spotlight or the Dock shows Settings, the way an
     /// ordinary app shows its main window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !onboardingProgress.isComplete { onboarding?.show(); return false }
         if overlay.state == .closed { settings.show() }
         return false
     }
@@ -819,6 +955,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .separator(),
             item("Quit Dropy", #selector(quit), "q", target: self),
         ])
+        let updates = item("Check for Updates…", #selector(checkForUpdates), target: self)
+        main.items.first?.submenu?.insertItem(updates, at: 2)
+        updateMenuItems.append(updates)
 
         let overlayMenu = NSMenu(title: "Overlay")
         openItems.append(addOverlayItems(to: overlayMenu))
@@ -839,7 +978,8 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         NSApp.windowsMenu = window
 
-        let help = submenu("Help", [item("Dropy on GitHub", #selector(openProjectPage), target: self)])
+        let help = submenu("Help", [item("Setup…", #selector(showOnboarding), target: self),
+                                    .separator(), item("Dropy on GitHub", #selector(openProjectPage), target: self)])
         NSApp.helpMenu = help
         return main
     }

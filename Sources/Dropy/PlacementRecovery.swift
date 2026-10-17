@@ -22,6 +22,7 @@ final class PlacementRecovery {
     private var attempt = 0
     private var scheduled: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
+    private var screenObserver: NSObjectProtocol?
 
     init(journal: PlacementJournal) {
         self.journal = journal
@@ -32,7 +33,7 @@ final class PlacementRecovery {
     func start() {
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didActivateApplicationNotification,
-                     NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+                     NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, !self.requested.isEmpty else { return }
@@ -40,12 +41,21 @@ final class PlacementRecovery {
                 }
             })
         }
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.requested.isEmpty else { return }
+                    self.run(resetBackoff: true)
+                }
+            }
         run(resetBackoff: true)
     }
 
     func stop() {
         observers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         observers = []
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         scheduled?.cancel()
         scheduled = nil
     }

@@ -54,6 +54,33 @@ final class NotchMorphTests: XCTestCase {
         XCTAssertTrue((middle?.body.width ?? 0) > notch.body.width && (middle?.body.width ?? .infinity) < open.body.width * 1.03)
     }
 
+    func testTheOutlineCoversItsPlaceBeforeItSettles() {
+        func check(_ frames: (shapes: [NotchShape], keyTimes: [Double], duration: TimeInterval), _ name: String) -> TimeInterval {
+            let cover = NotchMorph.coverTime(shapes: frames.shapes, keyTimes: frames.keyTimes, duration: frames.duration)
+            let target = frames.shapes.last!.body.insetBy(dx: 1, dy: 1)
+            for (shape, key) in zip(frames.shapes, frames.keyTimes) where key * frames.duration >= cover {
+                XCTAssertTrue(shape.body.contains(target), "\(name): uncovered at \(key * frames.duration) s")
+            }
+            return cover
+        }
+        for style in MotionStyle.allCases {
+            let opening = NotchMorph.frames(from: notch, to: open, motion: style.morph.open)
+            let cover = check(opening, "\(style) open")
+            XCTAssertTrue(cover > 0 && cover <= opening.duration)
+            // Rapid barely overshoots; the springier styles cover well before settling.
+            if style != .rapid {
+                XCTAssertTrue(cover < opening.duration * 0.8, "\(style) open covers at \(cover) of \(opening.duration) s")
+            }
+            // Shrinking to a smaller body as well as growing to a larger one.
+            let smaller = NotchShape.open(body: open.body.insetBy(dx: 150, dy: 100).offsetBy(dx: 0, dy: 100))
+            _ = check(NotchMorph.frames(from: open, to: smaller, motion: style.morph.resize), "\(style) shrink")
+            _ = check(NotchMorph.frames(from: smaller, to: open, motion: style.morph.resize), "\(style) grow")
+        }
+        // A morph that never leaves its place covers it from the start.
+        let still = NotchMorph.frames(from: open, to: open, motion: NotchMorph.resize)
+        XCTAssertEqual(NotchMorph.coverTime(shapes: still.shapes, keyTimes: still.keyTimes, duration: still.duration), 0)
+    }
+
     func testResizingBetweenOpenSizesBarelyOvershoots() {
         let peak = stride(from: 0.0, to: 1.5, by: 0.005).map(NotchMorph.resize.height.value).max() ?? 0
         XCTAssertTrue(peak < 1.005)

@@ -1,7 +1,6 @@
 import AppKit
 import ApplicationServices
 import DropyCore
-import ScreenCaptureKit
 
 /// Puts an app's real window inside the overlay, brings its app to the front, and
 /// puts it back where it was when the overlay closes. Nothing is forwarded: the
@@ -44,12 +43,9 @@ final class WindowDock {
 
     struct Docked {
         let identity: WindowIdentity
-        var window: SCWindow
         var element: AXUIElement
         /// Where the window is, global top-left, as last placed or followed.
         var frame: CGRect
-        /// The window as it last looked, for the opening and closing animations.
-        var snapshot: CGImage?
         var cornerRadius: CGFloat
         /// Waiting on the Stage between openings (a pinned app's window).
         var isStaged = false
@@ -86,20 +82,15 @@ final class WindowDock {
 
     // MARK: Choosing a window
 
-    /// Makes `window` the docked window. A different one docked before goes back to
+    /// Makes the window with `identity` the docked window. A different one docked before goes back to
     /// where the person had it. The window is not moved yet.
-    func adopt(_ window: SCWindow, identity: WindowIdentity, session: UUID) -> Task<Void, Error> {
+    func adopt(_ identity: WindowIdentity, session: UUID) -> Task<Void, Error> {
         operations.adopt(session) { [self] in
-            if var docked = current, docked.identity == identity {
-                docked.window = window
-                current = docked
-                return
-            }
+            if current?.identity == identity { return }
             // Opened again while waiting to go home: it is on the Stage already.
             if let index = returning.firstIndex(where: { $0.identity == identity }) {
-                var docked = returning.remove(at: index)
+                let docked = returning.remove(at: index)
                 if current != nil { await sendHomeNow() }
-                docked.window = window
                 current = docked
                 startObserving(docked)
                 return
@@ -107,20 +98,31 @@ final class WindowDock {
             if current != nil { await sendHomeNow() }
             guard WindowPlacer.isTrusted else { throw DockError.accessibilityNotTrusted }
             let application = NSRunningApplication(processIdentifier: identity.processID)
-            // A window the person hid or minimized is shown so it can be placed.
-            if application?.isHidden == true { application?.unhide() }
+            // An earlier failed restore still owns this window's original state.
+            // Resolve it before adopting again rather than overwriting its evidence.
+            guard !journal.entries.contains(where: { $0.identity == identity }) else {
+                throw DockError.windowUnreachable("pendingRecovery")
+            }
             let element = try await findElement(identity)
-            var minimized: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &minimized) == .success,
-               minimized as? Bool == true {
-                try? WindowPlacer.setMinimized(false, window: element)
+            let original = try WindowPlacer.readState(element, identity: identity)
+            let spaces = Spaces.of(identity.windowID) ?? []
+            current = Docked(identity: identity, element: element, frame: original.frame,
+                             cornerRadius: DockGeometry.defaultCornerRadius,
+                             homeSpace: spaces.count == 1 ? spaces[0] : nil)
+            // Unhiding and unminimizing are source mutations too. Save the original
+            // state first, including those flags, before asking macOS to change it.
+            var entry = PlacementEntry(identity: identity, mode: .docked, original: original,
+                                       applied: WindowPlacementState(frame: original.frame, isMinimized: false, isAppHidden: false),
+                                       createdAt: Date(), applicationConfirmed: false)
+            do { try journal.upsert(entry) } catch { current = nil; throw DockError.journal(error) }
+            if original.isAppHidden { application?.unhide() }
+            if original.isMinimized {
+                try WindowPlacer.setMinimized(false, window: element)
                 try? await Task.sleep(for: .milliseconds(350))
             }
-            let state = try WindowPlacer.readState(element, identity: identity)
-            let spaces = Spaces.of(identity.windowID) ?? []
-            current = Docked(identity: identity, window: window, element: element, frame: state.frame,
-                             snapshot: nil, cornerRadius: DockGeometry.defaultCornerRadius,
-                             homeSpace: spaces.count == 1 ? spaces[0] : nil)
+            entry.applied = try WindowPlacer.readState(element, identity: identity)
+            entry.applicationConfirmed = true
+            do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
             // A window on another desktop is pulled over through the Stage: a move to
             // another display lands on that display's current desktop, and from the
             // Stage it lands on the person's (spike S2).
@@ -128,7 +130,6 @@ final class WindowDock {
                 try await moveToStageNow()
                 NSLog("Dropy dock: brought window=%u from another desktop through the Stage", identity.windowID)
             }
-            if onActiveSpace { await refreshSnapshot() }
         }
     }
 
@@ -189,14 +190,6 @@ final class WindowDock {
             docked.isStaged = false
             current = docked
             startObserving(docked)
-            // The capture catalog's copy of the window still has its old size; refresh it
-            // so the closing snapshot needs no lookup.
-            Task { @MainActor [weak self] in
-                guard case .available(let fresh)? = try? await WindowCatalog.resolve(identity),
-                      var latest = self?.current, latest.identity == identity else { return }
-                latest.window = fresh
-                self?.current = latest
-            }
             NSLog("Dropy dock: placed window=%u asked=%.0fx%.0f got=%.0fx%.0f at %.0f,%.0f", identity.windowID,
                   frame.width, frame.height, observed.frame.width, observed.frame.height,
                   observed.frame.minX, observed.frame.minY)
@@ -261,60 +254,6 @@ final class WindowDock {
         }
     }
 
-    // MARK: Snapshots
-
-    /// Captures the window as it looks now (at most `timeout`), keeps it for the next
-    /// animation and measures its corner radius. Keeps the previous snapshot on failure.
-    func refreshSnapshot(timeout: Duration = .milliseconds(250)) async {
-        guard let docked = current else { return }
-        let identity = docked.identity
-        var window = docked.window
-        let known = abs(window.frame.width - docked.frame.width) < 2 && abs(window.frame.height - docked.frame.height) < 2
-        if !known, case .available(let fresh)? = try? await WindowCatalog.resolve(identity) { window = fresh }
-        let scale = NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
-        let configuration = SCStreamConfiguration()
-        configuration.width = max(1, Int(docked.frame.width * scale))
-        configuration.height = max(1, Int(docked.frame.height * scale))
-        configuration.showsCursor = false
-        configuration.ignoreShadowsSingleWindow = true
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let image = await Self.captureImage(filter: filter, configuration: configuration, timeout: timeout)
-        guard let image, var latest = current, latest.identity == identity else { return }
-        latest.window = window
-        latest.snapshot = image
-        if let radius = Self.cornerRadius(of: image, scale: scale) { latest.cornerRadius = radius }
-        current = latest
-    }
-
-    /// One screenshot, or nil after `timeout` so a slow capture never holds up a close.
-    private static func captureImage(filter: SCContentFilter, configuration: SCStreamConfiguration,
-                                     timeout: Duration) async -> CGImage? {
-        let once = OneShot<CGImage?>()
-        return await withCheckedContinuation { continuation in
-            once.continuation = continuation
-            SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) { image, _ in
-                once.resume(image)
-            }
-            let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
-            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { once.resume(nil) }
-        }
-    }
-
-    private static func cornerRadius(of image: CGImage, scale: CGFloat) -> CGFloat? {
-        let side = min(image.width, image.height, Int(48 * scale))
-        guard side > 2, let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
-                                                bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-              let data = context.data else { return nil }
-        // The image's top-left corner at the context's top-left; a bitmap context's
-        // first row in memory is its top row.
-        context.draw(image, in: CGRect(x: 0, y: side - image.height, width: image.width, height: image.height))
-        let pixels = data.bindMemory(to: UInt8.self, capacity: side * side * 4)
-        let diagonal = (0..<side).map { pixels[($0 * side + $0) * 4 + 3] }
-        return DockGeometry.cornerRadius(diagonalAlpha: diagonal, scale: scale)
-    }
-
     // MARK: Waiting on the Stage
 
     private func moveToStageNow() async throws {
@@ -345,22 +284,30 @@ final class WindowDock {
         NSLog("Dropy dock: staged window=%u at %.0f,%.0f", identity.windowID, observed.frame.minX, observed.frame.minY)
     }
 
-    /// Live mode: the window waits on the Stage at `size` and the Stage is uncovered,
-    /// so the window draws at full rate for streaming. Returns its frame there.
-    func prepareLive(size: CGSize, session: UUID) async throws -> CGRect {
+    /// Live mode: the window goes to `frame` on the Stage (global top-left; the spot
+    /// that mirrors where the person sees it) and the Stage is uncovered, so the window
+    /// draws at full rate for streaming. Returns its frame there.
+    func prepareLive(frame: CGRect, session: UUID) async throws -> CGRect {
         try await operations.perform(session) { [self] in
             if current?.isStaged != true { try await moveToStageNow() }
-            guard var docked = current, let stage, let slot = stage.slot(for: size) else {
+            guard var docked = current, let stage, stage.bounds?.contains(frame.origin) == true else {
                 throw DockError.windowUnreachable("noStage")
             }
-            try? WindowPlacer.setFrame(CGRect(origin: slot, size: size), of: docked.element, resize: true)
+            guard var entry = existingEntry(docked.identity) else { throw DockError.nothingDocked }
+            entry.applied.frame = frame
+            entry.applicationConfirmed = false
+            do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
+            setFrame(frame, of: docked.element)
+            // Some apps apply a new size a moment later (a layout pass of their own).
             try? await Task.sleep(for: .milliseconds(40))
-            let observed = try WindowPlacer.readState(docked.element, identity: docked.identity)
-            if var entry = existingEntry(docked.identity) {
-                entry.applied = observed
-                entry.applicationConfirmed = true
-                try? journal.upsert(entry)
+            var observed = try WindowPlacer.readState(docked.element, identity: docked.identity)
+            if !observed.frame.origin.equalTo(frame.origin) {
+                try? WindowPlacer.setPosition(frame.origin, of: docked.element)
+                observed = try WindowPlacer.readState(docked.element, identity: docked.identity)
             }
+            entry.applied = observed
+            entry.applicationConfirmed = true
+            do { try journal.upsert(entry) } catch { throw DockError.journal(error) }
             docked.frame = observed.frame
             current = docked
             stage.setCovered(false)
@@ -380,9 +327,20 @@ final class WindowDock {
         return Task { _ = try? await restore.value }
     }
 
-    /// Snapshot and restoration are one queued operation belonging to the closing
+    /// System transitions release every owned window after any in-flight adoption,
+    /// placement and closing have settled. Returning windows must not be stranded on
+    /// a Stage whose coordinate system has just changed.
+    func releaseAll() {
+        _ = operations.enqueue { [self] in
+            releaseNow()
+            returnAllNow()
+        }
+    }
+
+    /// Covering and restoration are one queued operation belonging to the closing
     /// session. Reserving it before suspension also closes an in-flight adoption.
-    func finishSession(_ session: UUID, snapshot: Bool = false, putsBack: Bool = true,
+    /// `coverFade` is how long `willRestore`'s cover takes to hide the window.
+    func finishSession(_ session: UUID, coverFade: TimeInterval = 0, putsBack: Bool = true,
                        keepsOnStage: @escaping @MainActor (WindowIdentity) -> Bool = { _ in false },
                        willRestore: @escaping @MainActor (Docked) -> Void = { _ in },
                        didRestore: @escaping @MainActor (pid_t?, Bool) -> Void = { _, _ in }) -> Task<Void, Never> {
@@ -390,9 +348,9 @@ final class WindowDock {
             guard let docked = current else { didRestore(nil, false); return }
             var stages = false
             if putsBack {
-                if snapshot { await refreshSnapshot(timeout: .milliseconds(150)) }
                 if let latest = current { willRestore(latest) }
-                // Pinning may change while the snapshot awaits capture IO.
+                if coverFade > 0 { try? await Task.sleep(for: .seconds(coverFade)) }
+                // Pinning may change while the cover fades in.
                 stages = stage?.isReady == true && keepsOnStage(docked.identity)
                 if stages {
                     do { try await moveToStageNow() }
@@ -491,10 +449,20 @@ final class WindowDock {
         guard let docked = current else { return }
         stopObserving()
         current = nil
-        if let entry = existingEntry(docked.identity) {
-            try? WindowPlacer.setFrame(entry.original.frame, of: docked.element, resize: true)
+        guard var entry = existingEntry(docked.identity) else { return }
+        do {
+            let current = try WindowPlacer.readState(docked.element, identity: docked.identity)
+            var target = entry.original
+            target.isMinimized = current.isMinimized
+            target.isAppHidden = current.isAppHidden
+            entry = PlacementEntry(identity: entry.identity, mode: entry.mode, original: target,
+                                   applied: current, createdAt: entry.createdAt, applicationConfirmed: true)
+            try journal.upsert(entry)
+            let outcome = WindowPlacer.restore(entry, journal: journal)
+            if outcome.retriesAutomatically { onDeferredRestore?(docked.identity) }
+        } catch {
+            onDeferredRestore?(docked.identity)
         }
-        try? journal.remove(docked.identity)
         NSLog("Dropy dock: put back (minimized or hidden) window=%u", docked.identity.windowID)
     }
 
@@ -587,19 +555,5 @@ private func dockObserverCallback(_ observer: AXObserver, _ element: AXUIElement
     MainActor.assumeIsolated {
         guard let pointer = UnsafeMutableRawPointer(bitPattern: address) else { return }
         Unmanaged<WindowDock>.fromOpaque(pointer).takeUnretainedValue().handle(name)
-    }
-}
-
-/// Resumes a continuation once, from whichever side finishes first.
-private final class OneShot<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    var continuation: CheckedContinuation<Value, Never>?
-
-    func resume(_ value: sending Value) {
-        lock.lock()
-        let pending = continuation
-        continuation = nil
-        lock.unlock()
-        pending?.resume(returning: value)
     }
 }

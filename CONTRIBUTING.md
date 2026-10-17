@@ -44,5 +44,5 @@ Dropy does not forward input: Full App interaction moves the app's real window i
 
 Animations: the format, its limits and the guide live in `Sources/DropyCore` (`AnimationFile`, `DropyAnimation`, `AnimationGuide`). After changing the guide, run `bun run animation:docs` to regenerate [docs/ANIMATIONS.md](docs/ANIMATIONS.md); `./Scripts/test-local.sh` fails while it is out of date, and also exercises `Dropy animation` in a throwaway folder (`DROPY_ANIMATIONS_FOLDER`).
 
-Tooling runs on [Bun](https://bun.sh): `bun run bench` measures a build and checks it against `docs/benchmarks/budgets.json` (see [BENCHMARK](docs/BENCHMARK.md)). Run it with the Mac awake and unlocked, and attach `bun run bench:check` output to changes that touch opening, closing, capture or the Stage.
+Tooling runs on Bun: `bun run bench:plan` explains the current disposable-fixture suite, `bun run bench:test` verifies the harness, and `bun run bench:build` produces an optimized build. Run `bun run bench -- --profile standard --no-build` on an idle, unlocked Mac with Dropy closed; attach the entire result directory and `bun run bench:check` output to opening, closing, capture or Stage changes. See [BENCHMARK](docs/BENCHMARK.md) for validity rules, product gates and the limits of synthetic evidence. The opt-in benchmark control channel is tested without showing windows by the local suite.
 

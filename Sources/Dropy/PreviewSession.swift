@@ -24,6 +24,7 @@ final class PreviewSession {
     }
 
     func captureCounts() -> CaptureCounts? { capture.currentCounts() }
+    func benchmarkSnapshot() -> [String: Any]? { capture.benchmarkSnapshot() }
 
     /// A new selection: forget the previous window's checks.
     func reset() {

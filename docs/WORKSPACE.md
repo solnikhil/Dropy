@@ -1,7 +1,5 @@
 # Daily workspace improvements — 2026-10-17
 
-> Development record: these improvements were implemented and locally tested on the `overlay-positions` branch on October 17, 2026. This document records that work; it does not imply the application changes have shipped on `main`.
-
 ## Favorites and opening
 
 Settings → Opening holds an ordered collection of favorite apps. Add installed apps, remove them, move them earlier/later, and choose a default. “Use Opening Choice” clears the default without deleting favorites and restores the picker/saved-app/last-used opening setting. Old single-pin preferences appear as a favorite and keep their previous opening behavior.

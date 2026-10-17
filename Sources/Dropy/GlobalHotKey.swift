@@ -9,19 +9,33 @@ final class GlobalHotKey {
     private var hotKey: EventHotKeyRef?
     private var handler: EventHandlerRef?
     private let action: () -> Void
+    private let identifier: UInt32
+    private static var nextIdentifier: UInt32 = 0
 
     /// Returns nil when the combination is already taken by another app.
     init?(keyCode: UInt32, modifiers: UInt32, action: @escaping () -> Void) {
         self.action = action
+        Self.nextIdentifier += 1
+        identifier = Self.nextIdentifier
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
-        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
             guard let userData else { return OSStatus(eventNotHandledErr) }
             let hotKey = Unmanaged<GlobalHotKey>.fromOpaque(userData).takeUnretainedValue()
-            MainActor.assumeIsolated { hotKey.action() }
-            return noErr
+            var received = EventHotKeyID()
+            guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                    nil, MemoryLayout<EventHotKeyID>.size, nil, &received) == noErr else {
+                return OSStatus(eventNotHandledErr)
+            }
+            return MainActor.assumeIsolated {
+                guard received.signature == OSType(0x4452_5059), received.id == hotKey.identifier else {
+                    return OSStatus(eventNotHandledErr)
+                }
+                hotKey.action()
+                return noErr
+            }
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        let identifier = EventHotKeyID(signature: OSType(0x4452_5059), id: 1) // "DRPY"
+        let identifier = EventHotKeyID(signature: OSType(0x4452_5059), id: identifier) // "DRPY"
         let registered = RegisterEventHotKey(keyCode, modifiers, identifier,
                                              GetApplicationEventTarget(), 0, &hotKey)
         guard installed == noErr, registered == noErr else {

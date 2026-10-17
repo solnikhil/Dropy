@@ -10,10 +10,12 @@
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
+    <key>DropyUpdateRepository</key><string>solnikhil/Dropy</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>Free and MIT-licensed.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Dropy hides the Dock while its overlay opens on the Dock's edge, when you turn that on, and shows it again afterwards.</string>
     <key>NSScreenCaptureDescription</key><string>Dropy shows windows you choose inside its temporary overlay.</string>
 </dict></plist>

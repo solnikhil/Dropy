@@ -85,7 +85,8 @@ func percentile(_ values: [Double], _ p: Double) -> Double {
     return sorted[min(sorted.count - 1, max(0, Int((p * Double(sorted.count)).rounded(.up)) - 1))]
 }
 
-let arguments = CommandLine.arguments.dropFirst()
+let jsonOutput = CommandLine.arguments.contains("--json")
+let arguments = CommandLine.arguments.dropFirst().filter { $0 != "--json" }
 if arguments.first == "self-check" {
     // Burn about 0.5 s of CPU and compare the rusage reading with the process CPU clock.
     let before = rusageReading(getpid())!.cpuNanoseconds
@@ -111,7 +112,9 @@ let targets: [(label: String, pid: pid_t)] = arguments.dropFirst().compactMap { 
 }
 
 var previous = targets.map { reading($0.pid) }
-var previousTime = Date()
+let startTime = ProcessInfo.processInfo.systemUptime
+var previousTime = startTime
+var rows: [[String: Any]] = []
 var cpu = Array(repeating: [Double](), count: targets.count)
 var memory = Array(repeating: [Double](), count: targets.count)
 var idle = Array(repeating: [Double](), count: targets.count)
@@ -120,14 +123,20 @@ var gpu: [Double] = []
 
 for _ in 0..<seconds {
     Thread.sleep(forTimeInterval: 1)
-    let now = Date()
-    let elapsed = now.timeIntervalSince(previousTime)
+    let now = ProcessInfo.processInfo.systemUptime
+    let elapsed = now - previousTime
     previousTime = now
-    if let value = gpuUtilization() { gpu.append(value) }
+    let utilization = gpuUtilization()
+    if let value = utilization { gpu.append(value) }
+    var processes: [String: Any] = [:]
     for (index, target) in targets.enumerated() {
         guard let current = reading(target.pid) else { continue }
         if let last = previous[index] {
-            cpu[index].append((current.cpuNanoseconds - last.cpuNanoseconds) / (elapsed * 1e9) * 100)
+            let percent = (current.cpuNanoseconds - last.cpuNanoseconds) / (elapsed * 1e9) * 100
+            cpu[index].append(percent)
+            processes[target.label] = ["cpuPercent": percent, "memoryMB": current.memoryBytes / 1_048_576,
+                "memoryKind": current.idleWakeups == nil ? "rss" : "physicalFootprint",
+                "idleWakeupsPerSecond": current.idleWakeups.flatMap { a in last.idleWakeups.map { (a - $0) / elapsed } } as Any? ?? NSNull()]
             if let now = current.idleWakeups, let before = last.idleWakeups {
                 idle[index].append((now - before) / elapsed)
             }
@@ -138,6 +147,15 @@ for _ in 0..<seconds {
         memory[index].append(current.memoryBytes)
         previous[index] = current
     }
+    rows.append(["elapsedSeconds": now - startTime, "intervalSeconds": elapsed,
+                 "processes": processes, "gpuPercent": utilization as Any? ?? NSNull(),
+                 "thermal": ProcessInfo.processInfo.thermalState.rawValue])
+}
+
+if jsonOutput {
+    let data = try JSONSerialization.data(withJSONObject: ["samples": rows], options: [.sortedKeys])
+    print(String(decoding: data, as: UTF8.self))
+    exit(0)
 }
 
 func mean(_ values: [Double]) -> Double { values.isEmpty ? .nan : values.reduce(0, +) / Double(values.count) }

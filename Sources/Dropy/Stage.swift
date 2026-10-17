@@ -31,6 +31,9 @@ final class Stage {
 
     private var display: NSObject?
     private(set) var displayID: CGDirectDisplayID?
+    /// Includes a Stage still being announced/removed by WindowServer. Keeping its
+    /// ID after removal prevents a late NSScreen notification treating it as hardware.
+    private(set) var ownedDisplayIDs: Set<CGDirectDisplayID> = []
     private var curtain: NSPanel?
     private var barrier: CFMachPort?
     private var barrierSource: CFRunLoopSource?
@@ -40,6 +43,8 @@ final class Stage {
     var allowsPointer = false
     /// Called when WindowServer ends the Stage; its windows are then on a real display.
     var onLost: (() -> Void)?
+    /// Asked before the Stage is created: false keeps it away (a video is playing).
+    var mayStart: (() -> Bool)?
 
     static var isSupported: Bool { DropyStageIsSupported() }
 
@@ -75,6 +80,10 @@ final class Stage {
     func start() async -> Bool {
         if isReady { return true }
         if let starting { return await starting.value }
+        guard mayStart?() != false else {
+            NSLog("Dropy stage: not created, a video played lately")
+            return false
+        }
         let task = Task { @MainActor in
             do {
                 try await create()
@@ -107,6 +116,7 @@ final class Stage {
         }) else { throw Failure.refused }
         display = object
         let id = DropyStageDisplayID(object)
+        ownedDisplayIDs.insert(id)
         // macOS reports a new display asynchronously; once it took over 3 s (spike S1).
         // Wait for the report rather than assume.
         for _ in 0..<160 {
@@ -216,7 +226,7 @@ final class Stage {
     /// corner) is put back on the nearest real display, unless Live mode handed it over.
     private func installBarrier() {
         let mask = (1 << CGEventType.mouseMoved.rawValue) | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
+            | (1 << CGEventType.rightMouseDragged.rawValue) | (1 << CGEventType.otherMouseDragged.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
             let owner = Unmanaged<Stage>.fromOpaque(context).takeUnretainedValue()

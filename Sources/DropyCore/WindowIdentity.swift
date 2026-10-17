@@ -1,9 +1,9 @@
 import Foundation
 
 /// Identifies one window within one running process. These values are session-local:
-/// a saved app preference must never be treated as a saved window selection. The only
-/// place an identity is written to disk is the placement recovery journal, and it is
-/// valid there only while that exact process is still running.
+/// a saved app preference must never be treated as a saved window selection. Persisted
+/// recovery and recent-window records are valid only while that exact process is
+/// still running; a relaunch requires an explicit new window choice.
 public struct WindowIdentity: Codable, Hashable, Sendable {
     public let processID: Int32
     public let processLaunchDate: Date

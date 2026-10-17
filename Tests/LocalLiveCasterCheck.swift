@@ -24,6 +24,7 @@ enum HostClock { static func nowMilliseconds() -> Double { 0 } }
     init(windowID: UInt32, requestedAt: Double) {}
     func startReturned() {}
     func finish(reason: String) {}
+    func benchmarkSnapshot() -> [String: Any] { [:] }
 }
 @MainActor final class FrameMailbox {
     var invalidated = false
@@ -39,17 +40,18 @@ final class StreamStopObserver: NSObject, @unchecked Sendable {
 }
 struct FixtureDisplay { let displayID: CGDirectDisplayID }
 struct FixtureApplication { let processID: Int32 }
+struct FixtureWindow { let owningApplication: FixtureApplication?; let frame: CGRect; let windowLayer: Int }
 @MainActor final class SCShareableContent {
     fileprivate static var nextGate: CaptureGate?
     let displays = [FixtureDisplay(displayID: 17)]
-    let applications: [FixtureApplication] = []
+    let windows: [FixtureWindow] = []
     static func excludingDesktopWindows(_ excluded: Bool, onScreenWindowsOnly: Bool) async throws -> SCShareableContent {
         if let gate = nextGate { nextGate = nil; await gate.wait() }
         return SCShareableContent()
     }
 }
 @MainActor final class SCContentFilter {
-    init(display: FixtureDisplay, excludingApplications: [FixtureApplication], exceptingWindows: [Int]) {}
+    init(display: FixtureDisplay, excludingWindows: [FixtureWindow]) {}
 }
 @MainActor final class SCStream {
     fileprivate static var nextGate: CaptureGate?
@@ -79,8 +81,8 @@ struct FixtureApplication { let processID: Int32 }
 
 @main struct LiveCasterChecks {
     @MainActor static func start(_ caster: LiveCaster, onStop: @escaping @MainActor (Error) -> Void = { _ in }) async throws {
-        try await caster.start(stage: 17, region: CGRect(x: 0, y: 0, width: 500, height: 400),
-                               windowID: 1, renderer: MetalFrameView(), refreshRate: 60, onUnexpectedStop: onStop)
+        try await caster.start(stage: 17, size: CGSize(width: 500, height: 400),
+                               windowID: 1, appProcess: 7, renderer: MetalFrameView(), refreshRate: 60, onUnexpectedStop: onStop)
     }
     @MainActor static func main() async throws {
         try await cancelledCatalogCannotStart()

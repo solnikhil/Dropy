@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The navigation column: search, then one row per page, on a glass surface. Only the
+/// The navigation column: search, then one row per page, on an opaque surface. Only the
 /// selected row has a fill, and that fill moves between rows as one matched shape.
 /// Native buttons keep focus and keyboard use.
 struct SettingsSidebar: View {
@@ -17,13 +17,11 @@ struct SettingsSidebar: View {
 
             searchField
                 .padding(.horizontal, SettingsMetrics.sidebarInset)
-                .padding(.bottom, 12)
+                .padding(.bottom, 18)
 
             ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(SettingsPane.allCases) { pane in
-                        row(pane)
-                    }
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(SettingsPane.allCases) { pane in row(pane) }
                 }
                 .padding(.horizontal, SettingsMetrics.sidebarInset)
                 .padding(.bottom, SettingsMetrics.sidebarInset)
@@ -37,6 +35,7 @@ struct SettingsSidebar: View {
                 default: break
                 }
             }
+
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Settings categories")
@@ -48,19 +47,25 @@ struct SettingsSidebar: View {
             select(pane)
         } label: {
             HStack(spacing: SettingsMetrics.controlSpacing) {
-                SettingsIcon(symbol: pane.symbol)
+                Image(systemName: pane.symbol)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(selected ? SettingsTheme.accent : SettingsTheme.secondaryText)
+                    .frame(width: 22)
+                    .accessibilityHidden(true)
                 Text(pane.title)
-                    .font(SettingsMetrics.body)
+                    .font(selected ? SettingsMetrics.bodyEmphasis : SettingsMetrics.body)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if let badge = pane.badge { SettingsBadge(badge) }
+                if pane == .updates, model.updater?.availableRelease != nil {
+                    SettingsBadge("New")
+                } else if let badge = pane.badge { SettingsBadge(badge) }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 10)
             .frame(height: SettingsMetrics.sidebarRowHeight)
             .contentShape(RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SettingsNavigationStyle())
         .background {
             if selected {
                 RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 2, style: .continuous)
@@ -77,7 +82,7 @@ struct SettingsSidebar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTheme.secondaryText)
                 .accessibilityHidden(true)
             TextField("Search", text: $model.settingsQuery)
                 .textFieldStyle(.plain)
@@ -88,7 +93,7 @@ struct SettingsSidebar: View {
                 Button {
                     model.settingsQuery = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(SettingsTheme.secondaryText)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -111,6 +116,25 @@ struct SettingsSidebar: View {
         withAnimation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.86)) {
             model.navigate(to: pane)
         }
+    }
+}
+
+private struct SettingsNavigationStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsNavigationBody(configuration: configuration)
+    }
+}
+
+private struct SettingsNavigationBody: View {
+    let configuration: ButtonStyleConfiguration
+    @StateObject private var hover = HoverState()
+
+    var body: some View {
+        configuration.label
+            .background(hover.isHovered ? SettingsTheme.control : .clear,
+                        in: RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius + 2))
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .onHover { hover.isHovered = $0 }
     }
 }
 
