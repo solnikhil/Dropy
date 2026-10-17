@@ -35,6 +35,8 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
     private(set) var workspace: OverlayWorkspaceView?
     private(set) var overlayScreen: NSScreen?
     private var expandedPreview = false
+    /// Per-opening monitoring mode; never changes the saved dismissal/interaction preferences.
+    private(set) var isPinned = false
     /// Changes with every layout change; a resize finishing later leaves a newer one alone.
     private var layoutGeneration = UUID()
     /// The black outline that morphs out of the notch, and the content it reveals.
@@ -251,15 +253,17 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         if selectedIdentity?.bundleIdentifier == bundleID, action == .close { close(); return }
         let switching = state != .closed
         let previous = previousApplication
+        let pinned = isPinned
         if switching { close(returnsFocus: action != .relocate) }
-        open(for: bundleID)
+        open(for: bundleID, pinned: pinned)
         if switching, action != .relocate { previousApplication = previous }
     }
 
     @objc private func chooseWindows() {
         let previous = previousApplication
+        let pinned = isPinned
         if state != .closed { close() }
-        open(picker: true)
+        open(picker: true, pinned: pinned)
         previousApplication = previous
     }
 
@@ -275,24 +279,26 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         case .relocate:
             let target = selectedIdentity?.bundleIdentifier ?? requestedFavorite ?? openTarget
             let picker = forcesPicker && !hasSelection
+            let pinned = isPinned
             close(returnsFocus: false)
-            open(for: target, picker: picker)
+            open(for: target, picker: picker, pinned: pinned)
         }
     }
 
     /// Closes the overlay if the dismiss preference treats `event` as an exit.
     func dismiss(_ event: DismissEvent) {
-        guard state != .closed, preferences.value.dismissBehavior.closes(on: event) else { return }
+        guard state != .closed, preferences.value.dismissBehavior.closes(on: event, isPinned: isPinned) else { return }
         close(returnsFocus: !event.isSystemChange)
     }
 
-    func open(for favorite: String? = nil, picker: Bool = false) {
+    func open(for favorite: String? = nil, picker: Bool = false, pinned: Bool = false) {
         guard state == .closed else { return }
         requestedFavorite = favorite
         forcesPicker = picker
         pickerQuery = ""
         predictedWindowID = nil
         guard let screen = screenForOpening else { return }
+        isPinned = pinned
         generation = UUID()
         overlaySession = UUID()
         overlayScreen = screen
@@ -441,6 +447,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         generation = UUID()
         overlaySession = UUID()
         setState(.closed)
+        isPinned = false
         selectedIdentity = nil
         highlightedIdentity = nil
         selectedWindowSize = nil
@@ -641,7 +648,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
 
     private func pointerExited() {
         NSLog("Dropy dismiss: pointer left (armed=%@)", pointerHasEntered ? "yes" : "no")
-        guard pointerHasEntered, preferences.value.dismissBehavior.closes(on: .pointerLeft) else { return }
+        guard pointerHasEntered, preferences.value.dismissBehavior.closes(on: .pointerLeft, isPinned: isPinned) else { return }
         pendingPointerLeave?.cancel()
         let session = overlaySession
         let work = DispatchWorkItem { [weak self] in
@@ -864,6 +871,9 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         workspace.search.delegate = self
         workspace.privacy.target = self
         workspace.privacy.action = #selector(privacyClicked)
+        workspace.isPinned = isPinned
+        workspace.pin.target = self
+        workspace.pin.action = #selector(togglePin)
         workspace.expand.target = self
         workspace.expand.action = #selector(expandClicked)
         workspace.elsewhere.target = native
@@ -1122,8 +1132,9 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
             // Keep the explicit selection and original focus across that transition.
             remember(selected.identity)
             let previous = previousApplication
+            let pinned = isPinned
             close()
-            open(for: selected.bundleIdentifier)
+            open(for: selected.bundleIdentifier, pinned: pinned)
             previousApplication = previous
             return
         }
@@ -1175,7 +1186,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
             .uint32Value ?? CGMainDisplayID()
         return SessionConditions(interaction: preferences.value.interaction, accessibilityTrusted: WindowPlacer.isTrusted,
                                  fullScreenInFront: Spaces.currentIsFullScreen(on: display),
-                                 stageAvailable: stage != nil && !Spaces.displaysShareSpaces)
+                                 stageAvailable: stage != nil && !Spaces.displaysShareSpaces, isPinned: isPinned)
     }
 
     /// Docking is not possible for this window; show the live preview instead.
@@ -1183,6 +1194,8 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         guard request == generation, let renderer else { return }
         native.end()
         live?.end()
+        panel?.ignoresMouseEvents = false
+        backdrop?.hole = nil
         // Reserve restoration before suspension. Closing or choosing another window
         // while it runs cannot leave this window on the Stage or restore the new one.
         let restoration = native.restoreForPreview()
@@ -1309,6 +1322,37 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc func togglePin() {
+        guard state != .closed else { return }
+        isPinned.toggle()
+        workspace?.isPinned = isPinned
+        pendingPointerLeave?.cancel()
+        pendingPointerLeave = nil
+        guard let identity = selectedIdentity else { return }
+        if isPinned {
+            generation = UUID()
+            preview.reset()
+            hideNote()
+            showPreviewInstead(of: identity, request: generation, note: "Pinned · View only")
+        } else if let index = available.firstIndex(where: { $0.identity == identity }) {
+            selectWindow(at: index)
+        } else {
+            // The catalog may still be loading after a predicted opening. Native
+            // ownership can resume using the exact identity without guessing a row.
+            generation = UUID()
+            preview.reset()
+            hideNote()
+            if SessionModePolicy.mode(for: sessionConditions) == .native {
+                preview.stop(reason: "unpinned")
+                native.start(identity, applicationName: selectedApplicationName, request: generation)
+            } else {
+                showPreviewInstead(of: identity, request: generation,
+                    note: SessionModePolicy.previewNote(for: sessionConditions)
+                        ?? "View only · Select this window again to resume interaction")
+            }
+        }
     }
 
     @objc private func closeClicked() { close() }

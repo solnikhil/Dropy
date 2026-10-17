@@ -20,8 +20,8 @@ public enum DismissEvent: Sendable {
     case displayChanged
 
     /// Whether the event is the system taking the screen away rather than the person
-    /// dismissing the overlay: it closes whatever the dismiss preference, and focus is
-    /// not handed back (activating an app would, for one, end Mission Control).
+    /// dismissing the overlay. Focus is not handed back (activating an app would,
+    /// for one, end Mission Control). A pinned monitor may follow a desktop change.
     public var isSystemChange: Bool {
         switch self {
         case .escape, .clickOutside, .pointerLeft: false
@@ -33,7 +33,14 @@ public enum DismissEvent: Sendable {
 extension DismissBehavior {
     /// Esc always closes. Pointer-leave also closes on an outside click, since a
     /// click elsewhere is an even clearer signal than the pointer drifting away.
-    public func closes(on event: DismissEvent) -> Bool {
+    public func closes(on event: DismissEvent, isPinned: Bool = false) -> Bool {
+        // A monitor follows desktops but still yields when the system takes over.
+        if isPinned {
+            switch event {
+            case .clickOutside, .pointerLeft, .desktopChanged: return false
+            default: break
+            }
+        }
         if event.isSystemChange { return true }
         return switch (self, event) {
         case (_, .escape): true

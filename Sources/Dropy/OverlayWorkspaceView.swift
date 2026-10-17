@@ -7,6 +7,17 @@ import DropyCore
 final class OverlayWorkspaceView: NSView {
     let apps = NSPopUpButton(frame: .zero, pullsDown: true)
     let expand = NSButton()
+    let pin = NSButton()
+    var isPinned = false { didSet { updatePin() } }
+
+    private func updatePin() {
+        pin.state = isPinned ? .on : .off
+        pin.contentTintColor = isPinned ? DropyAppearance.accent : NSColor(white: 0.8, alpha: 1)
+        pin.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin", accessibilityDescription: nil)
+        let label = isPinned ? "Unpin overlay" : "Pin overlay for monitoring"
+        pin.toolTip = isPinned ? "Unpin overlay · Restore normal dismissal and interaction" : "Pin overlay · Keep a view-only monitor visible across desktops"
+        pin.setAccessibilityLabel(label)
+    }
     let search = NSSearchField()
     let scroll = NSScrollView()
     let windowList = NSStackView()
@@ -38,6 +49,9 @@ final class OverlayWorkspaceView: NSView {
         expand.bezelStyle = .inline
         expand.toolTip = "Expand or return to window size"
         expand.setAccessibilityLabel("Expand or return to window size")
+        pin.bezelStyle = .inline
+        pin.setButtonType(.toggle)
+        updatePin()
         search.placeholderString = "Search apps and windows"
         search.setAccessibilityLabel("Search apps and windows")
         scroll.hasVerticalScroller = true
@@ -71,7 +85,7 @@ final class OverlayWorkspaceView: NSView {
         elsewhere.isHidden = true
         elsewhere.bezelStyle = .rounded
         previewShell.addSubview(cover)
-        for view in [apps, expand, search, scroll, previewShell, status, pickerHeading, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
+        for view in [apps, expand, pin, search, scroll, previewShell, status, pickerHeading, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
     override func layout() {
@@ -79,6 +93,7 @@ final class OverlayWorkspaceView: NSView {
         apps.frame = CGRect(x: WorkspaceLayout.topControlInset, y: bounds.height - 30,
                             width: WorkspaceLayout.appSwitcherWidth, height: 24)
         expand.frame = CGRect(x: bounds.width - 38, y: bounds.height - 30, width: 28, height: 24)
+        pin.frame = CGRect(x: bounds.width - 70, y: bounds.height - 30, width: 28, height: 24)
         expand.isHidden = !showsPreview || docked
         previewShell.frame = previewRect
         // Explicit viewport ownership avoids AppKit autoresizing accumulating an

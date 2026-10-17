@@ -16,8 +16,14 @@ struct WorkspaceChecks {
         precondition(view.scroll.isHidden && !view.previewShell.isHidden, "a selected window must own the workspace")
         let housing = CGRect(x: (layout.size.width - notch.width) / 2,
                              y: layout.size.height - notch.height, width: notch.width, height: notch.height)
-        precondition(!view.apps.frame.intersects(housing) && !view.expand.frame.intersects(housing),
+        precondition(!view.apps.frame.intersects(housing) && !view.expand.frame.intersects(housing) && !view.pin.frame.intersects(housing),
                      "controls must stay outside the physical housing")
+        precondition(!view.pin.frame.intersects(view.expand.frame), "pin and expand must have distinct targets")
+        precondition(!view.pin.isHidden && view.pin.state == .off)
+        view.isPinned = true
+        precondition(view.pin.state == .on && view.pin.accessibilityLabel() == "Unpin overlay")
+        view.isPinned = false
+        precondition(view.pin.state == .off)
         precondition(view.interaction.isHidden, "capability messages must remain hidden until an attempted action")
         precondition(view.previewShell.frame.minY == 8, "the preview must not reserve an unused status footer")
         let menu = NSMenu()
@@ -36,6 +42,8 @@ struct WorkspaceChecks {
         narrowView.layoutSubtreeIfNeeded()
         let narrowHousing = CGRect(x: (narrow.size.width - notch.width) / 2,
             y: narrow.size.height - notch.height, width: notch.width, height: notch.height)
+        precondition(!narrowView.pin.frame.intersects(narrowHousing) && !narrowView.expand.frame.intersects(narrowHousing))
+        precondition(narrow.preview.size == CGSize(width: 160, height: 300), "control room must not stretch the monitored source")
         precondition(!narrowView.apps.frame.intersects(narrowHousing), "the wider switcher must remain outside the housing for narrow source windows")
         let rendererStandIn = NSView(frame: view.previewShell.bounds)
         rendererStandIn.autoresizingMask = [.width, .height]
@@ -56,6 +64,7 @@ struct WorkspaceChecks {
         view.docked = true
         view.layoutSubtreeIfNeeded()
         precondition(view.search.isHidden && view.scroll.isHidden, "search must never intercept a docked app")
+        precondition(!view.pin.isHidden, "monitoring must be reachable from a real docked window")
         print("Workspace layout checks passed (no windows shown)")
     }
 }

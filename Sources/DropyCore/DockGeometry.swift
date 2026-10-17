@@ -34,7 +34,7 @@ public enum DockGeometry {
     /// A window narrower than this still gets a body wide enough for the notch and
     /// the controls either side of it.
     public static func minimumBodyWidth(notch: CGSize?) -> CGFloat {
-        (notch?.width ?? 0) + 2 * (WorkspaceLayout.appSwitcherWidth + WorkspaceLayout.topControlInset + 2)
+        (notch?.width ?? 0) + 2 * (WorkspaceLayout.controlWingWidth + WorkspaceLayout.topControlInset + 2)
     }
 
     /// Height of the band above the window: at least the notch, the menu bar (no

@@ -13,6 +13,7 @@ public enum SessionMode: String, Equatable, Sendable {
 
 /// What decides the mode for a session.
 public struct SessionConditions: Equatable, Sendable {
+    public var isPinned: Bool
     public var interaction: InteractionMode
     /// Accessibility is granted, so Dropy may move windows and bring apps forward.
     public var accessibilityTrusted: Bool
@@ -23,7 +24,8 @@ public struct SessionConditions: Equatable, Sendable {
     public var stageAvailable: Bool
 
     public init(interaction: InteractionMode, accessibilityTrusted: Bool, fullScreenInFront: Bool = false,
-                stageAvailable: Bool = false) {
+                stageAvailable: Bool = false, isPinned: Bool = false) {
+        self.isPinned = isPinned
         self.interaction = interaction
         self.accessibilityTrusted = accessibilityTrusted
         self.fullScreenInFront = fullScreenInFront
@@ -33,6 +35,7 @@ public struct SessionConditions: Equatable, Sendable {
 
 public enum SessionModePolicy {
     public static func mode(for conditions: SessionConditions) -> SessionMode {
+        guard !conditions.isPinned else { return .preview }
         guard conditions.interaction == .fullApp, conditions.accessibilityTrusted else { return .preview }
         if conditions.fullScreenInFront { return conditions.stageAvailable ? .live : .preview }
         return .native
@@ -41,6 +44,7 @@ public enum SessionModePolicy {
     /// Why a session that the person wanted to use is only a preview, shown over it;
     /// nil when the person chose Preview or nothing needs explaining.
     public static func previewNote(for conditions: SessionConditions) -> String? {
+        if conditions.isPinned { return "Pinned · View only" }
         guard conditions.interaction == .fullApp, mode(for: conditions) == .preview else { return nil }
         if !conditions.accessibilityTrusted {
             return "View only · Allow Accessibility for Dropy in Settings to use apps here"

@@ -17,6 +17,18 @@ final class DismissalTests: XCTestCase {
         XCTAssertFalse(DismissBehavior.manual.closes(on: .pointerLeft))
     }
 
+    func testPinnedMonitorSurvivesWorkAndDesktopChangesButStillYieldsToSystem() {
+        for behavior in DismissBehavior.allCases {
+            for event in [DismissEvent.clickOutside, .pointerLeft, .desktopChanged] {
+                XCTAssertFalse(behavior.closes(on: event, isPinned: true))
+            }
+            for event in [DismissEvent.escape, .missionControl, .sessionEnded, .displayChanged] {
+                XCTAssertTrue(behavior.closes(on: event, isPinned: true))
+            }
+            XCTAssertTrue(behavior.closes(on: .desktopChanged), "Unpinning restores normal dismissal")
+        }
+    }
+
     func testTheSystemTakingTheScreenAlwaysCloses() {
         for event in [DismissEvent.desktopChanged, .missionControl, .sessionEnded, .displayChanged] {
             XCTAssertTrue(event.isSystemChange)
