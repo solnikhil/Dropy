@@ -1,6 +1,6 @@
 # Dropy app icon
 
-The current app icon is `dropy-sketch-icon-v5.png`. Other PNGs in this folder are earlier design explorations.
+The current app icon is `dropy-option-merged-v3.png`. Other PNGs in this folder are alternative design explorations; version numbers do not determine the selected design.
 
 `Scripts/make-icon.swift` packages the current artwork into a transparent macOS ICNS with all ten standard representations, from 16 px to 1024 px. Run `swift Scripts/make-icon.swift` after changing the artwork to refresh the checked-in `Resources/AppIcon.icns`.
 

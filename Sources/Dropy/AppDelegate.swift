@@ -27,7 +27,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settings: SettingsWindowController!
     private let onboardingProgress = OnboardingProgress()
     private var onboarding: OnboardingWindowController?
-    private let updater = UpdateChecker()
+    private let updater = UpdateChecker(engine: SparkleUpdateEngine())
     private var updateMenuItems: [NSMenuItem] = []
     /// Submenus whose check marks mirror a preference, refreshed whenever one changes.
     private var choiceMenus: [(menu: NSMenu, selected: (DropyPreferences) -> String)] = []
@@ -292,7 +292,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onboarding?.show()
         }
         startStageIfUseful()
-        if !Self.launchedByCheck { updater.check() }
+        if !Self.launchedByCheck { updater.start() }
         startDebugDriversIfRequested()
     }
 

@@ -1,53 +1,73 @@
-# Release update checks
+# Signed automatic updates
 
-Dropy checks the repository configured by `DropyUpdateRepository` in Info.plist on every
-normal app startup. Settings → Updates and Check for Updates in the app/menu-bar menus
-provide the same checker. Animation command-line operations and benchmark/debug launches
-do not make update requests. Requests are asynchronous with bounded timeouts; duplicate
-startup/manual requests coalesce.
+Dropy uses Sparkle 2.10.0 for update discovery, signed downloads, installation and
+relaunch. Settings › Updates exposes manual checks and Sparkle's persisted automatic
+check/download preferences. Default checks run on startup and every six hours; a
+person's existing choice is never overwritten. Sparkle presents install progress
+and can install downloaded updates when Dropy quits. Normal termination still saves
+Studio and restores owned windows.
 
-## Release source
+## Channel configuration
 
-The selected source is `solnikhil/Dropy`. Checks use the public
-[GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)
-without authentication, cookies, or user identifiers. No credentials are embedded in
-the app. The repository must be public for end-user checks. At implementation time it
-is private, so the public API returns 404 and the app reports source unavailability.
-Making the repository public or supplying a separate public release repository is a
-publisher decision; the updater does not change repository visibility.
+A build requires both `SUFeedURL` (an HTTPS appcast) and `SUPublicEDKey` (a 32-byte
+Ed25519 public key) in `Resources/Info.plist`. Both archives and the appcast must be
+signed: `SURequireSignedFeed` is enabled. Missing configuration is shown explicitly
+and never falls back to an unsigned download or reports that the app is current.
 
-Latest-release 404 is not treated as "up to date": Dropy checks whether the repository
-is accessible. A confirmed public repository without a stable release gets a separate
-"No Stable Release Published" state. Network errors, malformed metadata, unsupported
-version tags, rate limits and server failures remain explicit failures.
+**Hosting is not configured yet.** The source repository is private. A public
+releases-only repository can host installable binaries and `appcast.xml` while
+source stays private, but publishing those binaries is a separate owner decision.
+A private channel instead needs authenticated feed and archive access; merely using
+a private GitHub download URL does not implement authentication. Never embed GitHub
+tokens in an app bundle or feed URL.
 
-## Publishing
+For a public releases-only repository, the feed URL is:
+`https://github.com/OWNER/RELEASES-REPOSITORY/releases/latest/download/appcast.xml`.
+No repository visibility or publication changes are performed by the app.
 
-1. Set `CFBundleShortVersionString` to the release's semantic version and increment
-   `CFBundleVersion` for each distributed build.
-2. Build, sign and verify the distributable app. Attach its macOS archive or disk image
-   to a stable GitHub release tagged `vMAJOR.MINOR.PATCH` in the public source repository.
-3. Publish release notes. Draft and prerelease metadata cannot become stable updates.
-4. Verify startup checks from an older installed version and View Release from Settings.
+## Signing and publishing
 
-Version comparison is numeric and observes prerelease ordering, preventing string-order
-mistakes such as 1.9 being newer than 1.10. Build metadata does not change precedence.
-A newer release offers View Release, opening only a validated HTTPS release page under
-the configured GitHub repository. This is update discovery and manual download, not an
-automatic installation or app replacement system.
+The update private key lives in the macOS login Keychain under account `org.dropy.app`.
+Only the public key is checked in. Keep a secure owner-managed backup of the private
+key; replacing the public key without a signed migration strands existing installs.
+Never commit or print the private key in release logs.
 
-## Cache and verification
+`Scripts/fetch-sparkle.sh` downloads the pinned official distribution, verifies its
+SHA-256, and caches its framework and signing tools. SwiftPM separately pins the same
+exact version. See `ThirdParty/Sparkle-LICENSE` for licensing.
 
-Successful release metadata and its ETag are cached in versioned app defaults. Every
-startup still sends a request; a 304 revalidates that known release. Cached metadata is
-validated against the configured repository and URL before reuse. A failure never claims
-the installed app is current and never advances Last Successful Check.
+After choosing the public channel and setting its feed URL, prepare an update from
+a clean checkout:
 
-Tests cover semantic ordering, malformed versions, release URL validation, current/newer
-releases, offline and private-source behavior, public repositories without releases,
-rate/server failures, ETag reuse across launches, and coalescing concurrent requests.
+```sh
+./Scripts/release-update.sh 0.1.2 3 OWNER/RELEASES-REPOSITORY
+```
 
-The installed app was reviewed: flat navigation and neutral General labels are present,
-startup checks reported the private-source error without user interaction, and the app
-menu check opened Updates and repeated the same check. The isolated staged revision also
-passed the complete local suite, independently of concurrent onboarding edits.
+The script builds with explicit version/build metadata, checks the bundle signature,
+creates a ZIP, generates a signed appcast and verifies its signature. Artifacts go to
+`.build/releases/VERSION-BUILD`. Build numbers must increase with every release.
+Review the artifacts before uploading. Add `--publish` to upload the prepared build
+to a public releases-only repository and mark that GitHub release latest. The source
+repository remains private. The publisher refuses a missing/mismatched feed, signing
+key, dirty checkout, duplicate output directory or non-public destination.
+
+External macOS distribution also requires Developer ID Application signing and Apple
+notarization. The development machine currently has an Apple Development identity;
+that supports this Mac's development installation but is not a notarized public
+release. Public publishing requires `DROPY_SIGN_IDENTITY` naming a Developer ID
+Application identity and `DROPY_NOTARY_PROFILE` naming stored notarytool credentials.
+The publisher submits, waits, staples, and assesses the app before archiving it.
+Sparkle's Ed25519 signature authenticates updates independently of Apple signing.
+
+## Verification
+
+`Scripts/test-local.sh` exercises configuration validation, startup scheduling,
+manual checks, persisted choices, busy/error cases and installation routing using a
+fake engine. `Scripts/build-local.sh` compiles the real Sparkle adapter and embeds
+its framework and helpers. CI builds through both SwiftPM and the direct script,
+runs the checks and verifies the assembled bundle signature. A successful build
+alone does not prove that a hosted channel or end-to-end installation is working;
+verify the reachable signed appcast and an upgrade before distributing a channel.
+
+Official references: [programmatic setup](https://sparkle-project.org/documentation/programmatic-setup/),
+[publishing](https://sparkle-project.org/documentation/publishing/).
