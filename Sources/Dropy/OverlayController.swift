@@ -106,7 +106,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
     }
     /// The notch display's desktop when this opening started; only a change of it
     /// closes a docked window (adding the Stage display also posts a desktop change).
-    private var desktopAtOpen: UInt64?
+    private var desktop = OverlayDesktopTracker()
     private var layoutChangesBeforeReady = 0
     private var requestedScreenCaptureAccess = false
     /// Changes on open, close, every selection and every failure. Async work
@@ -163,7 +163,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
                 // Other displays changing desktops (or the Stage appearing) leave the
                 // overlay where it is; only a switch on this display takes it away.
                 let now = Spaces.current(on: Self.displayID(of: screen))
-                guard now == nil || now != self.desktopAtOpen else { return }
+                guard self.desktop.observe(now) else { return }
                 NSLog("Dropy dismiss: switched desktops")
                 self.dismiss(.desktopChanged)
             }
@@ -223,14 +223,37 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         set { native.onDeferredRestore = newValue }
     }
 
+    /// The real pointer is on the hidden Stage during Live interaction. Reopening
+    /// must still target the physical display the person is looking at.
+    private var screenForOpening: NSScreen? {
+        let real = NSScreen.screens.filter { stage?.ownedDisplayIDs.contains(Self.displayID(of: $0)) != true }
+        if let pointed = real.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) { return pointed }
+        if let overlayScreen, let existing = real.first(where: { Self.displayID(of: $0) == Self.displayID(of: overlayScreen) }) {
+            return existing
+        }
+        if let main = NSScreen.main, let physical = real.first(where: { Self.displayID(of: $0) == Self.displayID(of: main) }) {
+            return physical
+        }
+        return real.first
+    }
+
+    private var openingAction: OverlayOpeningAction {
+        let opened = overlayScreen.map { OverlayLocation(displayID: Self.displayID(of: $0), spaceID: desktop.spaceID) }
+        let requested = screenForOpening.map {
+            OverlayLocation(displayID: Self.displayID(of: $0), spaceID: Spaces.current(on: Self.displayID(of: $0)))
+        }
+        return .resolve(isOpen: state != .closed, opened: opened, requested: requested)
+    }
+
     func openFavorite(_ bundleID: String) {
         guard preferences.value.favoriteApps.contains(where: { $0.id == bundleID }) else { return }
-        if state != .closed, selectedIdentity?.bundleIdentifier == bundleID { close(); return }
+        let action = openingAction
+        if selectedIdentity?.bundleIdentifier == bundleID, action == .close { close(); return }
         let switching = state != .closed
         let previous = previousApplication
-        if switching { close() }
+        if switching { close(returnsFocus: action != .relocate) }
         open(for: bundleID)
-        if switching { previousApplication = previous }
+        if switching, action != .relocate { previousApplication = previous }
     }
 
     @objc private func chooseWindows() {
@@ -246,7 +269,15 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
     }
 
     func toggle() {
-        state == .closed ? open() : close()
+        switch openingAction {
+        case .open: open()
+        case .close: close()
+        case .relocate:
+            let target = selectedIdentity?.bundleIdentifier ?? requestedFavorite ?? openTarget
+            let picker = forcesPicker && !hasSelection
+            close(returnsFocus: false)
+            open(for: target, picker: picker)
+        }
     }
 
     /// Closes the overlay if the dismiss preference treats `event` as an exit.
@@ -261,8 +292,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         forcesPicker = picker
         pickerQuery = ""
         predictedWindowID = nil
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
-                ?? NSScreen.main else { return }
+        guard let screen = screenForOpening else { return }
         generation = UUID()
         overlaySession = UUID()
         overlayScreen = screen
@@ -274,7 +304,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         openReadyLogged = false
         benchmarkReadyMs = nil
         benchmarkFirstFrameMs = nil
-        desktopAtOpen = Spaces.current(on: Self.displayID(of: screen))
+        desktop = OverlayDesktopTracker(spaceID: Spaces.current(on: Self.displayID(of: screen)))
         displays = displayConfigurations()
         missionControl.start()
         layoutChangesBeforeReady = 0
