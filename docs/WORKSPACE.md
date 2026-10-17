@@ -37,3 +37,11 @@ Local builds and deterministic tests can establish migration, search/selection p
 ## Local verification
 
 `Scripts/test-local.sh` passed on 2026-10-17 against the final source: the application build, 203 core test methods (including eleven new workspace/Live-layout methods), journal/recovery checks, workspace layout checks, queued session ownership including system-release/favorite-reopen ordering, and the remaining app-side regression checks. `git diff --check` passed. The local core suite uses the repository's XCTest shim; these are not fresh hardware compatibility results. No development app was launched, foreign app was exercised, capture permission requested, or Stage created for this verification.
+
+## Opening on another desktop (2026-10-18)
+
+Space notifications now distinguish an unknown WindowServer snapshot from a confirmed desktop change. Creating the hidden Stage can temporarily make the current Space unavailable; that alone must not cancel an opening. If the initial Space is unknown, the first known value establishes the baseline. A later change between known desktops still dismisses the old session.
+
+The main shortcut and favorite shortcuts compare the requested physical display/desktop with the open session. When they differ, the old session is closed without stealing focus and a new session opens where the person is working, preserving the selected app. On the same desktop, the shortcut still toggles normally. A pointer currently handed onto the hidden Stage resolves back to the overlay's physical display rather than opening a second overlay on the Stage.
+
+These policies have five deterministic regression tests. Real-app Space switching and full-screen interaction remain subject to the hardware-validation boundary above.
