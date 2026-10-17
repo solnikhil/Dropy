@@ -1,21 +1,48 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-    <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleExecutable</key><string>Dropy</string>
-    <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundleIdentifier</key><string>org.dropy.app</string>
-    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>Dropy</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>DropyUpdateRepository</key><string>solnikhil/Dropy</string>
-    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
-    <key>LSMinimumSystemVersion</key><string>15.0</string>
-    <key>LSUIElement</key><true/>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>Free and MIT-licensed.</string>
-    <key>NSAppleEventsUsageDescription</key><string>Dropy hides the Dock while its overlay opens on the Dock's edge, when you turn that on, and shows it again afterwards.</string>
-    <key>NSScreenCaptureDescription</key><string>Dropy shows windows you choose inside its temporary overlay.</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>Dropy</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.dropy.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Dropy</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.1</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Free and MIT-licensed.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Dropy hides the Dock while its overlay opens on the Dock's edge, when you turn that on, and shows it again afterwards.</string>
+	<key>NSScreenCaptureDescription</key>
+	<string>Dropy shows windows you choose inside its temporary overlay.</string>
+	<key>SUPublicEDKey</key>
+	<string>fr3AdR9m40fj6KOrc8dZvE3waguiHRqAOlHZo0tDFFI=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>21600</integer>
+	<key>SURequireSignedFeed</key>
+	<true/>
+</dict>
+</plist>

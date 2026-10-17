@@ -1,92 +1,83 @@
 import Foundation
 import DropyCore
 
-actor UpdateFixtureTransport: ReleaseTransport {
-    struct Fixture: Sendable {
-        let status: Int
-        let data: Data
-        var etag: String? = nil
-    }
-    var requests: [URLRequest] = []
-    private var fixtures: [Fixture]
-    init(_ fixtures: [Fixture]) { self.fixtures = fixtures }
-    func send(_ request: URLRequest) async throws -> ReleaseHTTPReply {
-        requests.append(request)
-        try await Task.sleep(for: .milliseconds(10))
-        guard !fixtures.isEmpty else { throw URLError(.notConnectedToInternet) }
-        let fixture = fixtures.removeFirst()
-        return ReleaseHTTPReply(status: fixture.status, url: request.url!, data: fixture.data, etag: fixture.etag)
-    }
+@MainActor final class UpdateFixtureEngine: ApplicationUpdateEngine {
+    var onEvent: ((ApplicationUpdateEvent) -> Void)?
+    var canCheck = true
+    var automaticallyChecks = true
+    var automaticallyDownloads = true
+    var allowsAutomaticDownloads: Bool { automaticallyChecks }
+    var lastChecked: Date?
+    var starts = 0
+    var checks = 0
+    var backgrounds = 0
+    var startError: Error?
+    func start() throws { starts += 1; if let startError { throw startError } }
+    func check() { checks += 1 }
+    func checkInBackground() { backgrounds += 1 }
 }
 
-@main
-struct UpdateChecks {
-    @MainActor static func main() async throws {
-        let suite = "DropyUpdateChecks.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        func payload(_ version: String = "v1.2.0", url: String = "https://github.com/solnikhil/Dropy/releases/tag/v1.2.0", preview: Bool = false) -> Data {
-            try! JSONSerialization.data(withJSONObject: ["tag_name": version, "html_url": url,
-                "name": "Dropy", "body": "Release notes", "draft": false, "prerelease": preview])
+@main struct UpdateChecks {
+    @MainActor static func main() {
+        let key = Data(repeating: 1, count: 32).base64EncodedString()
+        let channel = UpdateChannelConfiguration(feed: "https://example.com/appcast.xml", publicKey: key)
+        precondition(channel.isValid)
+        for feed in ["http://example.com/appcast.xml", "file:///tmp/appcast.xml", "https://user:secret@example.com/feed", "https://example.com/feed?token=secret", "https://example.com/feed#x"] {
+            precondition(!UpdateChannelConfiguration(feed: feed, publicKey: key).isValid)
         }
-        let transport = UpdateFixtureTransport([.init(status: 200, data: payload(), etag: "\"release-1\""),
-                                               .init(status: 304, data: Data())])
-        let checker = UpdateChecker(client: ReleaseUpdateClient(transport: transport), installedVersion: "1.1.0", defaults: defaults)
-        await checker.checkNow()
-        precondition(checker.availableRelease?.version == "1.2.0")
-        let firstChecked = checker.lastChecked
-        precondition(firstChecked != nil && !checker.isChecking)
-        await checker.checkNow()
-        let requests = await transport.requests
-        precondition(requests.count == 2 && requests[1].value(forHTTPHeaderField: "If-None-Match") == "\"release-1\"")
-        precondition(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == nil }, "public checks must not need credentials")
-        precondition(checker.availableRelease?.version == "1.2.0", "304 must revalidate a known release")
-        let successful = checker.lastChecked
-        await checker.checkNow()
-        if case .unavailable = checker.state {} else { preconditionFailure("offline must not report up to date") }
-        precondition(checker.lastChecked == successful && !checker.isChecking)
+        precondition(!UpdateChannelConfiguration(feed: channel.feed, publicKey: "not-a-key").isValid)
+        let engine = UpdateFixtureEngine()
+        let checker = UpdateChecker(engine: engine, channel: channel, installedVersion: "0.1.1")
+        checker.start(); checker.start()
+        precondition(engine.starts == 1 && engine.backgrounds == 1 && checker.canCheck)
+        checker.check()
+        precondition(engine.checks == 1 && checker.isChecking)
+        engine.onEvent?(.finished)
+        precondition(checker.state == .idle, "Closing a manual check must not leave a stuck spinner")
+        checker.check()
+        engine.lastChecked = Date(timeIntervalSince1970: 10)
+        engine.onEvent?(.current)
+        precondition(checker.state == .current && checker.lastChecked == engine.lastChecked)
+        engine.onEvent?(.available(UpdateRelease(version: "0.1.2", notes: "Changes")))
+        precondition(checker.availableRelease?.version == "0.1.2")
+        checker.installUpdate()
+        precondition(engine.checks == 3, "Install must use the verified updater rather than opening a browser")
+        checker.setAutomaticDownloads(false)
+        precondition(!engine.automaticallyDownloads && !checker.automaticallyDownloads)
+        checker.setAutomaticChecks(false)
+        precondition(!engine.automaticallyChecks && !checker.allowsAutomaticDownloads)
+        checker.setAutomaticDownloads(true)
+        precondition(!engine.automaticallyDownloads, "Automatic downloads cannot be enabled when Sparkle refuses them")
+        engine.onEvent?(.failed("Signature verification failed"))
+        precondition(checker.state == .unavailable("Signature verification failed"))
+        let last = checker.lastChecked
+        engine.onEvent?(.finished)
+        precondition(checker.lastChecked == last && checker.state != .current)
+        engine.canCheck = false
+        let checks = engine.checks
+        checker.check()
+        precondition(engine.checks == checks)
+        checker.cancel()
+        precondition(engine.onEvent == nil)
 
-        let reloadedTransport = UpdateFixtureTransport([.init(status: 304, data: Data())])
-        let reloaded = UpdateChecker(client: ReleaseUpdateClient(transport: reloadedTransport), installedVersion: "1.1.0", defaults: defaults)
-        await reloaded.checkNow()
-        precondition(reloaded.availableRelease?.version == "1.2.0", "a fresh launch must check and validate its persisted cache")
-        defaults.removePersistentDomain(forName: suite)
-
-        let cases: [(fixtures: [UpdateFixtureTransport.Fixture], current: String, expected: String)] = [
-            ([.init(status: 200, data: payload("v1.9.9"))], "1.10.0", "current"),
-            ([.init(status: 200, data: payload("v1.2.0"))], "1.2.0+local.1", "current"),
-            ([.init(status: 404, data: Data()), .init(status: 404, data: Data())], "1.0.0", "unavailable"),
-            ([.init(status: 404, data: Data()), .init(status: 200, data: Data(#"{"full_name":"solnikhil/Dropy","private":false}"#.utf8))], "1.0.0", "none"),
-            ([.init(status: 200, data: payload(url: "https://github.com/other/repo/releases/tag/v1.2.0"))], "1.0.0", "unavailable"),
-            ([.init(status: 200, data: payload(url: "http://github.com/solnikhil/Dropy/releases/tag/v1.2.0"))], "1.0.0", "unavailable"),
-            ([.init(status: 200, data: payload(preview: true))], "1.0.0", "unavailable"),
-            ([.init(status: 200, data: payload("v1.2.0-beta"))], "1.0.0", "unavailable"),
-            ([.init(status: 200, data: payload("release-name"))], "1.0.0", "unavailable"),
-            ([.init(status: 200, data: Data("not JSON".utf8))], "1.0.0", "unavailable"),
-            ([.init(status: 403, data: Data())], "1.0.0", "unavailable"),
-            ([.init(status: 503, data: Data())], "1.0.0", "unavailable"),
-            ([.init(status: 304, data: Data())], "1.0.0", "unavailable"),
-        ]
-        for test in cases {
-            defaults.removePersistentDomain(forName: suite)
-            let transport = UpdateFixtureTransport(test.fixtures)
-            let checker = UpdateChecker(client: ReleaseUpdateClient(transport: transport), installedVersion: test.current, defaults: defaults)
-            await checker.checkNow()
-            switch (test.expected, checker.state) {
-            case ("current", .current), ("none", .noReleases), ("unavailable", .unavailable): break
-            default: preconditionFailure("Incorrect state: \(checker.state)")
-            }
-            precondition(!checker.isChecking)
-            if test.expected == "unavailable" { precondition(checker.lastChecked == nil) }
-        }
-        defaults.removePersistentDomain(forName: suite)
-        let concurrent = UpdateFixtureTransport([.init(status: 200, data: payload())])
-        let coalesced = UpdateChecker(client: ReleaseUpdateClient(transport: concurrent), installedVersion: "1.0.0", defaults: defaults)
-        async let first: Void = coalesced.checkNow()
-        async let second: Void = coalesced.checkNow()
-        _ = await (first, second)
-        let count = await concurrent.requests.count
-        precondition(count == 1, "concurrent manual/startup checks must coalesce")
-        print("Release update checks passed (versions, cache, offline, private source, untrusted URLs, concurrency)")
+        let disabled = UpdateFixtureEngine()
+        disabled.automaticallyChecks = false
+        let disabledChecker = UpdateChecker(engine: disabled, channel: channel)
+        disabledChecker.start()
+        precondition(disabled.backgrounds == 0 && !disabled.automaticallyChecks,
+                     "Startup must preserve a user's disabled automatic checks")
+        disabledChecker.check()
+        precondition(disabled.checks == 1)
+        let invalid = UpdateFixtureEngine()
+        let invalidChecker = UpdateChecker(engine: invalid, channel: .init(feed: "", publicKey: ""))
+        invalidChecker.start(); invalidChecker.check()
+        precondition(invalid.starts == 0 && invalid.checks == 0 && !invalidChecker.canCheck)
+        if case .unavailable = invalidChecker.state {} else { preconditionFailure("Unconfigured updates must be explicit") }
+        let broken = UpdateFixtureEngine()
+        broken.startError = NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "Bad framework configuration"])
+        let brokenChecker = UpdateChecker(engine: broken, channel: channel)
+        brokenChecker.start()
+        precondition(brokenChecker.state == .unavailable("Bad framework configuration") && !brokenChecker.canCheck)
+        print("Automatic update checks passed (configuration, scheduling, user choices, install routing, errors)")
     }
 }

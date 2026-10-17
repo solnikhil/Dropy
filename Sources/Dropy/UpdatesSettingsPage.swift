@@ -19,9 +19,9 @@ struct UpdatesSettingsPage: View {
                         HStack(spacing: 10) {
                             if checker.isChecking { ProgressView().controlSize(.small) }
                             Button("Check for Updates") { checker.check() }
-                                .buttonStyle(SettingsButtonStyle()).disabled(checker.isChecking)
+                                .buttonStyle(SettingsButtonStyle()).disabled(!checker.canCheck)
                             if checker.availableRelease != nil {
-                                Button("View Release") { checker.openRelease() }
+                                Button("Install Update…") { checker.installUpdate() }
                                     .buttonStyle(SettingsButtonStyle(outlined: true))
                             }
                         }
@@ -33,17 +33,14 @@ struct UpdatesSettingsPage: View {
             }
             SettingsCard("Update Checks") {
                 SettingsRow("Installed Version") { SettingsValue(checker.installedVersion) }
-                SettingsRow("Check Automatically", detail: "Checks published releases in the background each time Dropy starts.") {
-                    SettingsValue("Every Startup")
-                }
-                SettingsRow("Last Successful Check") {
+                SettingsToggleRow("Check Automatically", detail: "Check on startup and periodically in the background.",
+                    isOn: Binding(get: { checker.automaticallyChecks }, set: { checker.setAutomaticChecks($0) }))
+                    .disabled(!checker.isConfigured)
+                SettingsToggleRow("Download Updates Automatically", detail: "Download signed updates and install when Dropy quits. You can also install and relaunch immediately.",
+                    isOn: Binding(get: { checker.automaticallyDownloads }, set: { checker.setAutomaticDownloads($0) }))
+                    .disabled(!checker.allowsAutomaticDownloads)
+                SettingsRow("Last Check") {
                     SettingsValue(checker.lastChecked?.formatted(date: .abbreviated, time: .shortened) ?? "Not yet checked")
-                }
-                SettingsRow("Release Source", detail: "GitHub Releases") { SettingsValue(checker.repository) }
-            }
-            if let release = checker.availableRelease, !release.notes.isEmpty {
-                SettingsCard {
-                    SettingsExplanation(title: "Release Notes", text: release.notes)
                 }
             }
         }
@@ -55,7 +52,6 @@ struct UpdatesSettingsPage: View {
         case .checking: "Checking for Updates…"
         case .current: "Dropy Is Up to Date"
         case .available(let release): "Dropy \(release.version) Is Available"
-        case .noReleases: "No Stable Release Published"
         case .unavailable: "Unable to Check for Updates"
         }
     }
@@ -64,8 +60,7 @@ struct UpdatesSettingsPage: View {
         case .idle: "Check for a newer published version of Dropy."
         case .checking: "Contacting the release source."
         case .current: "No newer stable version is available for this installation."
-        case .available: "Installed version: \(checker.installedVersion). View the release to review changes and download it."
-        case .noReleases: "The repository is available, but it has no published stable release."
+        case .available: "Installed version: \(checker.installedVersion). Install the signed update and relaunch Dropy."
         case .unavailable(let message): message
         }
     }

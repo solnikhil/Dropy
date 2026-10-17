@@ -68,8 +68,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 # AppKit-level regression checks for the overlay panel (no window is shown).
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/UpdateChecks" \
-  "$repo_dir/Tests/LocalUpdateCheck.swift" "$repo_dir/Sources/Dropy/ReleaseUpdateClient.swift" \
-  "$repo_dir/Sources/Dropy/UpdateChecker.swift"
+  "$repo_dir/Tests/LocalUpdateCheck.swift" "$repo_dir/Sources/Dropy/UpdateChecker.swift"
 "$build_dir/UpdateChecks"
 
 swiftc -swift-version 6 -o "$build_dir/OnboardingChecks" \

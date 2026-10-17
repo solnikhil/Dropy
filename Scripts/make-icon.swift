@@ -11,7 +11,7 @@ guard arguments.isEmpty || (arguments.count == 2 && arguments[0] == "--output") 
 }
 let output = arguments.isEmpty ? repo.appendingPathComponent("Resources/AppIcon.icns")
     : URL(fileURLWithPath: arguments[1])
-let source = repo.appendingPathComponent("Resources/Brand/dropy-sketch-icon-v5.png")
+let source = repo.appendingPathComponent("Resources/Brand/dropy-option-merged-v3.png")
 guard let artwork = NSImage(contentsOf: source),
       let bitmap = NSBitmapImageRep(data: try Data(contentsOf: source)),
       bitmap.pixelsWide == bitmap.pixelsHigh, bitmap.pixelsWide >= 1024 else {

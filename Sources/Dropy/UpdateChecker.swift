@@ -1,80 +1,128 @@
-import Foundation
-import Combine
 import AppKit
+import Combine
+import Foundation
 import DropyCore
+
+struct UpdateRelease: Equatable, Sendable {
+    let version: String
+    let notes: String
+}
+
+enum ApplicationUpdateEvent {
+    case checking, current, available(UpdateRelease), failed(String), settingsChanged, finished
+}
+
+/// Sparkle owns downloading, signature verification, installation and its persisted
+/// scheduling preferences. This boundary keeps app presentation and tests independent.
+@MainActor
+protocol ApplicationUpdateEngine: AnyObject {
+    var onEvent: ((ApplicationUpdateEvent) -> Void)? { get set }
+    var canCheck: Bool { get }
+    var automaticallyChecks: Bool { get set }
+    var automaticallyDownloads: Bool { get set }
+    var allowsAutomaticDownloads: Bool { get }
+    var lastChecked: Date? { get }
+    func start() throws
+    func check()
+    func checkInBackground()
+}
 
 @MainActor
 final class UpdateChecker: ObservableObject {
     enum State: Equatable {
-        case idle, checking, current, noReleases, available(PublishedRelease), unavailable(String)
+        case idle, checking, current, available(UpdateRelease), unavailable(String)
     }
     @Published private(set) var state: State = .idle
     @Published private(set) var lastChecked: Date?
-    @Published private(set) var isChecking = false
+    @Published private(set) var canCheck = false
+    @Published private(set) var automaticallyChecks = false
+    @Published private(set) var automaticallyDownloads = false
+    @Published private(set) var allowsAutomaticDownloads = false
     let installedVersion: String
-    var repository: String { client.repository }
+    let channel: UpdateChannelConfiguration
     var onChange: (() -> Void)?
-    private let client: ReleaseUpdateClient
-    private let defaults: UserDefaults
-    private var cache: ReleaseCache?
-    private var task: Task<Void, Never>?
-    private static let cacheKey = "org.dropy.updates.cache.v1"
+    private let engine: any ApplicationUpdateEngine
+    private var started = false
 
-    init(client: ReleaseUpdateClient = ReleaseUpdateClient(repository:
-             Bundle.main.object(forInfoDictionaryKey: "DropyUpdateRepository") as? String ?? ReleaseUpdateClient.defaultRepository),
-         installedVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
-         defaults: UserDefaults = .standard) {
-        self.client = client; self.installedVersion = installedVersion; self.defaults = defaults
-        if let data = defaults.data(forKey: Self.cacheKey), let saved = try? JSONDecoder().decode(ReleaseCache.self, from: data) {
-            cache = client.validated(saved)
-            lastChecked = cache?.checkedAt
-        }
+    init(engine: any ApplicationUpdateEngine,
+         channel: UpdateChannelConfiguration = .init(
+            feed: Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String ?? "",
+            publicKey: Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String ?? ""),
+         installedVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") {
+        self.engine = engine
+        self.channel = channel
+        self.installedVersion = installedVersion
+        engine.onEvent = { [weak self] event in self?.receive(event) }
     }
 
-    var availableRelease: PublishedRelease? {
+    var availableRelease: UpdateRelease? {
         if case .available(let release) = state { return release }
         return nil
     }
+    var isChecking: Bool { state == .checking }
+    var isConfigured: Bool { channel.isValid }
 
-    /// A real request on every normal startup. Concurrent manual requests coalesce.
-    func check() {
-        guard task == nil, !isChecking else { return }
-        task = Task { [weak self] in
-            guard let self else { return }
-            await self.checkNow()
-            self.task = nil
-        }
-    }
-
-    func checkNow() async {
-        guard !isChecking else { return }
-        isChecking = true; state = .checking
-        defer { isChecking = false; onChange?() }
-        guard let current = ReleaseVersion(installedVersion) else {
-            state = .unavailable("This build has no valid release version."); return
+    func start() {
+        guard !started else { return }
+        guard channel.isValid else {
+            state = .unavailable("Updates aren’t configured for this build.")
+            onChange?()
+            return
         }
         do {
-            let result = try await client.fetch(cache: cache)
-            try Task.checkCancellation()
-            lastChecked = Date()
-            if let release = result.release, let version = ReleaseVersion(release.version) {
-                cache = ReleaseCache(repository: client.repository, release: release, etag: result.etag, checkedAt: lastChecked!)
-                if let data = try? JSONEncoder().encode(cache) { defaults.set(data, forKey: Self.cacheKey) }
-                state = version > current ? .available(release) : .current
-            } else {
-                cache = nil; defaults.removeObject(forKey: Self.cacheKey); state = .noReleases
-            }
-        } catch is CancellationError {
-            state = .idle
+            try engine.start()
+            started = true
+            refreshSettings()
+            // Sparkle schedules future checks. A startup check runs only if the
+            // person has automatic checks enabled; their choice is never reset.
+            if engine.automaticallyChecks { engine.checkInBackground() }
         } catch {
             state = .unavailable(error.localizedDescription)
+            onChange?()
         }
     }
 
-    func openRelease() {
-        guard let release = availableRelease else { return }
-        NSWorkspace.shared.open(release.url)
+    func check() {
+        if !started { start() }
+        guard started, engine.canCheck else { return }
+        state = .checking
+        engine.check()
     }
 
-    func cancel() { task?.cancel() }
+    func setAutomaticChecks(_ enabled: Bool) {
+        guard started else { return }
+        engine.automaticallyChecks = enabled
+        refreshSettings()
+    }
+    func setAutomaticDownloads(_ enabled: Bool) {
+        guard started, engine.allowsAutomaticDownloads else { return }
+        engine.automaticallyDownloads = enabled
+        refreshSettings()
+    }
+
+    /// Show Sparkle's verified download/install flow, including an update already
+    /// downloaded in the background. Never open an arbitrary release-page URL.
+    func installUpdate() { check() }
+    func cancel() { engine.onEvent = nil }
+
+    private func receive(_ event: ApplicationUpdateEvent) {
+        switch event {
+        case .checking: state = .checking
+        case .current: state = .current
+        case .available(let release): state = .available(release)
+        case .failed(let reason): state = .unavailable(reason)
+        case .finished:
+            if state == .checking { state = .idle }
+        case .settingsChanged: break
+        }
+        refreshSettings()
+    }
+    private func refreshSettings() {
+        canCheck = started && engine.canCheck
+        automaticallyChecks = engine.automaticallyChecks
+        automaticallyDownloads = engine.automaticallyDownloads
+        allowsAutomaticDownloads = started && engine.allowsAutomaticDownloads
+        lastChecked = engine.lastChecked
+        onChange?()
+    }
 }

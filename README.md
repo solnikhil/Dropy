@@ -12,7 +12,7 @@ Recovery now covers display scale/topology transitions and session resume, and L
 
 ## What works today
 
-- **Startup update checks.** Dropy checks the configured public GitHub release source each time it starts. Settings › Updates shows the result and supports manual checks. New versions open their release page for review and download. Network or source failures are shown explicitly. The current source repository is private; see [release configuration](docs/UPDATES.md) before distributing update checks to end users.
+- **Signed automatic updates.** Sparkle downloads, verifies and installs updates, with manual checks and automatic check/download controls in Settings › Updates. A reachable signed update channel still needs to be configured; the private source repository is not a public download channel. See [update configuration and publishing](docs/UPDATES.md).
 
 - **First-launch setup.** A four-step tour introduces Dropy, explains Accessibility and Screen Recording, lets you choose your shortcut, and offers a sample-content demo on your screen. Permission requests happen only when you choose Allow Access. Closing the tour saves your place; finishing or choosing Set Up Later stops automatic presentation. Reopen it from **Help › Setup…** or the menu-bar menu. Development launches can use `--onboarding`; benchmark/debug and explicit Settings/Studio launches skip automatic onboarding.
 

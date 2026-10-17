@@ -8,11 +8,12 @@ let package = Package(
         .executable(name: "Dropy", targets: ["Dropy"]),
         .library(name: "DropyCore", targets: ["DropyCore"]),
     ],
+    dependencies: [.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")],
     targets: [
         .target(name: "DropyCore"),
         // CoreGraphics' private virtual-display classes, for the Stage.
         .target(name: "DropyStageShim", linkerSettings: [.linkedFramework("CoreGraphics")]),
-        .executableTarget(name: "Dropy", dependencies: ["DropyCore", "DropyStageShim"]),
+        .executableTarget(name: "Dropy", dependencies: ["DropyCore", "DropyStageShim", .product(name: "Sparkle", package: "Sparkle")]),
         .testTarget(name: "DropyCoreTests", dependencies: ["DropyCore"]),
     ]
 )
