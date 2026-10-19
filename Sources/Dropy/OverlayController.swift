@@ -515,10 +515,9 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         return NotchShape.notch(size: notchSize ?? CGSize(width: 180, height: NSStatusBar.system.thickness), in: canvas)
     }
 
-    /// The window list's body at the size preset, at this opening's position.
+    /// The chooser keeps its own reading width instead of inheriting a large app preset.
     private func pickerBody(on screen: NSScreen) -> CGRect {
-        placedBody(size: OverlayGeometry.frame(on: room(on: screen), preferredSize: presentation.sizePreset.dimensions).size,
-                   on: screen)
+        placedBody(size: WindowPickerLayout.size(available: room(on: screen).size), on: screen)
     }
 
     /// The screen's visible frame as this opening will have it: without a Dock it hides.
@@ -744,7 +743,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         } else {
             resetToPickerLayout()
             status?.stringValue = choice == .noWindows ? "No window is available for this app. Choose another window."
-                : "Choose the window to use for this app. Your previous window is no longer available or the app has several windows."
+                : "Choose a window to continue with this app."
             panel?.makeFirstResponder(workspace?.search)
         }
     }
@@ -1016,6 +1015,14 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         selectWindow(at: index)
     }
 
+    func controlTextDidBeginEditing(_ notification: Notification) {
+        if notification.object as? NSSearchField === workspace?.search { workspace?.searchShowsFocus = true }
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        if notification.object as? NSSearchField === workspace?.search { workspace?.searchShowsFocus = false }
+    }
+
     func controlTextDidChange(_ notification: Notification) {
         guard notification.object as? NSSearchField === workspace?.search else { return }
         pickerQuery = workspace?.search.stringValue ?? ""
@@ -1062,7 +1069,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         menu.addItem(.separator())
         for window in visibleWindows {
             let button = WindowChoiceButton(title: window.displayName, target: self, action: #selector(windowClicked))
-            button.frame = CGRect(x: 0, y: 0, width: max(1, workspace.bounds.width - 32), height: 52)
+            button.frame = CGRect(x: 0, y: 0, width: max(1, workspace.bounds.width - 32), height: WindowPickerLayout.rowHeight)
             button.identity = window.identity
             button.configure(appName: window.applicationName, windowTitle: window.window.title ?? "",
                              icon: NSRunningApplication(processIdentifier: window.processID)?.icon)
@@ -1070,7 +1077,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
             button.lineBreakMode = .byTruncatingTail
             list.addArrangedSubview(button)
             button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 52).isActive = true
+            button.heightAnchor.constraint(equalToConstant: WindowPickerLayout.rowHeight).isActive = true
         }
         for window in available {
             let item = NSMenuItem(title: window.displayName, action: #selector(menuWindowClicked), keyEquivalent: "")
@@ -1084,10 +1091,12 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         close.target = self
         menu.addItem(close)
         workspace.apps.menu = menu
+        workspace.pickerCount.stringValue = "\(visibleWindows.count) window\(visibleWindows.count == 1 ? "" : "s")"
+        workspace.pickerSection.stringValue = pickerQuery.isEmpty ? "OPEN WINDOWS" : "SEARCH RESULTS"
         workspace.needsLayout = true
         if state == .selecting {
             status?.stringValue = visibleWindows.isEmpty && !pickerQuery.isEmpty ? "No windows match your search."
-                : "\(visibleWindows.count) windows · Favorites first, then recent"
+                : "Favorites first, then recently used."
         }
         applyHighlight()
     }

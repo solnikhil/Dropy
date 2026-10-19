@@ -45,3 +45,7 @@ Space notifications now distinguish an unknown WindowServer snapshot from a conf
 The main shortcut and favorite shortcuts compare the requested physical display/desktop with the open session. When they differ, the old session is closed without stealing focus and a new session opens where the person is working, preserving the selected app. On the same desktop, the shortcut still toggles normally. A pointer currently handed onto the hidden Stage resolves back to the overlay's physical display rather than opening a second overlay on the Stage.
 
 These policies have five deterministic regression tests. Real-app Space switching and full-screen interaction remain subject to the hardware-validation boundary above.
+
+## Window chooser
+
+The chooser uses a compact 520 × 560 point layout, bounded by the display, independently of the selected app’s size preset. Six rows fit at the standard size; larger catalogs scroll. Search filters app and window names, with the result count beside the heading. The selected row shows a Return-key cue; Up/Down, Return and Escape keep their existing behavior. The chooser’s layout does not change the dimensions of a selected source window.
