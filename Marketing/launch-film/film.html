@@ -31,7 +31,7 @@
 // Dropy launch film. Every frame is a pure function of time, so the browser preview
 // and the frame-by-frame render (render.mjs) show exactly the same film.
 
-const W = 1920, H = 1080, DUR = 48.3;
+const W = 1920, H = 1080, DUR = 47.9;
 // The timeline below is written in story seconds. Played back, the action runs SPEED
 // times faster up to the end card, which then holds at normal speed so it can be read.
 // Two scenes are inserted into it at story times `at`; while one plays, the main
@@ -42,11 +42,11 @@ const EXTRA = INSERTS.reduce((a, b) => a + b.dur, 0);
 // One stretch of the story is cut out (where an app picker used to be).
 // Stretches cut out of the story: a beat of stillness before the edges scene, where an
 // app picker used to be, a full-screen demo, and an empty desktop before the finale.
-const CUTS = [{ at: 8.15, len: .4 }, { at: 10.4, len: 2.2 }, { at: 20.95, len: 7.3 }, { at: 37.45, len: .55 }];
+const CUTS = [{ at: 8.15, len: .4 }, { at: 10.4, len: 2.2 }, { at: 15.0, len: 1.8 }, { at: 20.95, len: 7.3 }, { at: 36.25, len: 3.55 }];
 const CUT_LEN = CUTS.reduce((a, c) => a + c.len, 0);
 const cutOf = o => { let c = o; for (const C of CUTS) c -= clamp(o - C.at, 0, C.len); return c; };
 const uncut = c => { let o = c; for (const C of CUTS) if (o > C.at) o += C.len; return o; };
-const SPEED = 1.4, HOLD_AT = 44 - CUT_LEN + EXTRA, TOTAL = DUR - CUT_LEN + EXTRA;
+const SPEED = 1.5, HOLD_AT = 44 - CUT_LEN + EXTRA, TOTAL = DUR - CUT_LEN + EXTRA;
 const REAL_DUR = HOLD_AT / SPEED + (TOTAL - HOLD_AT);
 // Real seconds <-> master seconds (the story with the scenes in it).
 const masterOf = r => r * SPEED <= HOLD_AT ? r * SPEED : HOLD_AT + (r - HOLD_AT / SPEED);
@@ -70,7 +70,15 @@ const real = o => realOf(toMaster(o));
 const BPM = 96, BEAT = 60 / BPM;
 let AMB = 0, SHELL_EDGE = 1, SHELL_BODY = 0, MENU_APP = null, NOTCH_JIGGLE = { w: 0, h: 0 };
 const cv = document.getElementById('film');
-const ctx = cv.getContext('2d');
+const VERT = new URLSearchParams(location.search).has('v');
+if (VERT) { cv.width = 1080; cv.height = 1920; }
+const outCtx = cv.getContext('2d');
+// Every drawing function draws through ctx: the output canvas, or, for the vertical
+// cut, a landscape frame that is then placed on the tall canvas.
+const frameCv = VERT ? Object.assign(document.createElement('canvas'), { width: 1920, height: 1080 }) : cv;
+let ctx = VERT ? frameCv.getContext('2d') : outCtx;
+// Set while captions are drawn onto the vertical canvas: where they go.
+let CAP = null;
 const FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif';
 const FG = '245,245,247';
 
@@ -176,6 +184,28 @@ const GLYPH_V = [[305, 490], [455, 490], [630, 790], [945, 790], [945, 490], [65
 const GLYPH_R = [0, 34, 38, 58, 58, 0];
 const GLYPH_D = doubled(roundedPolyline(GLYPH_V, GLYPH_R).map(([x, y]) => [(x - 625) / 640, (y - 640) / 640]));
 const glyphAt = (cx, cy, w) => GLYPH_D.map(([x, y]) => [cx + x * w, cy + y * w]);
+// The mark's path as segments (length, direction), for folding it out of a straight line.
+const FOLD = (() => {
+  const P = roundedPolyline(GLYPH_V, GLYPH_R).map(([x, y]) => [(x - 625) / 640, (y - 640) / 640]);
+  const Q = resample(P, 420, false), segs = [];
+  let prev = 0;
+  for (let i = 0; i < Q.length - 1; i++) {
+    const dx = Q[i + 1][0] - Q[i][0], dy = Q[i + 1][1] - Q[i][1];
+    let a = Math.atan2(dy, dx);
+    while (a - prev > Math.PI) a -= 2 * Math.PI;
+    while (a - prev < -Math.PI) a += 2 * Math.PI;
+    segs.push([Math.hypot(dx, dy), a]); prev = a;
+  }
+  return { start: Q[0], segs, length: segs.reduce((n, [l]) => n + l, 0) };
+})();
+// The folded path at `v` (0 straight, 1 the mark), drawn `w` wide and centred on c.
+function foldAt(v, c, w) {
+  const pts = [[0, 0]];
+  for (const [l, a] of FOLD.segs) { const [x, y] = pts[pts.length - 1]; pts.push([x + l * Math.cos(a * v) * w, y + l * Math.sin(a * v) * w]); }
+  const t0 = [c[0] - FOLD.length * w / 2, c[1]], t1 = [c[0] + FOLD.start[0] * w, c[1] + FOLD.start[1] * w];
+  const tx = lerp(t0[0], t1[0], v), ty = lerp(t0[1], t1[1], v);
+  return pts.map(([x, y]) => [x + tx, y + ty]);
+}
 // The mark as one open stroke, start to end, for drawing it like a pen.
 const GLYPH_O = resample(roundedPolyline(GLYPH_V, GLYPH_R).map(([x, y]) => [(x - 625) / 640, (y - 640) / 640]), 420, false);
 const lineAt = (cx, cy, w) => doubled([[cx - w / 2, cy], [cx + w / 2, cy]]);
@@ -268,6 +298,8 @@ function animText(t, o) {
 }
 // Captions that drop in word by word and land with a bounce, then fly up and out.
 function kinetic(t, o) {
+  if (VERT && !CAP) return;
+  if (CAP) o = { ...o, x: CAP.x, y: CAP.y, size: o.size * CAP.k };
   const font = `${o.weight || 700} ${o.size}px ${FONT}`, track = o.track ?? -1;
   const L = layout(o.text, font, track);
   const x0 = o.x - L.width / 2, tOut = o.tOut ?? 1e9, g = o.g || ctx;
@@ -317,7 +349,7 @@ const STYLES = [
   { name: 'Balanced', w: 15, z: .70, response: '0.32 s' },
   { name: 'Smooth', w: 8.5, z: .83, response: '0.56 s' },
 ];
-const SEL = [29.5, 31.9, 34.3];
+const SEL = [29.75, 31.6, 33.45];
 const OEV = [
   [9.0, 1, OPEN], [18.05, 0, SHUT], [19.7, 1, OPEN], [20.65, 0, SHUT],
   ...SEL.flatMap((s, i) => [[s + OPEN_DELAY, 1, STYLES[i]], [s + OPEN_DELAY + 1.2, 0, STYLES[i]]]),
@@ -349,7 +381,7 @@ function overlayGeom(o) {
 // Camera: world (a 1920×1080 screen) to film. Opens close on the notch, settles to
 // full bleed, pulls back to show the display for Motion, then returns.
 // The camera leans in on the typing, twice, so the words can be read, then eases back.
-const PUSHES = [{ a: 12.65, b: 13.9, c: 15.8, d: 16.6, k: .42, at: [860, 330] }];
+const PUSHES = [{ a: 12.65, b: 13.4, c: 14.35, d: 14.95, k: .42, at: [860, 330] }];
 function camera(t) {
   const cam = baseCamera(t);
   let z = 1, at = null;
@@ -369,8 +401,8 @@ function baseCamera(t) {
   const home = { s: 1, cx: 960, cy: 540 };
   if (t < 28.3) return top;
   if (t < 29.6) { const u = E.inOut(prog(t, 28.3, 29.6)); return { s: lerp(top.s, away.s, u), cx: lerp(top.cx, away.cx, u), cy: lerp(top.cy, away.cy, u) }; }
-  if (t < 36.4) return away;
-  const u = E.inOut(prog(t, 36.4, 37.4));
+  if (t < 35.15) return away;
+  const u = E.inOut(prog(t, 35.15, 36.15));
   return { s: lerp(away.s, home.s, u), cx: lerp(away.cx, home.cx, u), cy: lerp(away.cy, home.cy, u) };
 }
 const toScreen = (cam, pts) => pts.map(([x, y]) => [(x - 960) * cam.s + cam.cx, (y - 540) * cam.s + cam.cy]);
@@ -455,7 +487,7 @@ function keyTimes(s, t0, t1, seed) {
   const r = rng(seed), gaps = [...s].map(() => .55 + r() * .9), sum = gaps.reduce((a, b) => a + b, 0);
   let acc = t0; return gaps.map(gp => (acc += gp / sum * (t1 - t0)));
 }
-const K1 = keyTimes(TYPED1, 14.1, 15.55, 3);
+const K1 = keyTimes(TYPED1, 13.48, 14.22, 3);
 const typed = (s, K, t) => s.slice(0, K.filter(k => k <= t).length);
 const lastKey = (K, t) => { let l = -9; for (const k of K) if (k <= t) l = k; return l; };
 
@@ -488,10 +520,10 @@ function drawNotesContent(g, t) {
   });
   const row = (i, s) => { const y = 200 + i * 40; drawCheck(g, 256, y - 6, false); text(g, s, 278, y, 17, 500, `rgba(${FG},.94)`); };
   const t1 = typed(TYPED1, K1, t);
-  if (t >= 13.85) row(2, t1);
+  if (t >= 13.3) row(2, t1);
   // Caret.
   let ci = -1, s = '', K = K1;
-  if (t >= 13.85 && t < 28.3) { ci = 2; s = t1; K = K1; }
+  if (t >= 13.3 && t < 28.3) { ci = 2; s = t1; K = K1; }
   if (ci >= 0) {
     const since = t - Math.max(lastKey(K, t), ci === 2 ? 13.85 : 24.6);
     if (since < .45 || Math.floor(since * 1.9) % 2 === 0) {
@@ -558,10 +590,10 @@ function drawOverlay(g, t, cam) {
 }
 
 // --- the pointer ---
-const CUR = [[12.6, 1290, 760], [13.72, 828, 360], [14.05, 828, 360],
+const CUR = [[12.6, 1290, 760], [13.2, 828, 360], [13.5, 828, 360],
   [23.4, 1480, 800], [24.5, 828, 404], [26.35, 1068, 414], [26.95, 1440, 900], [28.0, 1440, 900]];
-const CUR_ON = [[12.6, 14.05]];
-const CLICKS = [13.82];
+const CUR_ON = [[12.6, 13.5]];
+const CLICKS = [13.28];
 function cursorAt(t) {
   if (t <= CUR[0][0]) return CUR[0].slice(1);
   for (let i = 1; i < CUR.length; i++) if (t <= CUR[i][0]) {
@@ -672,32 +704,20 @@ function drawIntro(t, cam) {
   }
   if (t < 2.45) {
     const u = E.inOutExpo(prog(t, 1.35, 2.45));
-    drawHero(morph(dotAt(c[0], c[1], 6), lineAt(c[0], c[1], GW), u),
+    drawHero(morph(dotAt(c[0], c[1], 6), lineAt(c[0], c[1], FOLD.length * GW), u),
       { fillA: 1, fillC: 255, sw: lerp(2, 10, u), glow: .9, blur: 30 });
     return;
   }
   const breathe = 1 + .012 * Math.sin(Math.PI * prog(t, 3.9, 5.0));
   const glyph = glyphAt(c[0], c[1], GW * breathe);
   if (t < 3.9) {
-    const at = ([x, y]) => [c[0] + x * GW, c[1] + y * GW], start = at(GLYPH_O[0]);
+    // The line folds into the mark: every joint bends at once, then it settles.
+    const v = Math.min(1.03, spring(t - 2.45, 6.5, .8));
+    const pts = foldAt(t >= 3.85 ? 1 : v, c, GW);
     ctx.save();
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = `rgb(${FG})`; ctx.fillStyle = '#fff';
-    ctx.shadowColor = 'rgba(255,255,255,.7)'; ctx.shadowBlur = 26;
-    if (t < 2.85) {
-      // The line gathers into a point where the mark begins: its near end first.
-      const a = E.inOutExpo(prog(t, 2.45, 2.75)), b = E.inOutExpo(prog(t, 2.5, 2.85));
-      const L = [lerp(c[0] - GW / 2, start[0], a), lerp(c[1], start[1], a)], R = [lerp(c[0] + GW / 2, start[0], b), lerp(c[1], start[1], b)];
-      ctx.lineWidth = lerp(10, GSW, b);
-      ctx.beginPath(); ctx.moveTo(L[0], L[1]); ctx.lineTo(R[0], R[1]); ctx.stroke();
-    } else {
-      // Then that point draws the mark like a pen, a bright nib leading.
-      const u = E.inOut(prog(t, 2.85, 3.85)), n = Math.max(2, Math.round(u * (GLYPH_O.length - 1)) + 1);
-      const pts = GLYPH_O.slice(0, n).map(at);
-      ctx.lineWidth = GSW;
-      ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
-      const nib = 1 - prog(t, 3.75, 3.9), [hx, hy] = pts[pts.length - 1];
-      if (nib > 0) { ctx.globalAlpha = nib; ctx.shadowBlur = 30; ctx.beginPath(); ctx.arc(hx, hy, GSW * .62, 0, 6.283); ctx.fill(); }
-    }
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = `rgb(${FG})`;
+    ctx.lineWidth = lerp(10, GSW, E.inOut(prog(t, 2.45, 3.4))); ctx.shadowColor = 'rgba(255,255,255,.7)'; ctx.shadowBlur = 26;
+    ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
     ctx.restore();
     return;
   }
@@ -730,10 +750,10 @@ function drawCaptions(t, cam) {
   const CAPS = [
     ['Meet Dropy.', 6.6, 7.75],
     ['Even the notch.', 8.6, 10.2],
-    ['Real windows. Not pictures.', 12.75, 16.2],
+    ['Real windows. Not pictures.', 12.75, 14.5],
     ['Gone in a keystroke.', 17.05, 18.9],
     ['Back in one. Nothing lost.', 19.25, 20.6],
-    ['Motion, made yours.', 29.35, 36.4],
+    ['Motion, made yours.', 28.35, 29.3],
   ];
   for (const [s, a, b] of CAPS) {
     if (t < a - .1 || t > b + 1.2) continue;
@@ -741,10 +761,10 @@ function drawCaptions(t, cam) {
   }
 }
 
-// The shortcut, Option-Quote, as two large light glyphs under the overlay. Pressing
+// The shortcut, Option-Space (Dropy's default), as two large light glyphs under the overlay. Pressing
 // them closes the overlay, and they are drawn up into the notch with it; for the reopen
 // they fall back out of the notch, are pressed again, and the overlay opens.
-const SHORTCUT = [['⌥', 'OPTION', -92], ["'", 'QUOTE', 92]];
+const SHORTCUT = [['⌥', 'OPTION', -100], ['␣', 'SPACE', 100]];
 function drawKeys(t) {
   if (t < 16.9 || t > 20.4) return;
   const cam = camera(t);
@@ -773,7 +793,7 @@ function drawKeys(t) {
     ctx.globalAlpha = a;
     ctx.translate(x, y + (1 - rise) * 40 + press * 6);
     ctx.scale(k, k);
-    text(ctx, glyph, 0, glyph === "'" ? 6 : 0, glyph === "'" ? 168 : 132, glyph === "'" ? 500 : 300, `rgba(${FG},${.82 + .18 * press})`, 'center');
+    text(ctx, glyph, 0, 0, 132, 300, `rgba(${FG},${.82 + .18 * press})`, 'center');
     if (travel < .05) {
       ctx.fillStyle = `rgba(${FG},.55)`;
       ctx.fillRect(-46 * line, 26, 92 * line, 1.5);
@@ -794,7 +814,7 @@ const pillGeom = (() => {
 // The person's pointer in the Motion section, clicking each style in turn.
 const PANEL_CUR = (() => {
   const c = i => [pillGeom.x(i) + pillGeom.pW * .55, pillGeom.y + 38];
-  return [[29.0, 1620, 930], [29.42, ...c(0)], [31.35, ...c(0)], [31.82, ...c(1)], [33.75, ...c(1)], [34.22, ...c(2)], [35.6, ...c(2)], [36.2, 1700, 960]];
+  return [[29.1, 1620, 930], [29.67, ...c(0)], [31.1, ...c(0)], [31.52, ...c(1)], [32.95, ...c(1)], [33.37, ...c(2)], [34.35, ...c(2)], [34.85, 1700, 960]];
 })();
 function panelCursorAt(t) {
   const K = PANEL_CUR;
@@ -806,7 +826,7 @@ function panelCursorAt(t) {
   return K[K.length - 1].slice(1);
 }
 function drawMotionPanel(t) {
-  const a = E.out(prog(t, 29.15, 29.9)) * (1 - E.in(prog(t, 36.2, 36.75)));
+  const a = E.out(prog(t, 29.0, 29.6)) * (1 - E.in(prog(t, 34.75, 35.25)));
   if (a <= 0) return;
   const cam = camera(t);
   // The graph shares the display's vertical scale: a value of v sits exactly level
@@ -846,6 +866,7 @@ function drawMotionPanel(t) {
     ctx.save();
     ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (live && i === 2 && t >= LIFT.t0) { ctx.restore(); continue; }
     if (live) {
       ctx.strokeStyle = `rgba(${FG},.95)`; ctx.lineWidth = 3; ctx.shadowColor = 'rgba(255,255,255,.6)'; ctx.shadowBlur = 18; ctx.stroke();
       ctx.lineTo(pts[pts.length - 1][0], yOf(0)); ctx.lineTo(gx, yOf(0)); ctx.closePath();
@@ -893,7 +914,7 @@ function drawMotionPanel(t) {
   STYLES.forEach((s, i) => { const p = pill(i); text(ctx, s.name, p.x + p.w / 2, p.y + 41, 24, 650, '#0a0a0b', 'center'); });
   ctx.restore();
   // The pointer, its clicks rippling out.
-  const ca = prog(t, 29.0, 29.25) * (1 - prog(t, 35.9, 36.2));
+  const ca = prog(t, 29.1, 29.35) * (1 - prog(t, 34.55, 34.85));
   for (const c of SEL) {
     const u = prog(t, c, c + .5);
     if (u > 0 && u < 1) {
@@ -914,10 +935,55 @@ function drawMotionPanel(t) {
 // The notch leaves the screen, becomes the mark again, and the icon forms around it.
 const ICON = { x: 810, y: 266, w: 300, h: 300 };
 const SPARKS = Array.from({ length: 90 }, (_, i) => { const r = rng(300 + i); return { a: r() * 6.283, v: 300 + r() * 1000, s: .8 + r() * 2.2, l: .6 + r() * 1.0, streak: r() < .45 }; });
+// After Smooth, its curve lifts off the graph and flows, front first, into the Dropy
+// mark at the centre, while the screen behind falls away. The film opened with the
+// mark being drawn by a point of light; it closes with it drawn by the curve.
+const LIFT = { t0: 34.8, t1: 36.1 };
+let liftFrom = null;
+function liftSource() {
+  if (liftFrom) return liftFrom;
+  const cy = 515, s = .52, yOf = v => cy + (lerp(38, 574, v) - 540) * s;
+  const gx = pillGeom.px + 40, gw = pillGeom.pw - 80, pts = [];
+  for (let k = 0; k <= 240; k++) { const tt = 1.1 * k / 240; pts.push([gx + tt / 1.1 * gw, yOf(heightAt(tt, STYLES[2]))]); }
+  return (liftFrom = resample(pts, GLYPH_O.length, false));
+}
+function drawLift(t) {
+  if (t < LIFT.t0) return;
+  const A = liftSource(), M = A.length, u = prog(t, LIFT.t0, LIFT.t1);
+  const pts = A.map((p, i) => {
+    const B = GLYPH_O[i], v = E.inOut(clamp(u * 1.5 - .5 * (i / (M - 1))));
+    // A slight lift as each point leaves the graph.
+    const arc = Math.sin(Math.PI * v) * 70;
+    return [lerp(p[0], 960 + B[0] * GW, v), lerp(p[1], 540 + B[1] * GW, v) - arc];
+  });
+  const k = E.inOut(u);
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = `rgb(${FG})`; ctx.lineWidth = lerp(3, GSW, k);
+  ctx.shadowColor = `rgba(255,255,255,${lerp(.6, .55, k)})`; ctx.shadowBlur = lerp(18, 26, k);
+  ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+  ctx.restore();
+}
+// The style's name, moving the way that style moves: Rapid snaps, Balanced bounces,
+// Smooth glides.
+function drawStyleWords(t) {
+  if (VERT && !CAP) return;
+  STYLES.forEach((S, i) => {
+    const t0 = SEL[i] + .02, tOut = i < 2 ? SEL[i + 1] - .32 : 34.65;
+    if (t < t0 || t > tOut + .4) return;
+    const sp = spring(t - t0, S.w * .9, S.z * .82), out = E.in(prog(t, tOut, tOut + .26));
+    const a = clamp((t - t0) / .1) * (1 - out), sc = lerp(.4, 1, sp) * (1 - .1 * out);
+    if (a <= .003) return;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(CAP ? CAP.x : 960, (CAP ? CAP.y : 952) - (1 - sp) * 54 - out * 30); ctx.scale(sc, sc);
+    if (out > .01) ctx.filter = `blur(${(out * 12).toFixed(1)}px)`;
+    text(ctx, S.name + '.', 0, 0, 104, 750, `rgb(${FG})`, 'center', -3);
+    ctx.restore();
+  });
+}
 function drawFinale(t) {
-  if (t < 38.0) return;
-  const cam = { s: 1, cx: 960, cy: 540 };
-  const notch = notchScreenPts(cam);
+  if (t < 40.1) { drawLift(t); return; }
   const settle = spring(t - 40.1, 11, .74);
   const gw = lerp(GW, ICON.w * .629, settle), gsw = lerp(GSW, ICON.w * .051, settle);
   const gcy = lerp(540, ICON.y + ICON.h / 2 + ICON.w * .013, settle);
@@ -971,25 +1037,11 @@ function drawFinale(t) {
     }
     ctx.restore();
   }
-  if (t < 38.55) {
-    drawHero(notch, { fillA: 1, fillC: 0, sw: 1.4, strokeA: .42, glow: 0, blur: 0 });
-  } else if (t < 40.1) {
-    const small = notchGlyph(cam);
-    if (t < 39.3) {
-      const A = align(notch, glyphAt(960, small.cy, small.w));
-      const v = E.inOutExpo(prog(t, 38.55, 39.3));
-      drawHero(morph(notch, A.pts, v), { fillA: 1 - v, fillC: 0, sw: lerp(1.4, small.sw, v), strokeA: lerp(.42, 1, v), glow: lerp(0, .55, v), blur: lerp(0, 26, v) });
-    } else {
-      const v = E.inOutExpo(prog(t, 39.3, 40.1));
-      drawHero(glyphAt(960, lerp(small.cy, 540, v), lerp(small.w, GW, v)),
-        { fillA: 0, sw: lerp(small.sw, GSW, v), glow: .55 + .3 * Math.sin(Math.PI * v), blur: 26 });
-    }
-  } else {
-    drawHero(glyph, { fillA: 0, sw: gsw, stroke: 'rgb(242,242,240)', glow: lerp(.55, .25, clamp(settle)), blur: 22 });
-  }
+  drawHero(glyph, { fillA: 0, sw: gsw, stroke: 'rgb(242,242,240)', glow: lerp(.55, .25, clamp(settle)), blur: 22 });
   dropWord(t);
   riseLine(t, 'Your apps, one keystroke away.', 960, 790, 34, 42.35);
-  gatherLine(t, 'FREE AND OPEN SOURCE  ·  FOR MACOS', 960, 962, 43.2);
+  riseLine(t, 'github.com/solnikhil/Dropy', 960, 905, 26, 43.0, 'rgba(245,245,247,.82)', 600);
+  gatherLine(t, 'FREE AND OPEN SOURCE  ·  FOR MACOS', 960, 975, 43.45);
   ctx.restore();
 }
 
@@ -1162,6 +1214,38 @@ function montageGeom(l) {
   }
   return { w, h };
 }
+// Shared elements: as the overlay changes app, one piece of the old app flies across
+// and becomes a piece of the new one.
+const montageInner = l => { const { w, h } = montageGeom(l); return { x: 960 - w / 2 + 18, y: 52, w: w - 36, h: h - 70 }; };
+const termMetrics = R => { const fs = clamp(R.w / 38, 16, 24), lh = fs * 1.8; return { fs, lh, pr: fs * 2.6, y0: R.y + 44 + lh * 1.4, x: R.x + 28 }; };
+const PIECES = {
+  // The selected row in the notes list.
+  notesRow: R => { const s = R.w / CW; return { x: R.x + 10 * s, y: R.y + 60 * s, w: 194 * s, h: 36 * s, r: 9 * s, c: [255, 255, 255, .16] }; },
+  cover: R => { const art = Math.max(60, Math.min(R.h - 44, 210)); return { x: R.x + 28, y: R.y + (R.h - art) / 2, w: art, h: art, r: 12, c: [46, 46, 51, 1] }; },
+  avatar: R => ({ x: R.x + R.w / 2 - 24, y: R.y + 24, w: 48, h: 48, r: 24, c: [236, 236, 238, 1] }),
+  lastBubble: R => { ctx.font = `500 18px ${FONT}`; const bw = ctx.measureText(BUBBLES[3][1]).width + 34; return { x: R.x + R.w - 22 - bw, y: R.y + 140 + 3 * 56, w: bw, h: 44, r: 22, c: [242, 242, 244, 1] }; },
+  prompt: R => { const m = termMetrics(R); return { x: m.x - 8, y: m.y0 - m.fs * 1.05, w: m.pr + m.fs * 1.2, h: m.fs * 1.5, r: m.fs * .75, c: [255, 255, 255, .14] }; },
+  termCaret: R => { const m = termMetrics(R); return { x: m.x + m.pr, y: m.y0 + 4 * m.lh - m.fs * .85, w: m.fs * .55, h: m.fs * 1.15, r: 2, c: [245, 245, 247, .85] }; },
+  noteCaret: R => { const s = R.w / CW; ctx.font = `500 17px ${FONT}`; const x = 278 + ctx.measureText(TYPED1).width + 1.5; return { x: R.x + x * s, y: R.y + 264 * s, w: 2.4 * s, h: 21 * s, r: 1, c: [245, 245, 247, .95] }; },
+};
+const HANDOFFS = [[.35, 'notesRow', 'cover'], [1.85, 'cover', 'avatar'], [3.35, 'lastBubble', 'prompt'], [4.85, 'termCaret', 'noteCaret']];
+function drawHandoff(g, l) {
+  for (const [T, from, to] of HANDOFFS) {
+    const u = l - T;
+    if (u < 0 || u > .5) continue;
+    const A = PIECES[from](montageInner(T)), B = PIECES[to](montageInner(l));
+    const p = clamp(spring(u, 13, .78), 0, 1.04), a = 1 - E.inOut(prog(u, .26, .46));
+    const lift = Math.sin(Math.PI * clamp(p)) * -46;
+    const R = { x: lerp(A.x, B.x, p), y: lerp(A.y, B.y, p) + lift, w: lerp(A.w, B.w, p), h: lerp(A.h, B.h, p) };
+    const c = A.c.map((v, i) => lerp(v, B.c[i], clamp(p)));
+    g.save();
+    g.globalAlpha = a;
+    g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 24 * Math.sin(Math.PI * clamp(p)); g.shadowOffsetY = 10 * Math.sin(Math.PI * clamp(p));
+    rr(g, R.x, R.y, R.w, R.h, lerp(A.r, B.r, p));
+    g.fillStyle = `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${c[3]})`; g.fill();
+    g.restore();
+  }
+}
 const montageIndex = l => { let c = 0; MONTAGE.forEach((M, i) => { if (l >= M.t) c = i; }); return c; };
 const SCENES = {};
 SCENES.montage = {
@@ -1178,6 +1262,7 @@ SCENES.montage = {
       }
       const M = MONTAGE[cur], u = cur ? E.out(prog(l, M.t + .06, M.t + .4)) : 1;
       drawApp(g, M.app, R, l - M.t, u, lerp(1.1, 1, u), (1 - u) * 14);
+      drawHandoff(g, l);
     });
   },
   caption(l) {
@@ -1323,7 +1408,7 @@ SCENES.edges = {
   },
   caption(l) {
     const [s0, s1, , s3] = STOPS;
-    [['Any edge.', s0.a - .3, s1.d + .1], ['Any corner.', s1.a - .3, s3.d + .1], ['Anywhere.', s3.a - .3, HOME.a]].forEach(([s, a, b]) =>
+    [['Any edge.', s0.a - .3, s1.d + .1], ['Any corner.', s1.a - .3, s3.d + .1], ['Anywhere.', s3.a - .3, HOME.d + .35]].forEach(([s, a, b]) =>
       kinetic(l, { text: s, x: 960, y: 572, size: 76, weight: 700, track: -2, tIn: a, tOut: b, glow: .12, drop: 30 }));
   },
 };
@@ -1379,11 +1464,11 @@ function dropWord(t) {
   ctx.restore();
 }
 // A line that rises word by word out of a hidden baseline, without blur.
-function riseLine(t, s, x, y, size, t0) {
-  const font = `500 ${size}px ${FONT}`, L = layout(s, font, -.3), x0 = x - L.width / 2;
+function riseLine(t, s, x, y, size, t0, color = 'rgba(245,245,247,.62)', weight = 500) {
+  const font = `${weight} ${size}px ${FONT}`, L = layout(s, font, -.3), x0 = x - L.width / 2;
   ctx.save();
   ctx.beginPath(); ctx.rect(0, y - size * 1.1, W, size * 1.45); ctx.clip();
-  ctx.font = font; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = 'rgba(245,245,247,.62)'; ctx.letterSpacing = '-.3px';
+  ctx.font = font; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = color; ctx.letterSpacing = '-.3px';
   let i0 = 0, k = 0;
   for (let i = 0; i <= s.length; i++) if (i === s.length || s[i] === ' ') {
     const u = E.outQuint(prog(t, t0 + k * .07, t0 + k * .07 + .7));
@@ -1422,11 +1507,45 @@ function finish(t, rt) {
   const ox = -Math.floor(r() * 256), oy = -Math.floor(r() * 256);
   for (let y = oy; y < H; y += 256) for (let x = ox; x < W; x += 256) ctx.drawImage(grain, x, y);
   ctx.restore();
-  const end = E.inOut(prog(t, 46.9, 48.2));
+  const end = E.inOut(prog(t, 46.5, 47.8));
   if (end > 0) { ctx.fillStyle = `rgba(0,0,0,${end})`; ctx.fillRect(0, 0, W, H); }
 }
 
+// Vertical cut: how large the landscape frame sits on the tall canvas, and which point
+// of it is centred. The logo moments fill the width; the screen fits; the app scenes
+// lean in; the Motion section fits the screen and its panel side by side.
+function vertView(L) {
+  const t = L.o;
+  if (L.ins) return L.ins.kind === 'edges' ? { z: .5625, x: 960, y: 540 } : { z: .95, x: 960, y: 400 };
+  const views = [[0, 1, 960, 540], [4.6, 1, 960, 540], [6.0, .5625, 960, 540], [8.6, .5625, 960, 540], [9.3, .95, 960, 400],
+    [28.3, .95, 960, 400], [29.6, .62, 932, 540], [35.15, .62, 932, 540], [36.15, 1, 960, 540]];
+  let k = 0;
+  while (k < views.length - 1 && t >= views[k + 1][0]) k++;
+  const A = views[k], B = views[Math.min(k + 1, views.length - 1)];
+  const u = B === A ? 1 : E.inOut(prog(t, A[0], B[0]));
+  if (B === A || t >= B[0]) return { z: A[1], x: A[2], y: A[3] };
+  return { z: lerp(A[1], B[1], u), x: lerp(A[2], B[2], u), y: lerp(A[3], B[3], u) };
+}
 function render(rt) {
+  if (!VERT) return renderFrame(rt);
+  ctx = frameCv.getContext('2d');
+  renderFrame(rt);
+  const m = masterOf(rt), L = locate(m), t = L.o, v = vertView(L);
+  ctx = outCtx;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 1080, 1920);
+  ctx.save(); ctx.translate(540, 900); ctx.scale(v.z, v.z); ctx.translate(-v.x, -v.y);
+  ctx.drawImage(frameCv, 0, 0);
+  ctx.restore();
+  // Captions, large, under the frame.
+  CAP = { x: 540, y: 1660, k: 1.05 };
+  if (L.ins) SCENES[L.ins.kind].caption(L.l);
+  else { drawCaptions(t, camera(t)); drawStyleWords(t); }
+  CAP = null;
+  ctx = frameCv.getContext('2d');
+}
+function renderFrame(rt) {
   const m = masterOf(rt), L = locate(m), t = L.o;
   AMB = m; MENU_APP = null; NOTCH_JIGGLE = { w: 0, h: 0 };
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1434,7 +1553,7 @@ function render(rt) {
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
   const cam = camera(t);
   if (L.ins) { renderInsert(L, cam); finish(t, rt); return; }
-  const wa = E.inOut(prog(t, 5.2, 6.6)) * (1 - E.inOut(prog(t, 38.0, 38.9)));
+  const wa = E.inOut(prog(t, 5.2, 6.6)) * (1 - E.inOut(prog(t, 35.55, 36.2)));
   if (wa > 0) {
     drawWorld(t, cam);
     ctx.save(); ctx.globalAlpha = wa;
@@ -1445,6 +1564,7 @@ function render(rt) {
   drawKeys(t);
   drawMotionPanel(t);
   drawCaptions(t, cam);
+  drawStyleWords(t);
   drawFinale(t);
   finish(t, rt);
 }
@@ -1673,8 +1793,10 @@ function compose(ac) {
     whoosh(R(s + OPEN_DELAY) - .03, d, true, .8);
     whoosh(R(s + OPEN_DELAY + 1.2), d, false, .6);
   });
-  whoosh(R(36.55), R(37.75) - R(36.55), true, .45);
-  riser(R(38.0), R(40.1), 1);
+  whoosh(R(35.15), R(36.15) - R(35.15), true, .45);
+  sweep(R(LIFT.t0), R(LIFT.t1) - R(LIFT.t0), 1500, 960, .7);
+  bell(R(LIFT.t1), 78, .45);
+  riser(R(35.65), R(40.1), 1);
   impact(R(40.1), 1.1);
   [62, 66, 69, 73, 76].forEach((n, i) => bell(R(40.1) + i * .05, n + 12, .5));
   [86, 83, 81, 78, 76].forEach((n, i) => pop(R(dropLand(i)), n, .55));
@@ -1686,6 +1808,7 @@ function compose(ac) {
     pop(at('montage', M.t + .06), [79, 76, 74, 81][i], .9);
   });
   BUBBLES.forEach(([side, , t0]) => pop(at('montage', 1.85 + t0), side === 'r' ? 86 : 81, .75));
+  HANDOFFS.forEach(([T], i) => tick(at('montage', T + .4), .55));
   for (const [kind, s, t0] of TERM) {
     if (kind === '$') for (let j = 0; j < s.length; j++) key(at('montage', 3.35 + t0 + j / TYPE_RATE), .55);
     else tick(at('montage', 3.35 + t0), .8);
@@ -1726,7 +1849,7 @@ window.scorePCM = async () => {
 
 // ---------- playback ----------
 const acc = document.createElement('canvas');
-acc.width = W; acc.height = H;
+acc.width = cv.width; acc.height = cv.height;
 const accg = acc.getContext('2d');
 function renderBlurred(rt, n = 4, shutter = .5) {
   if (n <= 1) return render(rt);
@@ -1734,8 +1857,8 @@ function renderBlurred(rt, n = 4, shutter = .5) {
     render(rt + ((i + .5) / n - .5) * shutter / 60);
     accg.globalAlpha = 1 / (i + 1); accg.drawImage(cv, 0, 0);
   }
-  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(acc, 0, 0);
+  outCtx.setTransform(1, 0, 0, 1, 0, 0); outCtx.globalAlpha = 1; outCtx.filter = 'none'; outCtx.globalCompositeOperation = 'source-over';
+  outCtx.drawImage(acc, 0, 0);
 }
 const SUB = +(new URLSearchParams(location.search).get('sub') || 1);
 window.renderAt = t => renderBlurred(t, SUB);
