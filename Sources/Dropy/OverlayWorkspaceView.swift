@@ -119,6 +119,14 @@ final class OverlayWorkspaceView: NSView {
         previewShell.addSubview(cover)
         for view in [apps, expand, pin, searchSurface, search, scroll, previewShell, status, pickerHeading, pickerCount, pickerSection, pickerDivider, footerDivider, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
     }
+    /// Layout must settle before scrolling after a catalog rebuild or search.
+    func revealSelectedWindow() {
+        layoutSubtreeIfNeeded()
+        if let row = windowList.arrangedSubviews.compactMap({ $0 as? WindowChoiceButton }).first(where: \.keyboardSelected) {
+            row.scrollToVisible(row.bounds)
+        }
+    }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
     override func layout() {
         super.layout()
