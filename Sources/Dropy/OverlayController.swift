@@ -1098,7 +1098,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
             status?.stringValue = visibleWindows.isEmpty && !pickerQuery.isEmpty ? "No windows match your search."
                 : "Favorites first, then recently used."
         }
-        applyHighlight()
+        applyHighlight(scrolling: state == .selecting)
     }
 
     /// Development-only exact-window switching driver; does not send input.
@@ -1301,8 +1301,8 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         for row in rows {
             let highlighted = row.identity == highlightedIdentity
             row.keyboardSelected = highlighted
-            if highlighted, scrolling { row.scrollToVisible(row.bounds) }
         }
+        if scrolling { workspace?.revealSelectedWindow() }
     }
 
     /// A note over the preview until the next selection.

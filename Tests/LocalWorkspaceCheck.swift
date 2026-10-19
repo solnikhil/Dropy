@@ -70,6 +70,7 @@ struct WorkspaceChecks {
             row.configure(appName: "Application", windowTitle: "Document \(i)", icon: nil)
             row.heightAnchor.constraint(equalToConstant: WindowPickerLayout.rowHeight).isActive = true
             picker.windowList.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: picker.windowList.widthAnchor).isActive = true
         }
         picker.needsLayout = true
         picker.layoutSubtreeIfNeeded()
@@ -79,6 +80,15 @@ struct WorkspaceChecks {
         precondition(picker.scroll.frame.minY > picker.status.frame.maxY)
         precondition(picker.search.frame.minY > picker.scroll.frame.maxY)
         precondition(picker.windowList.frame.height > picker.scroll.frame.height, "long catalogs must scroll")
+        let first = picker.windowList.arrangedSubviews.first as! WindowChoiceButton
+        first.keyboardSelected = true
+        picker.revealSelectedWindow()
+        precondition(picker.scroll.documentVisibleRect.contains(first.frame), "the initial selected row must be visible in a long catalog")
+        first.keyboardSelected = false
+        let last = picker.windowList.arrangedSubviews.last as! WindowChoiceButton
+        last.keyboardSelected = true
+        picker.revealSelectedWindow()
+        precondition(picker.scroll.documentVisibleRect.contains(last.frame), "keyboard navigation must reveal the last row")
         precondition(!picker.pickerHeading.isHidden && !picker.pickerCount.isHidden)
         picker.showsPreview = true
         picker.layoutSubtreeIfNeeded()
