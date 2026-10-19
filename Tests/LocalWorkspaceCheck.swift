@@ -61,6 +61,28 @@ struct WorkspaceChecks {
         precondition(!view.search.isHidden, "the chooser exposes search")
         precondition(view.search.frame.minY >= view.scroll.frame.maxY, "search must not overlap the rows")
         precondition(view.search.frame.maxY <= view.pickerHeading.frame.minY, "search must stay below the heading")
+        precondition(view.search.focusRingType == .none, "search uses its own focus treatment")
+        view.searchShowsFocus = true
+        precondition(view.searchSurface.layer?.borderColor != nil)
+        let picker = OverlayWorkspaceView(frame: CGRect(origin: .zero, size: WindowPickerLayout.preferredSize))
+        for i in 0..<8 {
+            let row = WindowChoiceButton(title: "", target: nil, action: nil)
+            row.configure(appName: "Application", windowTitle: "Document \(i)", icon: nil)
+            row.heightAnchor.constraint(equalToConstant: WindowPickerLayout.rowHeight).isActive = true
+            picker.windowList.addArrangedSubview(row)
+        }
+        picker.needsLayout = true
+        picker.layoutSubtreeIfNeeded()
+        precondition(picker.searchSurface.frame.height == 36 && picker.search.frame.height == 22)
+        precondition(picker.search.frame.midY == picker.searchSurface.frame.midY,
+                     "the native search field must be centered in its surface")
+        precondition(picker.scroll.frame.minY > picker.status.frame.maxY)
+        precondition(picker.search.frame.minY > picker.scroll.frame.maxY)
+        precondition(picker.windowList.frame.height > picker.scroll.frame.height, "long catalogs must scroll")
+        precondition(!picker.pickerHeading.isHidden && !picker.pickerCount.isHidden)
+        picker.showsPreview = true
+        picker.layoutSubtreeIfNeeded()
+        precondition(picker.pickerHeading.isHidden && picker.pickerCount.isHidden && picker.pickerSection.isHidden)
         view.docked = true
         view.layoutSubtreeIfNeeded()
         precondition(view.search.isHidden && view.scroll.isHidden, "search must never intercept a docked app")

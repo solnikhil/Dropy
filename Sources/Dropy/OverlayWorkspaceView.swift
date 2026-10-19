@@ -19,12 +19,21 @@ final class OverlayWorkspaceView: NSView {
         pin.setAccessibilityLabel(label)
     }
     let search = NSSearchField()
+    let searchSurface = PickerSearchSurface()
+    var searchShowsFocus = false { didSet { updateSearchFocus() } }
+    private func updateSearchFocus() {
+        searchSurface.layer?.borderColor = NSColor.white.withAlphaComponent(searchShowsFocus ? 0.30 : 0.10).cgColor
+    }
+    let pickerCount = NSTextField(labelWithString: "")
+    let pickerSection = NSTextField(labelWithString: "OPEN WINDOWS")
+    private let pickerDivider = NSView()
+    private let footerDivider = NSView()
     let scroll = NSScrollView()
     let windowList = NSStackView()
     let previewShell = NSView()
     let status = NSTextField(wrappingLabelWithString: "Finding open windows…")
-    let pickerHeading = NSTextField(labelWithString: "Choose a window")
-    let pickerHint = NSTextField(labelWithString: "Type to search   ·   ↑ ↓ to choose   ·   Return to open   ·   Esc to close")
+    let pickerHeading = NSTextField(labelWithString: "Switch window")
+    let pickerHint = NSTextField(labelWithString: "↑ ↓  Navigate     ↵  Open     esc  Close")
     private let emptyIcon = NSImageView()
     let interaction = NSTextField(wrappingLabelWithString: "")
     let privacy = NSButton(title: "Open Privacy Settings", target: nil, action: nil)
@@ -52,13 +61,27 @@ final class OverlayWorkspaceView: NSView {
         pin.bezelStyle = .inline
         pin.setButtonType(.toggle)
         updatePin()
-        search.placeholderString = "Search apps and windows"
+        searchSurface.searchField = search
+        search.placeholderString = "Search apps or windows…"
+        search.font = .systemFont(ofSize: 13)
+        search.focusRingType = .none
+        search.isBezeled = false
+        search.isBordered = false
+        search.drawsBackground = false
+        searchSurface.wantsLayer = true
+        searchSurface.layer?.backgroundColor = NSColor(white: 1, alpha: 0.055).cgColor
+        searchSurface.layer?.cornerRadius = 10
+        searchSurface.layer?.borderWidth = 1
+        updateSearchFocus()
+        search.sendsSearchStringImmediately = true
         search.setAccessibilityLabel("Search apps and windows")
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.scrollerStyle = .overlay
+        scroll.horizontalScrollElasticity = .none
         windowList.orientation = .vertical
         windowList.alignment = .leading
-        windowList.spacing = 6
+        windowList.spacing = WindowPickerLayout.rowSpacing
         scroll.documentView = windowList
         previewShell.wantsLayer = true
         previewShell.layer?.backgroundColor = NSColor(calibratedWhite: 0.025, alpha: 1).cgColor
@@ -69,10 +92,19 @@ final class OverlayWorkspaceView: NSView {
         emptyIcon.contentTintColor = NSColor(white: 0.48, alpha: 1)
         emptyIcon.imageScaling = .scaleProportionallyUpOrDown
         emptyIcon.setAccessibilityElement(false)
-        pickerHeading.font = .systemFont(ofSize: 19, weight: .semibold)
+        pickerHeading.font = .systemFont(ofSize: 20, weight: .semibold)
+        pickerCount.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        pickerCount.textColor = NSColor(white: 0.52, alpha: 1)
+        pickerCount.alignment = .right
+        pickerSection.font = .systemFont(ofSize: 9, weight: .semibold)
+        pickerSection.textColor = NSColor(white: 0.46, alpha: 1)
+        for divider in [pickerDivider, footerDivider] {
+            divider.wantsLayer = true
+            divider.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.075).cgColor
+        }
         pickerHeading.textColor = NSColor(white: 0.95, alpha: 1)
         pickerHint.font = .systemFont(ofSize: 10)
-        pickerHint.textColor = NSColor(white: 0.60, alpha: 1)
+        pickerHint.textColor = NSColor(white: 0.48, alpha: 1)
         pickerHint.setAccessibilityElement(false)
         interaction.font = .systemFont(ofSize: 10)
         interaction.textColor = NSColor(white: 0.78, alpha: 1)
@@ -85,7 +117,7 @@ final class OverlayWorkspaceView: NSView {
         elsewhere.isHidden = true
         elsewhere.bezelStyle = .rounded
         previewShell.addSubview(cover)
-        for view in [apps, expand, pin, search, scroll, previewShell, status, pickerHeading, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
+        for view in [apps, expand, pin, searchSurface, search, scroll, previewShell, status, pickerHeading, pickerCount, pickerSection, pickerDivider, footerDivider, pickerHint, emptyIcon, interaction, privacy, elsewhere] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
     override func layout() {
@@ -93,36 +125,62 @@ final class OverlayWorkspaceView: NSView {
         apps.frame = CGRect(x: WorkspaceLayout.topControlInset, y: bounds.height - 30,
                             width: WorkspaceLayout.appSwitcherWidth, height: 24)
         expand.frame = CGRect(x: bounds.width - 38, y: bounds.height - 30, width: 28, height: 24)
-        pin.frame = CGRect(x: bounds.width - 70, y: bounds.height - 30, width: 28, height: 24)
         expand.isHidden = !showsPreview || docked
+        pin.frame = CGRect(x: bounds.width - (expand.isHidden ? 38 : 70), y: bounds.height - 30, width: 28, height: 24)
         previewShell.frame = previewRect
         // Explicit viewport ownership avoids AppKit autoresizing accumulating an
         // old size during a detached or hidden shell’s layout transition.
         for child in previewShell.subviews { child.frame = previewShell.bounds }
         previewShell.isHidden = docked ? !coversWindow : !showsPreview
         cover.isHidden = !docked
-        pickerHeading.frame = CGRect(x: 16, y: bounds.height - 72, width: max(1, bounds.width - 32), height: 26)
-        pickerHeading.isHidden = showsPreview || docked
-        pickerHint.frame = CGRect(x: 16, y: 16, width: max(1, bounds.width - 32), height: 16)
-        pickerHint.isHidden = showsPreview || docked || !privacy.isHidden
-        search.frame = CGRect(x: 16, y: bounds.height - 106, width: max(1, bounds.width - 32), height: 26)
-        search.isHidden = showsPreview || docked
-        scroll.frame = CGRect(x: 12, y: 76, width: max(1, bounds.width - 24), height: max(1, bounds.height - 194))
-        scroll.isHidden = showsPreview || docked
+        let choosing = !showsPreview && !docked
+        pickerHeading.frame = CGRect(x: 20, y: bounds.height - 72, width: max(1, bounds.width - 130), height: 26)
+        pickerCount.frame = CGRect(x: bounds.width - 108, y: bounds.height - 65, width: 88, height: 16)
+        pickerSection.frame = CGRect(x: 22, y: bounds.height - 153, width: max(1, bounds.width - 44), height: 12)
+        pickerDivider.frame = CGRect(x: 20, y: bounds.height - 132, width: max(1, bounds.width - 40), height: 1)
+        footerDivider.frame = CGRect(x: 20, y: 76, width: max(1, bounds.width - 40), height: 1)
+        for view in [pickerHeading, pickerCount, pickerSection, pickerDivider, footerDivider] { view.isHidden = !choosing }
+        pickerHint.frame = CGRect(x: 22, y: 16, width: max(1, bounds.width - 44), height: 16)
+        pickerHint.isHidden = !choosing || !privacy.isHidden
+        searchSurface.frame = CGRect(x: 20, y: bounds.height - 120, width: max(1, bounds.width - 40), height: 36)
+        // A native-height field keeps placeholder, caret and selection aligned.
+        search.frame = searchSurface.frame.insetBy(dx: 6, dy: 7)
+        searchSurface.isHidden = !choosing
+        search.isHidden = !choosing
+        scroll.frame = CGRect(x: 16, y: 82, width: max(1, bounds.width - 32), height: max(1, bounds.height - 246))
+        scroll.isHidden = !choosing
         interaction.frame = CGRect(x: 12, y: previewRect.minY + 8,
                                    width: max(1, bounds.width - 24), height: 36)
         elsewhere.frame = CGRect(x: previewRect.midX - 90, y: previewRect.midY - 62, width: 180, height: 28)
-        let emptyPicker = !showsPreview && !docked && windowList.arrangedSubviews.isEmpty
-        emptyIcon.frame = CGRect(x: bounds.midX - 22, y: bounds.midY + 12, width: 44, height: 44)
+        let emptyPicker = choosing && windowList.arrangedSubviews.isEmpty
+        emptyIcon.frame = CGRect(x: bounds.midX - 18, y: scroll.frame.midY + 10, width: 36, height: 36)
         emptyIcon.isHidden = !emptyPicker
         status.alignment = showsPreview || docked || emptyPicker ? .center : .left
-        status.frame = showsPreview || docked || emptyPicker
-            ? CGRect(x: 20, y: previewRect.midY - 26, width: max(1, bounds.width - 40), height: 52)
-            : CGRect(x: 12, y: 42, width: max(1, bounds.width - 24), height: 32)
-        privacy.frame = CGRect(x: 12, y: 8, width: 180, height: 28)
-        let rowWidth = max(1, scroll.contentSize.width - 8)
+        status.font = .systemFont(ofSize: choosing ? 11 : 12)
+        if emptyPicker {
+            status.frame = CGRect(x: 32, y: scroll.frame.midY - 48, width: max(1, bounds.width - 64), height: 48)
+        } else if choosing {
+            status.frame = CGRect(x: 22, y: 39, width: max(1, bounds.width - 44), height: 28)
+        } else {
+            status.frame = CGRect(x: 20, y: previewRect.midY - 26, width: max(1, bounds.width - 40), height: 52)
+        }
+        privacy.frame = CGRect(x: 20, y: 10, width: 180, height: 28)
+        let rowWidth = max(1, scroll.contentSize.width)
         for row in windowList.arrangedSubviews { row.frame.size.width = rowWidth }
-        windowList.frame.size = CGSize(width: rowWidth, height: max(1, CGFloat(windowList.arrangedSubviews.count) * 58))
+        let count = windowList.arrangedSubviews.count
+        windowList.frame.size = CGSize(width: rowWidth, height: max(1,
+            CGFloat(count) * WindowPickerLayout.rowHeight + CGFloat(max(0, count - 1)) * WindowPickerLayout.rowSpacing))
+    }
+}
+
+/// Padding around the native search field remains part of its click target.
+@MainActor
+final class PickerSearchSurface: NSView {
+    weak var searchField: NSSearchField?
+    override func mouseDown(with event: NSEvent) {
+        guard let searchField else { return }
+        window?.makeFirstResponder(searchField)
+        searchField.selectText(nil)
     }
 }
 
@@ -189,15 +247,15 @@ final class WindowChoiceButton: NSButton {
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
 
     override func draw(_ dirtyRect: NSRect) {
-        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 11, yRadius: 11)
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10)
         let active = keyboardSelected || (cell?.isHighlighted ?? false)
-        (active ? DropyAppearance.accent.withAlphaComponent(0.14)
-         : NSColor.white.withAlphaComponent(hovered ? 0.09 : 0.035)).setFill()
+        (active ? NSColor.white.withAlphaComponent(0.10)
+         : NSColor.white.withAlphaComponent(hovered ? 0.055 : 0.015)).setFill()
         shape.fill()
-        (active ? DropyAppearance.accent.withAlphaComponent(0.5) : NSColor.white.withAlphaComponent(0.065)).setStroke()
+        NSColor.white.withAlphaComponent(active ? 0.17 : (hovered ? 0.07 : 0.025)).setStroke()
         shape.lineWidth = 1
         shape.stroke()
-        let iconRect = CGRect(x: 12, y: (bounds.height - 30) / 2, width: 30, height: 30)
+        let iconRect = CGRect(x: 12, y: (bounds.height - 28) / 2, width: 28, height: 28)
         appIcon?.draw(in: iconRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
@@ -206,19 +264,22 @@ final class WindowChoiceButton: NSButton {
         let detail: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11),
             .foregroundColor: NSColor(white: 0.62, alpha: 1), .paragraphStyle: paragraph]
         let width = max(1, bounds.width - 90)
-        let nameY: CGFloat = isFlipped ? 9 : bounds.height - 25
-        let detailY: CGFloat = isFlipped ? 28 : 9
+        let nameY: CGFloat = isFlipped ? 6 : bounds.height - 23
+        let detailY: CGFloat = isFlipped ? 25 : 7
         (appName as NSString).draw(in: CGRect(x: 54, y: nameY, width: width, height: 17), withAttributes: attributes)
         (documentName as NSString).draw(in: CGRect(x: 54, y: detailY, width: width, height: 15), withAttributes: detail)
         if active || hovered {
-            let symbol = NSImage(systemSymbolName: "return", accessibilityDescription: nil)
-            symbol?.draw(in: CGRect(x: bounds.width - 27, y: (bounds.height - 12) / 2, width: 14, height: 12),
-                         from: .zero, operation: .sourceOver, fraction: 0.6, respectFlipped: true, hints: nil)
+            let key = CGRect(x: bounds.width - 34, y: (bounds.height - 22) / 2, width: 24, height: 22)
+            NSColor.white.withAlphaComponent(0.07).setFill()
+            NSBezierPath(roundedRect: key, xRadius: 5, yRadius: 5).fill()
+            ("↵" as NSString).draw(in: key.offsetBy(dx: 6, dy: 2), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: NSColor(white: 0.83, alpha: 1)])
         }
     }
 
     override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 11, yRadius: 11).fill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10).fill()
     }
 
     override var focusRingMaskBounds: NSRect { bounds }
