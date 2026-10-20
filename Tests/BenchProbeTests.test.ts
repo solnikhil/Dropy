@@ -40,7 +40,7 @@ test("the Swift probe exits nonzero when capture startup throws", async () => {
   try {
     const source = join(work, "main.swift"), binary = join(work, "probe");
     copyFileSync(join(import.meta.dir, "../Scripts/bench/topedge.swift"), source);
-    const compile = startProbe(["swiftc", source, join(import.meta.dir, "Fixtures/TopedgeStartupFailure.swift"), "-o", binary], 10000);
+    const compile = startProbe(["swiftc", source, join(import.meta.dir, "Fixtures/TopedgeStartupFailure.swift"), "-o", binary], 90000);
     const compiled = await compile.result;
     expect(compiled.stderr).not.toContain("error:");
     expect(compiled.exitCode).toBe(0);
@@ -51,4 +51,4 @@ test("the Swift probe exits nonzero when capture startup throws", async () => {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-}, 15000);
+}, 100000); // a cold swiftc compile on a shared CI runner can take well over 10 s

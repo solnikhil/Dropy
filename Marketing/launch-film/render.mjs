@@ -15,8 +15,8 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_DIR || 'playwright');
 const here = path.dirname(fileURLToPath(import.meta.url));
-// SUB: motion-blur samples per frame (default 4).
-const url = pathToFileURL(path.join(here, 'film.html')).href + '?render&sub=' + (process.env.SUB || 4);
+// SUB: motion-blur samples per frame (default 4). SCALE=2: render at 3840×2160.
+const url = pathToFileURL(path.join(here, 'film.html')).href + '?render&sub=' + (process.env.SUB || 4) + '&k=' + (process.env.SCALE || 1);
 
 const [mode, outDir, ...rest] = process.argv.slice(2);
 if (!mode || !outDir) { console.error('usage: render.mjs frames|stills <outDir> ...'); process.exit(1); }
