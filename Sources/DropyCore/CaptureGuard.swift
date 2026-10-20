@@ -13,7 +13,21 @@ public enum CaptureGuard {
     /// they play (AVPlayer does by default, browsers for a playing video).
     public static let displayAwakeTypes: Set<String> = ["PreventUserIdleDisplaySleep", "NoDisplaySleepAssertion"]
 
-    /// The processes keeping the display awake, from `IOPMCopyAssertionsByProcess`
+    /// Words in the names players give their assertion (2026-10-20, from powerd's log):
+    /// AVFoundation "com.apple.coremedia…" (Prime Video, QuickTime), Chromium
+    /// "Video Wake Lock", WebKit "HTMLMediaElement playback", Firefox "video-playing".
+    public static let videoAssertionWords = ["coremedia", "video", "playback"]
+
+    /// Whether a display-awake assertion is a player's. Sound alone (coreaudiod's
+    /// "com.apple.audio…" held for any app playing or recording audio), idle timers,
+    /// Codex Computer Use and keep-awake tools are not, and they kept the Stage away
+    /// for 15 minutes. An assertion without a name still counts.
+    public static func isVideoAssertion(named name: String?) -> Bool {
+        guard let name = name?.lowercased(), !name.isEmpty else { return true }
+        return videoAssertionWords.contains { name.contains($0) }
+    }
+
+    /// The processes keeping the display awake for video, from `IOPMCopyAssertionsByProcess`
     /// (process id → that process's assertions). An assertion made on behalf of another
     /// process counts for that one. Processes in `excluding` are left out.
     public static func displayAwakeProcesses(_ assertions: [Int32: [[String: Any]]],
@@ -21,7 +35,8 @@ public enum CaptureGuard {
         var owners: [Int32] = []
         for (pid, list) in assertions.sorted(by: { $0.key < $1.key }) {
             for assertion in list {
-                guard let type = assertion["AssertType"] as? String, displayAwakeTypes.contains(type) else { continue }
+                guard let type = assertion["AssertType"] as? String, displayAwakeTypes.contains(type),
+                      isVideoAssertion(named: assertion["AssertName"] as? String) else { continue }
                 let owner = (assertion["AssertionOnBehalfOfPID"] as? Int).map(Int32.init) ?? pid
                 if !excluding.contains(owner), !owners.contains(owner) { owners.append(owner) }
             }

@@ -18,6 +18,9 @@ public enum CaptureFailure: Equatable, Sendable {
     /// Showing the window would mean capturing the screen or adding the hidden display
     /// while an app played video recently.
     case videoPlaying(applicationName: String)
+    /// The window is on another desktop, and bringing it over needs the hidden display,
+    /// which would stop the video `player` played recently.
+    case stageWouldStopVideo(applicationName: String, player: String)
     /// Showing the window would need what Protect Video Playback turns off.
     case captureTurnedOff
 
@@ -37,6 +40,8 @@ public enum CaptureFailure: Equatable, Sendable {
             "Window list unavailable (code \(code)). Open the window menu to retry."
         case .videoPlaying(let app):
             "Showing this window here could stop the video in \(app): it needs a screen capture and Dropy's hidden display, which protected video refuses."
+        case .stageWouldStopVideo(let app, let player):
+            "\(app) is on another desktop. Bringing it here needs Dropy's hidden display, which would stop the video in \(player)."
         case .captureTurnedOff:
             "Showing this window here needs a screen capture and Dropy's hidden display, which Protect Video Playback turns off in Settings › Interaction."
         }
@@ -52,6 +57,7 @@ public enum CaptureFailure: Equatable, Sendable {
         case .streamInterrupted(let code): "streamInterrupted(\(code))"
         case .windowListUnavailable(let code): "windowListUnavailable(\(code))"
         case .videoPlaying: "videoPlaying"
+        case .stageWouldStopVideo: "stageWouldStopVideo"
         case .captureTurnedOff: "captureTurnedOff"
         }
     }
@@ -61,13 +67,16 @@ public enum CaptureFailure: Equatable, Sendable {
 
     /// A refusal to capture that the person can overrule for this opening.
     public var canCaptureAnyway: Bool {
-        if case .videoPlaying = self { return true }
-        return false
+        switch self {
+        case .videoPlaying, .stageWouldStopVideo: true
+        default: false
+        }
     }
 
     /// The failure's button, if it has one.
     public var actionTitle: String? {
         if opensPrivacySettings { return "Open Privacy Settings" }
+        if case .stageWouldStopVideo = self { return "Bring It Anyway" }
         return canCaptureAnyway ? "Show Anyway" : nil
     }
 

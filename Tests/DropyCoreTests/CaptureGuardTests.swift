@@ -25,6 +25,22 @@ final class CaptureGuardTests: XCTestCase {
         XCTAssertEqual(CaptureGuard.displayAwakeProcesses([:]), [])
     }
 
+    func testOnlyPlayersCountNotSoundOrKeepAwakeTools() {
+        let display = "PreventUserIdleDisplaySleep"
+        let assertions: [Int32: [[String: Any]]] = [
+            // Names seen in powerd's log on 2026-10-20.
+            10: [["AssertType": display, "AssertName": "com.apple.coremedia.iq.ca.client-1"]], // Prime Video
+            11: [["AssertType": "NoDisplaySleepAssertion", "AssertName": "Video Wake Lock"]],  // Helium
+            12: [["AssertType": display, "AssertName": "com.apple.WebCore: HTMLMediaElement playback"]],
+            // coreaudiod holds one for any app playing or recording sound.
+            20: [["AssertType": display, "AssertName": "com.apple.audio.context10236.preventuseridledisplaysleep",
+                  "AssertionOnBehalfOfPID": 21]],
+            22: [["AssertType": display, "AssertName": "net.whatsapp.idletimer"]],
+            23: [["AssertType": display, "AssertName": "Codex Computer Use interaction"]],
+        ]
+        XCTAssertEqual(CaptureGuard.displayAwakeProcesses(assertions), [10, 11, 12])
+    }
+
     func testTheSettingWinsOverAnythingPlaying() {
         XCTAssertEqual(CaptureGuard.refusal(neverCaptures: true, playing: "Safari"), .captureTurnedOff)
         XCTAssertEqual(CaptureGuard.refusal(neverCaptures: false, playing: "Safari"),

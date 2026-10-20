@@ -90,6 +90,10 @@ enum WindowCatalog {
                   let runningApplication = NSRunningApplication(processIdentifier: owner.processID),
                   runningApplication.activationPolicy == .regular,
                   let launchDate = runningApplication.launchDate else { continue }
+            // A closed window the app kept around: choosing it (or remembering it)
+            // led to "could not move this window" and a blank, view-only preview.
+            // A hidden app's windows are left alone, since hiding takes them off every desktop.
+            if !window.isOnScreen, !runningApplication.isHidden, Spaces.isOrderedOut(window.windowID) { continue }
             eligible[window.windowID] = (window, launchDate)
             summaries.append(WindowSummary(
                 processID: owner.processID,
