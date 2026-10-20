@@ -436,6 +436,14 @@ enum Spaces {
         return spaces.map(\.uint64Value)
     }
 
+    /// True when macOS reports the window on no desktop at all: an app closed it but
+    /// kept it in memory (Terminal and ChatGPT do this). Such a window cannot be
+    /// docked or shown. Minimized windows and windows on other desktops still belong
+    /// to one, and an unknown answer is false.
+    static func isOrderedOut(_ windowID: UInt32) -> Bool {
+        of(windowID)?.isEmpty == true
+    }
+
     /// Whether the display's current Space is another app's full screen, which an
     /// ordinary window cannot join. False when unknown.
     static func currentIsFullScreen(on display: CGDirectDisplayID) -> Bool {

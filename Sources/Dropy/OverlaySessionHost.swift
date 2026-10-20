@@ -43,6 +43,9 @@ protocol OverlaySessionHost: AnyObject {
     func showNote(_ message: String)
     /// Shows the live preview of `identity` instead, with a note saying why.
     func showPreviewInstead(of identity: WindowIdentity, request: UUID, note: String)
+    /// For a window on another desktop: when the Stage was kept away only because a
+    /// video played lately, says so with Bring It Anyway and returns true.
+    func offerStageAnyway(for identity: WindowIdentity, applicationName: String) -> Bool
     /// A restored or failed source must not keep the keyboard on the hidden Stage.
     func relinquishSourceFocus(processID: pid_t)
     func close(returnsFocus: Bool, putsBack: Bool)

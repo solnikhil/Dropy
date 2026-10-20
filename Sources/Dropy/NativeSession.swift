@@ -149,6 +149,7 @@ final class NativeSession: NSObject {
                 guard isCurrent(request) else { return }
                 if !WindowDock.isOnActiveSpace(identity.windowID) {
                     // Accessibility may not reach a window on another desktop at all.
+                    if host.offerStageAnyway(for: identity, applicationName: applicationName) { return }
                     host.setState(.dockedElsewhere(applicationName: applicationName))
                     return
                 }
@@ -248,6 +249,8 @@ final class NativeSession: NSObject {
 
     /// The window is on another desktop or behind a full-screen app: offer to go there.
     private func showElsewhere(_ docked: WindowDock.Docked) {
+        host.workspace?.coversWindow = false
+        if host.offerStageAnyway(for: docked.identity, applicationName: host.selectedApplicationName) { return }
         host.setState(.dockedElsewhere(applicationName: host.selectedApplicationName))
         host.workspace?.coversWindow = false
     }

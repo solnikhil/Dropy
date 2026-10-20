@@ -86,7 +86,12 @@ final class WindowDock {
     /// where the person had it. The window is not moved yet.
     func adopt(_ identity: WindowIdentity, session: UUID) -> Task<Void, Error> {
         operations.adopt(session) { [self] in
-            if current?.identity == identity { return }
+            if current?.identity == identity {
+                // Adopted already but left on another desktop (the Stage was kept away
+                // for a video, then the person chose Bring It Anyway): bring it now.
+                if !onActiveSpace, let stage, await stage.start() { try await moveToStageNow() }
+                return
+            }
             // Opened again while waiting to go home: it is on the Stage already.
             if let index = returning.firstIndex(where: { $0.identity == identity }) {
                 let docked = returning.remove(at: index)

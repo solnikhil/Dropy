@@ -1221,6 +1221,22 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         }
     }
 
+    func offerStageAnyway(for identity: WindowIdentity, applicationName: String) -> Bool {
+        guard stage != nil, !Spaces.displaysShareSpaces, !preferences.value.protectsVideo, !captureAllowed,
+              let player = videoActivity?.recentPlayer() else { return false }
+        NSLog("Dropy stage: offered Bring It Anyway")
+        refusedCapture = { [weak self] in
+            guard let self else { return }
+            if let index = self.available.firstIndex(where: { $0.identity == identity }) {
+                self.selectWindow(at: index)
+            } else {
+                self.native.start(identity, applicationName: applicationName, request: self.generation)
+            }
+        }
+        setState(.failed(.stageWouldStopVideo(applicationName: applicationName, player: player)))
+        return true
+    }
+
     /// Before a stream starts: shows why the screen should not be captured now and
     /// returns true, keeping `retry` for Show Anyway. False when capture may start.
     private func refuseCapture(retry: @escaping () -> Void) -> Bool {
