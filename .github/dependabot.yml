@@ -1,0 +1,9 @@
+# Sparkle is pinned on purpose: Package.swift and Scripts/fetch-sparkle.sh (with its
+# SHA-256) must move together, so only GitHub Actions are updated automatically.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [dependencies]
