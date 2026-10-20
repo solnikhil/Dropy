@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/solnikhil/Dropy/discussions
+    about: Ask a question, share a setup, or float an idea before opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/solnikhil/Dropy/security/advisories/new
+    about: Report a vulnerability privately. Please don't open a public issue.

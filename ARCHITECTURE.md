@@ -4,7 +4,7 @@
 
 Dropy should expand from the MacBook notch across the top menu-bar band into a temporary, Dropy-owned container. A selected existing application keeps its session. The goal is to use that app's UI inside the container and dismiss Dropy without closing or corrupting the source app.
 
-That full contract is **not yet implemented**. The first native slice is a live, view-only window mirror. With Full App interaction the app's real window is moved into the overlay; see the interaction section below.
+With Full App interaction the app's real window is moved into the overlay, through the hidden Stage display when it is on another desktop, and streamed (Live) over full-screen apps; see the interaction section below. The view-only mirror remains as the fallback without Accessibility. The contract is not yet validated across app toolkits, multiple displays or Stage Manager. The module table below began with the view-only mirror, so some rows describe that earlier slice.
 
 ## Current modules
 

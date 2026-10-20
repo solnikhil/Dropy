@@ -14,16 +14,12 @@ Ed25519 public key) in `Resources/Info.plist`. Both archives and the appcast mus
 signed: `SURequireSignedFeed` is enabled. Missing configuration is shown explicitly
 and never falls back to an unsigned download or reports that the app is current.
 
-**Hosting is not configured yet.** The source repository is private. A public
-releases-only repository can host installable binaries and `appcast.xml` while
-source stays private, but publishing those binaries is a separate owner decision.
-A private channel instead needs authenticated feed and archive access; merely using
-a private GitHub download URL does not implement authentication. Never embed GitHub
-tokens in an app bundle or feed URL.
-
-For a public releases-only repository, the feed URL is:
-`https://github.com/OWNER/RELEASES-REPOSITORY/releases/latest/download/appcast.xml`.
-No repository visibility or publication changes are performed by the app.
+**Hosting is not configured yet.** The source repository is public, so its own GitHub
+Releases can host the installable archive and `appcast.xml`. The feed URL is then:
+`https://github.com/solnikhil/Dropy/releases/latest/download/appcast.xml`.
+Set it as `SUFeedURL` in `Resources/Info.plist` when the first notarized release is
+ready. Until then, builds show "Updates aren't configured for this build." Never embed
+GitHub tokens in an app bundle or feed URL.
 
 ## Signing and publishing
 
@@ -40,16 +36,16 @@ After choosing the public channel and setting its feed URL, prepare an update fr
 a clean checkout:
 
 ```sh
-./Scripts/release-update.sh 0.1.2 3 OWNER/RELEASES-REPOSITORY
+./Scripts/release-update.sh 0.2.0 5 solnikhil/Dropy
 ```
 
 The script builds with explicit version/build metadata, checks the bundle signature,
 creates a ZIP, generates a signed appcast and verifies its signature. Artifacts go to
 `.build/releases/VERSION-BUILD`. Build numbers must increase with every release.
 Review the artifacts before uploading. Add `--publish` to upload the prepared build
-to a public releases-only repository and mark that GitHub release latest. The source
-repository remains private. The publisher refuses a missing/mismatched feed, signing
-key, dirty checkout, duplicate output directory or non-public destination.
+to the public repository and mark that GitHub release latest. The publisher refuses
+a missing/mismatched feed, signing key, dirty checkout, duplicate output directory
+or non-public destination.
 
 External macOS distribution also requires Developer ID Application signing and Apple
 notarization. The development machine currently has an Apple Development identity;

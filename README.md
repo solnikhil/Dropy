@@ -1,59 +1,91 @@
 # Dropy
 
-Dropy is a free, [MIT-licensed](LICENSE) macOS project building a temporary app container around the MacBook notch. The intended experience is to reveal an existing app's live UI in a Dropy-owned overlay, work there, and dismiss the overlay without losing the app's session.
+[![macOS CI](https://github.com/solnikhil/Dropy/actions/workflows/ci.yml/badge.svg)](https://github.com/solnikhil/Dropy/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![macOS 15+](https://img.shields.io/badge/macOS-15%2B-black)
 
-**Current status: early native build.** Pick an app and Dropy moves its real window into the notch overlay and brings the app to the front, so typing, shortcuts, menus, input methods and dragging all work as usual. Nothing is forwarded or emulated. A **pinned** app waits on a hidden display Dropy creates (the Stage) between openings, so it opens on any desktop; over a full-screen app it is streamed into the overlay instead (**Live**), with the pointer handed over to it and its app in front. Any other window you pick goes back exactly where it was when the overlay closes, and quitting Dropy puts everything back. This needs Accessibility; without it, or with **Preview only** chosen, Dropy shows a live, view-only picture of the window. The Stage relies on a private CoreGraphics API (`CGVirtualDisplay`) and falls back to the behavior above without it. See the [roadmap](ROADMAP.md) for what is still open.
+**Dropy keeps an app one keystroke away, in the MacBook notch.** Press the shortcut and the app you picked drops out of the notch. It's the real app, so typing, menus, shortcuts, input methods and dragging all work as usual. Close it and the app goes back to where it was, with its session intact.
 
-## Daily workspace improvements (2026-10-17)
+Dropy is free, open source and native (Swift, AppKit, ScreenCaptureKit, Metal).
 
-The current source adds an ordered collection of favorites, optional Control–Option–1…9 shortcuts, per-app size/position settings, exact-window memory, and a searchable picker ordered by favorites and recency. Old single-pin settings migrate without changing the default app. Only the most recently used favorite stays ready on the Stage; switching restores the previous window. See [the workspace behavior and validation boundary](docs/WORKSPACE.md).
+> **Status: early development, no signed download yet.** You can build and run it from source today. A notarized release with automatic updates is being prepared; see [where things stand](#status).
 
-Recovery now covers display scale/topology transitions and session resume, and Live resizing waits for the latest placement before handing over the pointer. These changes require the real-app hardware matrix before expanding compatibility claims.
+## What it does
 
-## What works today
+- **Opens a real window in the notch.** Pick an app and Dropy moves its window into an overlay that grows from the notch, then brings the app to the front. Nothing is emulated or forwarded.
+- **Works on every desktop.** A pinned app waits on a hidden display Dropy creates (the *Stage*) between openings, so it opens on whatever desktop you're on.
+- **Works over full-screen apps.** Over a full-screen app, the window is streamed into the overlay (*Live*) and the pointer is handed to it.
+- **Puts everything back.** Every move is journaled before it happens. Closing the overlay, quitting Dropy or a crash returns each window to its original frame.
+- **Favorites and shortcuts.** Keep a list of favorite apps, each with an optional Control–Option–1…9 shortcut and its own size and position.
+- **Your own animations.** Three built-in styles plus an Animation Studio for springs, keyframes and hand-drawn curves. Animations are small JSON files, shareable as a one-line code, and AI coding agents can write them ([format](docs/ANIMATIONS.md)).
+- **Respects protected video.** Dropy avoids screen capture while a video player is active, so streaming apps keep playing.
+- **Signed automatic updates** through [Sparkle](https://sparkle-project.org) once a release channel is published ([details](docs/UPDATES.md)).
 
-- **Pinned monitoring.** Use the pin in the overlay’s top bar to keep a view-only monitor visible while working in other apps or switching desktops. A docked source is restored before capture begins. Unpin to return to normal interaction and dismissal; Escape or the global shortcut closes either mode. Pinning lasts until the overlay closes. Screen Recording permission is required, and the existing video-player capture guard still applies. Mission Control, screen lock, sleep and display reconfiguration close the monitor.
-- **Signed automatic updates.** Sparkle downloads, verifies and installs updates, with manual checks and automatic check/download controls in Settings › Updates. A reachable signed update channel still needs to be configured; the private source repository is not a public download channel. See [update configuration and publishing](docs/UPDATES.md).
+Without Accessibility permission, or with **Preview only** chosen, Dropy shows a live, view-only picture of the window instead.
 
-- **First-launch setup.** A four-step tour introduces Dropy, explains Accessibility and Screen Recording, lets you choose your shortcut, and offers a sample-content demo on your screen. Permission requests happen only when you choose Allow Access. Closing the tour saves your place; finishing or choosing Set Up Later stops automatic presentation. Reopen it from **Help › Setup…** or the menu-bar menu. Development launches can use `--onboarding`; benchmark/debug and explicit Settings/Studio launches skip automatic onboarding.
+## Requirements
 
-- **Animations you can make your own.** Three built-in styles (Rapid, Balanced, Smooth) and any number of your own, made in the **Animation Studio** (Settings › Animation, or Animation in the menu bar menu): springs you shape by dragging one handle, keyframes on a timeline, or a curve you draw with the pen, previewed live and on the real notch. Every animation is a small JSON file in `~/Library/Application Support/Dropy/Animations`, picked up the moment it is saved, shareable as a one-line code. AI coding agents (Claude Code, Codex, Cursor) can make them too: Settings copies a prompt, the folder carries the guide, and `Dropy animation check | render | play | use` lets an agent check its file, look at it and show it to you. Format and rules: [docs/ANIMATIONS.md](docs/ANIMATIONS.md).
+- macOS 15 or later on Apple silicon. A notch is not required, but it's what Dropy is designed around.
+- **Accessibility** permission, to move and focus the real window.
+- **Screen Recording** permission, for the view-only preview and Live mode.
 
-- A top-edge AppKit panel that expands from the notch area and can temporarily cover part of the menu bar.
-- A picker for ordinary running app windows, with ScreenCaptureKit capture and an IOSurface-backed Metal preview.
-- Hover or click notch triggers, plus a menu-bar entry; compact/medium/wide sizes; picker/direct/last-used opening; fit/fill/native-scale content display. These choices are saved locally.
-- The capture stream stops when the overlay closes. The source app continues running.
-- A selected window is rechecked by process, launch time, bundle and window ID while the overlay is open. Closing it clears the preview; resizing it updates capture dimensions.
-
-The preview stays free of a persistent capability footer; attempted unverified input is refused with a transient reason. Direct and last-used opening remember the exact window while its process remains running; a closed document or relaunched app requires a new choice. Favorites can be installed apps and are launched when closed. Crop-region selection remains unimplemented. Esc, the shortcut, click-outside and pointer-leave dismissal are checked with real input by `Scripts/dismissal-checks.sh`. Input is refused whenever the drawn frame cannot be tied to the selected window at its current size, for example during a resize or right after switching windows. The [compatibility matrix](docs/COMPATIBILITY.md) lists exactly what is verified.
-
-## Notch and window-first UI (local changes, 2026-10-03)
-
-The reachable base and both shoulders open Dropy by click or settled hover. A selected window now occupies the preview body, with app/window switching beside the housing and an expand control opposite it. Pinning remains in Settings; the persistent Pin app and Refresh buttons are removed. The window menu refreshes the catalog when opened.
-
-**Fit the window within the selected size** preserves small source windows at native point size below the housing and scales larger windows down to the selected Compact/Medium/Wide budget. Compact is the default. Use Fit to show the whole source; Expand uses more of the display. The source app's title bar remains part of its captured window.
-
-**Experimental → Restrict sideways movement across the notch** is off by default, requires Accessibility, and releases while the overlay is open. Hold Option to bypass it, or move below the notch. It is compiled and covered by policy tests; its effect on native cursor jumps has not yet been checked on hardware. See the [implementation record](docs/design/2026-10-03-implementation.md).
+Dropy can't be sandboxed and isn't headed for the Mac App Store: it moves other apps' windows and uses a private CoreGraphics API (`CGVirtualDisplay`) for the Stage. Without that API it falls back to working on the current desktop only.
 
 ## Build and run
 
-With Xcode and a Swift 6 toolchain on macOS:
+You need Xcode (or the Command Line Tools) with a Swift 6 toolchain.
 
 ```sh
-swift build
-swift test
-./Scripts/build-local.sh
+git clone https://github.com/solnikhil/Dropy.git
+cd Dropy
+./Scripts/build-local.sh          # builds .build/local/Dropy.app
 open .build/local/Dropy.app
 ```
 
-On the original development machine, the Command Line Tools installation lacks a SwiftPM framework, so `swift build` and `swift test` fail before compilation. The direct `swiftc` build script and `./Scripts/test-local.sh` work there; the local script also runs the XCTest suite through a minimal stand-in. The script assembles an ad-hoc-signed development `.app`; it is not a signed public release. macOS may request Screen Recording permission when a window is selected.
+To install it like an ordinary app in `/Applications` (Spotlight, Dock, Open at Login), run `./Scripts/install.sh`.
 
-To install it like an ordinary app (Spotlight, Launchpad, Dock, login item), run `./Scripts/install.sh`. It builds Dropy, copies it to `/Applications` (or `~/Applications`) and opens it.
+Open Dropy with **⌥Space** (the default shortcut) or from the menu bar. Press Esc, ⌘W or the shortcut again to close it. Everything else is in **Settings** (⌘,). A short setup tour runs on first launch and is available again from **Help › Setup…**.
 
-Dropy shows a Dock icon, its own menu bar, and a diamond in the menu bar. Use **Open Dropy** or ⌥Space (the default shortcut; notch triggering is currently paused), choose a running window, and close the panel with Esc, ⌘W or its **Close** button. **Settings…** (⌘,) holds every option, Open at login, Show in Dock and the permission status; opening Dropy again from Finder or the Dock also shows it. Turn off **Show in Dock** for a menu-bar-only app. Launches by the check scripts (`DROPY_DEBUG_*` or `--show`) always stay menu-bar-only.
+Opening by hovering over or clicking the notch is built but turned off for now while the shortcut flow is refined.
 
-## Engineering direction
+## Status
 
-Capture, presentation, source-window tracking, input/focus and source placement are separate concerns. Full App uses the real window and native input; the former input-forwarding experiments are historical. The Stage and Live path still require the real-app compatibility matrix for menus, IME, dragging, full-screen Spaces and external displays. [Feasibility status](docs/FEASIBILITY.md) records what has and has not been shown.
+Dropy works every day on its author's Mac, but it hasn't been tested widely. The [roadmap](ROADMAP.md) tracks milestones and their exit criteria, and the [compatibility log](docs/COMPATIBILITY.md) records what has been tested on real hardware.
 
-Read [ROADMAP.md](ROADMAP.md) for milestones and pass/fail criteria, [ARCHITECTURE.md](ARCHITECTURE.md) for module boundaries, the [compatibility observations](docs/COMPATIBILITY.md) for actual app checks, and [CONTRIBUTING.md](CONTRIBUTING.md) to help. Security reports should follow [SECURITY.md](SECURITY.md). Windows is a later platform track with a separate backend.
+| Area | State |
+|---|---|
+| Native docking, Stage, Live | Built; smoke-tested with TextEdit and Safari |
+| Favorites, shortcuts, per-app layout | Built |
+| Animation Studio and format | Built |
+| Overlay positions (edges, corners) | Built; needs a device tryout |
+| Multiple displays, Stage Manager | Not handled yet |
+| Signed, notarized download | Not yet: needs a Developer ID certificate |
+| Automatic updates | Code done; no release channel published yet |
+
+## How it's built
+
+```
+Sources/
+  DropyCore/       Pure logic: geometry, policies, animation format, preferences (unit-tested)
+  Dropy/           The AppKit app: overlay, sessions, Stage, capture, settings, updates
+  DropyStageShim/  Objective-C wrapper for the private virtual-display API
+Tests/             XCTest suite for DropyCore, plus local integration checks
+Scripts/           Build, install, test, benchmark, device-check and release scripts
+docs/              Design records, feasibility notes, compatibility log, benchmarks
+```
+
+Decisions go in `DropyCore` as plain values with tests. The AppKit side carries them out. [ARCHITECTURE.md](ARCHITECTURE.md) covers the module boundaries, the docking, Stage and Live designs, and the quality gates.
+
+## Contributing
+
+Contributions are welcome. Small fixes, compatibility reports from real apps and Macs, and focused experiments are all useful. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then look for issues labelled [`good first issue`](https://github.com/solnikhil/Dropy/labels/good%20first%20issue) or [`help wanted`](https://github.com/solnikhil/Dropy/labels/help%20wanted). Ask questions in [Discussions](https://github.com/solnikhil/Dropy/discussions).
+
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## Privacy
+
+Dropy has no accounts, analytics or telemetry. Captured pixels, window titles and text stay on your Mac and are never logged by default. The only network request is the update check, which goes to the published release feed.
+
+## License
+
+[MIT](LICENSE). Sparkle is distributed under its own license ([ThirdParty/Sparkle-LICENSE](ThirdParty/Sparkle-LICENSE)).
