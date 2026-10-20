@@ -15,8 +15,8 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_DIR || 'playwright');
 const here = path.dirname(fileURLToPath(import.meta.url));
-// SUB: motion-blur samples per frame (default 4). VERT=1: the vertical 9:16 cut.
-const url = pathToFileURL(path.join(here, 'film.html')).href + '?render&sub=' + (process.env.SUB || 4) + (process.env.VERT ? '&v=1' : '');
+// SUB: motion-blur samples per frame (default 4).
+const url = pathToFileURL(path.join(here, 'film.html')).href + '?render&sub=' + (process.env.SUB || 4);
 
 const [mode, outDir, ...rest] = process.argv.slice(2);
 if (!mode || !outDir) { console.error('usage: render.mjs frames|stills <outDir> ...'); process.exit(1); }
@@ -56,7 +56,7 @@ if (mode === 'audio') {
   const times = rest.map(Number);
   const data = await p.evaluate(times => {
     const film = document.getElementById('film');
-    const tall = film.height > film.width, cols = tall ? 5 : 3, w = tall ? 300 : 640, h = tall ? 533 : 360, rows = Math.ceil(times.length / cols);
+    const cols = 3, w = 640, h = 360, rows = Math.ceil(times.length / cols);
     const sheet = document.createElement('canvas');
     sheet.width = cols * w; sheet.height = rows * h;
     const g = sheet.getContext('2d');
