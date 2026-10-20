@@ -32,25 +32,46 @@
 // and the frame-by-frame render (render.mjs) show exactly the same film.
 
 const W = 1920, H = 1080, DUR = 47.9;
-// The timeline below is written in story seconds. Played back, the action runs SPEED
-// times faster up to the end card, which then holds at normal speed so it can be read.
+// The timeline below is written in story seconds; SPEEDS sets how fast it plays back.
 // Two scenes are inserted into it at story times `at`; while one plays, the main
 // timeline holds still and the scene draws over the same screen.
 const INSERTS = [{ at: 8.1, dur: 8.5, kind: 'edges' }, { at: 16.85, dur: 6.6, kind: 'montage' }];
 const INS = Object.fromEntries(INSERTS.map(I => [I.kind, I]));
 const EXTRA = INSERTS.reduce((a, b) => a + b.dur, 0);
-// One stretch of the story is cut out (where an app picker used to be).
 // Stretches cut out of the story: a beat of stillness before the edges scene, where an
 // app picker used to be, a full-screen demo, and an empty desktop before the finale.
 const CUTS = [{ at: 8.15, len: .4 }, { at: 10.4, len: 2.2 }, { at: 15.0, len: 1.8 }, { at: 20.95, len: 7.3 }, { at: 36.25, len: 3.55 }];
 const CUT_LEN = CUTS.reduce((a, c) => a + c.len, 0);
 const cutOf = o => { let c = o; for (const C of CUTS) c -= clamp(o - C.at, 0, C.len); return c; };
 const uncut = c => { let o = c; for (const C of CUTS) if (o > C.at) o += C.len; return o; };
-const SPEED = 1.5, HOLD_AT = 44 - CUT_LEN + EXTRA, TOTAL = DUR - CUT_LEN + EXTRA;
-const REAL_DUR = HOLD_AT / SPEED + (TOTAL - HOLD_AT);
-// Real seconds <-> master seconds (the story with the scenes in it).
-const masterOf = r => r * SPEED <= HOLD_AT ? r * SPEED : HOLD_AT + (r - HOLD_AT / SPEED);
-const realOf = m => m <= HOLD_AT ? m / SPEED : HOLD_AT / SPEED + (m - HOLD_AT);
+const TOTAL = DUR - CUT_LEN + EXTRA;
+// Playback speed, as [master second, speed] keys (master seconds: the story with the
+// scenes in it), eased from key to key. The quiet opening and the edges run quickest,
+// the busy app scenes and the Motion section closer to real time, so the film keeps
+// one even pace; the end card plays at real time so it can be read.
+const SPEEDS = [
+  [0, 2.0], [5.0, 2.0], [6.2, 1.6], [7.9, 1.6], // the opening; "Meet Dropy."
+  [8.6, 1.75], [16.2, 1.75],                    // the edges scene (8.1–16.6)
+  [17.0, 1.55], [20.4, 1.55],                   // "Even the notch." and Notes
+  [21.3, 1.28], [39.95, 1.28],                  // the montage, the shortcut, Motion, the lift
+  [43.85, 1], [TOTAL, 1],                       // the end card
+];
+const speedAt = m => {
+  let k = 0;
+  while (k < SPEEDS.length - 2 && m >= SPEEDS[k + 1][0]) k++;
+  const [a, sa] = SPEEDS[k], [b, sb] = SPEEDS[k + 1], u = Math.min(1, Math.max(0, (m - a) / (b - a)));
+  return sa + (sb - sa) * (1 - Math.cos(Math.PI * u)) / 2;
+};
+// Real seconds <-> master seconds, through a table of real time at every STEP of master time.
+const STEP = .002, RT = [0];
+for (let i = 0; i * STEP < TOTAL + 1; i++) RT.push(RT[i] + STEP / speedAt((i + .5) * STEP));
+const realOf = m => { const i = Math.min(RT.length - 2, Math.max(0, Math.floor(m / STEP))); return RT[i] + (RT[i + 1] - RT[i]) * (m / STEP - i); };
+function masterOf(r) {
+  let lo = 0, hi = RT.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (RT[mid] <= r) lo = mid; else hi = mid; }
+  return (lo + (r - RT[lo]) / (RT[lo + 1] - RT[lo])) * STEP;
+}
+const REAL_DUR = realOf(TOTAL);
 function toMaster(o) { const c = cutOf(o); let m = c; for (const I of INSERTS) if (c > cutOf(I.at)) m += I.dur; return m; }
 const insertStart = I => toMaster(I.at);
 function locate(m) {
@@ -70,15 +91,7 @@ const real = o => realOf(toMaster(o));
 const BPM = 96, BEAT = 60 / BPM;
 let AMB = 0, SHELL_EDGE = 1, SHELL_BODY = 0, MENU_APP = null, NOTCH_JIGGLE = { w: 0, h: 0 };
 const cv = document.getElementById('film');
-const VERT = new URLSearchParams(location.search).has('v');
-if (VERT) { cv.width = 1080; cv.height = 1920; }
-const outCtx = cv.getContext('2d');
-// Every drawing function draws through ctx: the output canvas, or, for the vertical
-// cut, a landscape frame that is then placed on the tall canvas.
-const frameCv = VERT ? Object.assign(document.createElement('canvas'), { width: 1920, height: 1080 }) : cv;
-let ctx = VERT ? frameCv.getContext('2d') : outCtx;
-// Set while captions are drawn onto the vertical canvas: where they go.
-let CAP = null;
+const ctx = cv.getContext('2d');
 const FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif';
 const FG = '245,245,247';
 
@@ -298,8 +311,6 @@ function animText(t, o) {
 }
 // Captions that drop in word by word and land with a bounce, then fly up and out.
 function kinetic(t, o) {
-  if (VERT && !CAP) return;
-  if (CAP) o = { ...o, x: CAP.x, y: CAP.y, size: o.size * CAP.k };
   const font = `${o.weight || 700} ${o.size}px ${FONT}`, track = o.track ?? -1;
   const L = layout(o.text, font, track);
   const x0 = o.x - L.width / 2, tOut = o.tOut ?? 1e9, g = o.g || ctx;
@@ -967,7 +978,6 @@ function drawLift(t) {
 // The style's name, moving the way that style moves: Rapid snaps, Balanced bounces,
 // Smooth glides.
 function drawStyleWords(t) {
-  if (VERT && !CAP) return;
   STYLES.forEach((S, i) => {
     const t0 = SEL[i] + .02, tOut = i < 2 ? SEL[i + 1] - .32 : 34.65;
     if (t < t0 || t > tOut + .4) return;
@@ -976,7 +986,7 @@ function drawStyleWords(t) {
     if (a <= .003) return;
     ctx.save();
     ctx.globalAlpha = a;
-    ctx.translate(CAP ? CAP.x : 960, (CAP ? CAP.y : 952) - (1 - sp) * 54 - out * 30); ctx.scale(sc, sc);
+    ctx.translate(960, 952 - (1 - sp) * 54 - out * 30); ctx.scale(sc, sc);
     if (out > .01) ctx.filter = `blur(${(out * 12).toFixed(1)}px)`;
     text(ctx, S.name + '.', 0, 0, 104, 750, `rgb(${FG})`, 'center', -3);
     ctx.restore();
@@ -1511,41 +1521,7 @@ function finish(t, rt) {
   if (end > 0) { ctx.fillStyle = `rgba(0,0,0,${end})`; ctx.fillRect(0, 0, W, H); }
 }
 
-// Vertical cut: how large the landscape frame sits on the tall canvas, and which point
-// of it is centred. The logo moments fill the width; the screen fits; the app scenes
-// lean in; the Motion section fits the screen and its panel side by side.
-function vertView(L) {
-  const t = L.o;
-  if (L.ins) return L.ins.kind === 'edges' ? { z: .5625, x: 960, y: 540 } : { z: .95, x: 960, y: 400 };
-  const views = [[0, 1, 960, 540], [4.6, 1, 960, 540], [6.0, .5625, 960, 540], [8.6, .5625, 960, 540], [9.3, .95, 960, 400],
-    [28.3, .95, 960, 400], [29.6, .62, 932, 540], [35.15, .62, 932, 540], [36.15, 1, 960, 540]];
-  let k = 0;
-  while (k < views.length - 1 && t >= views[k + 1][0]) k++;
-  const A = views[k], B = views[Math.min(k + 1, views.length - 1)];
-  const u = B === A ? 1 : E.inOut(prog(t, A[0], B[0]));
-  if (B === A || t >= B[0]) return { z: A[1], x: A[2], y: A[3] };
-  return { z: lerp(A[1], B[1], u), x: lerp(A[2], B[2], u), y: lerp(A[3], B[3], u) };
-}
 function render(rt) {
-  if (!VERT) return renderFrame(rt);
-  ctx = frameCv.getContext('2d');
-  renderFrame(rt);
-  const m = masterOf(rt), L = locate(m), t = L.o, v = vertView(L);
-  ctx = outCtx;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 1080, 1920);
-  ctx.save(); ctx.translate(540, 900); ctx.scale(v.z, v.z); ctx.translate(-v.x, -v.y);
-  ctx.drawImage(frameCv, 0, 0);
-  ctx.restore();
-  // Captions, large, under the frame.
-  CAP = { x: 540, y: 1660, k: 1.05 };
-  if (L.ins) SCENES[L.ins.kind].caption(L.l);
-  else { drawCaptions(t, camera(t)); drawStyleWords(t); }
-  CAP = null;
-  ctx = frameCv.getContext('2d');
-}
-function renderFrame(rt) {
   const m = masterOf(rt), L = locate(m), t = L.o;
   AMB = m; MENU_APP = null; NOTCH_JIGGLE = { w: 0, h: 0 };
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1857,8 +1833,8 @@ function renderBlurred(rt, n = 4, shutter = .5) {
     render(rt + ((i + .5) / n - .5) * shutter / 60);
     accg.globalAlpha = 1 / (i + 1); accg.drawImage(cv, 0, 0);
   }
-  outCtx.setTransform(1, 0, 0, 1, 0, 0); outCtx.globalAlpha = 1; outCtx.filter = 'none'; outCtx.globalCompositeOperation = 'source-over';
-  outCtx.drawImage(acc, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(acc, 0, 0);
 }
 const SUB = +(new URLSearchParams(location.search).get('sub') || 1);
 window.renderAt = t => renderBlurred(t, SUB);
