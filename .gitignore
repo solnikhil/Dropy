@@ -3,3 +3,8 @@
 *.swiftdoc
 *.swiftmodule
 *.swiftsourceinfo
+.swiftpm/
+xcuserdata/
+DerivedData/
+node_modules/
+*.dmg
