@@ -90,8 +90,25 @@ const real = o => realOf(toMaster(o));
 // overrides the inserted scenes set.
 const BPM = 96, BEAT = 60 / BPM;
 let AMB = 0, SHELL_EDGE = 1, SHELL_BODY = 0, MENU_APP = null, NOTCH_JIGGLE = { w: 0, h: 0 };
+// Resolution scale: ?k=2 renders at 3840×2160. Everything is drawn in 1920×1080 units;
+// each context scales its transform, shadows and blur filters by K.
+const K = +(new URLSearchParams(location.search).get('k') || 1);
+function scaled(g) {
+  if (K === 1) return g;
+  const P = CanvasRenderingContext2D.prototype, st = P.setTransform;
+  g.setTransform = (a, b, c, d, e, f) => st.call(g, a * K, b * K, c * K, d * K, e * K, f * K);
+  for (const n of ['shadowBlur', 'shadowOffsetX', 'shadowOffsetY']) {
+    const D = Object.getOwnPropertyDescriptor(P, n);
+    Object.defineProperty(g, n, { get: () => D.get.call(g) / K, set: v => D.set.call(g, v * K) });
+  }
+  const F = Object.getOwnPropertyDescriptor(P, 'filter');
+  Object.defineProperty(g, 'filter', { get: () => F.get.call(g), set: v => F.set.call(g, String(v).replace(/blur\(([\d.]+)px\)/g, (_, x) => `blur(${x * K}px)`)) });
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  return g;
+}
 const cv = document.getElementById('film');
-const ctx = cv.getContext('2d');
+cv.width = W * K; cv.height = H * K;
+const ctx = scaled(cv.getContext('2d'));
 const FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif';
 const FG = '245,245,247';
 
@@ -420,8 +437,8 @@ const toScreen = (cam, pts) => pts.map(([x, y]) => [(x - 960) * cam.s + cam.cx, 
 
 // ---------- the world: a Mac screen ----------
 const world = document.createElement('canvas');
-world.width = W; world.height = H;
-const wg = world.getContext('2d');
+world.width = W * K; world.height = H * K;
+const wg = scaled(world.getContext('2d'));
 
 const R3 = rng(23), MOTES = Array.from({ length: 46 }, () => ({ x: R3() * 1920, y: R3() * 1080, v: 8 + R3() * 22, r: .8 + R3() * 1.6, a: .12 + R3() * .3, p: R3() * 6.28 }));
 const R2 = rng(11), STARS = Array.from({ length: 140 }, () => ({ x: R2() * 1920, y: R2() * 700, r: .4 + R2() * 1.1, a: .1 + R2() * .5, p: R2() * 6.28 }));
@@ -1434,7 +1451,7 @@ function renderInsert(L, cam) {
   drawMenuBar(g, L.o, 1);
   scene.draw(g, l, cam);
   g.restore();
-  ctx.drawImage(world, 0, 0);
+  ctx.drawImage(world, 0, 0, W, H);
   scene.caption(l);
 }
 
@@ -1534,7 +1551,7 @@ function render(rt) {
     drawWorld(t, cam);
     ctx.save(); ctx.globalAlpha = wa;
     if (wa < .98) ctx.filter = `blur(${((1 - wa) * 18).toFixed(1)}px)`;
-    ctx.drawImage(world, 0, 0); ctx.restore();
+    ctx.drawImage(world, 0, 0, W, H); ctx.restore();
   }
   drawIntro(t, cam);
   drawKeys(t);
@@ -1833,7 +1850,7 @@ function renderBlurred(rt, n = 4, shutter = .5) {
     render(rt + ((i + .5) / n - .5) * shutter / 60);
     accg.globalAlpha = 1 / (i + 1); accg.drawImage(cv, 0, 0);
   }
-  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
+  ctx.setTransform(1 / K, 0, 0, 1 / K, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(acc, 0, 0);
 }
 const SUB = +(new URLSearchParams(location.search).get('sub') || 1);

@@ -6,7 +6,8 @@ notch, the overlay, and finally the app icon.
 
 - `film.html` is the film. Open it in a browser to play and scrub it (Space plays/pauses).
   Every frame is a pure function of time, so the preview and the render match exactly.
-- `render.mjs` renders it in headless Chromium (Playwright):
+- `render.mjs` renders it in headless Chromium (Playwright); `SCALE=2` renders at 3840×2160
+  (`film.html?k=2`), drawn natively rather than upscaled:
   `node render.mjs frames <dir>` writes every frame, `stills <dir> <t…>` single frames,
   and `sheet <dir> <t…>` a labelled contact sheet for review.
 - The score is synthesised in the same file with Web Audio and cued to the picture
