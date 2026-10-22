@@ -25,6 +25,31 @@ final class CaptureGuardTests: XCTestCase {
         XCTAssertEqual(CaptureGuard.displayAwakeProcesses([:]), [])
     }
 
+    func testExternalProcessIDsCannotOverflowOrTruncate() {
+        XCTAssertEqual(CaptureGuard.processIdentifier(from: NSNumber(value: 701)), 701)
+        XCTAssertEqual(CaptureGuard.processIdentifier(from: Int(Int32.max)), Int32.max)
+        for value: Any in [Int.max, Int.min, Int(Int32.max) + 1, 0, -1, "701", NSNumber(value: true), NSNumber(value: 701.5)] {
+            XCTAssertNil(CaptureGuard.processIdentifier(from: value))
+        }
+        XCTAssertNil(CaptureGuard.processIdentifier(from: nil))
+    }
+
+    func testMalformedDelegationFallsBackToTheAssertionOwner() {
+        let display = "PreventUserIdleDisplaySleep"
+        let assertions: [Int32: [[String: Any]]] = [
+            42: [["AssertType": display, "AssertionOnBehalfOfPID": Int.max]],
+            43: [["AssertType": display, "AssertionOnBehalfOfPID": Int.min]],
+            44: [["AssertType": display, "AssertionOnBehalfOfPID": 0]],
+            45: [["AssertType": display, "AssertionOnBehalfOfPID": -1]],
+            46: [["AssertType": display, "AssertionOnBehalfOfPID": 701]],
+            47: [["AssertType": display, "AssertionOnBehalfOfPID": 701]],
+            0: [["AssertType": display]],
+            -1: [["AssertType": display]],
+        ]
+        XCTAssertEqual(CaptureGuard.displayAwakeProcesses(assertions), [42, 43, 44, 45, 701])
+        XCTAssertEqual(CaptureGuard.displayAwakeProcesses(assertions, excluding: [42, 701]), [43, 44, 45])
+    }
+
     func testOnlyPlayersCountNotSoundOrKeepAwakeTools() {
         let display = "PreventUserIdleDisplaySleep"
         let assertions: [Int32: [[String: Any]]] = [

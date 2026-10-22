@@ -42,7 +42,11 @@ final class VideoActivity {
         var copied: Unmanaged<CFDictionary>?
         guard IOPMCopyAssertionsByProcess(&copied) == kIOReturnSuccess,
               let byProcess = copied?.takeRetainedValue() as? [NSNumber: [[String: Any]]] else { return [] }
-        let assertions = Dictionary(byProcess.map { ($0.key.int32Value, $0.value) }, uniquingKeysWith: { $0 + $1 })
+        var assertions: [Int32: [[String: Any]]] = [:]
+        for (rawPID, entries) in byProcess {
+            guard let pid = CaptureGuard.processIdentifier(from: rawPID) else { continue }
+            assertions[pid, default: []].append(contentsOf: entries)
+        }
         var apps: Set<Int32> = []
         for pid in CaptureGuard.displayAwakeProcesses(assertions, excluding: [getpid()]) {
             // A browser plays video in a helper process: count the app responsible for it.
