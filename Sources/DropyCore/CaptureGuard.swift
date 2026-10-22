@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Whether Dropy may capture the screen now. Any ScreenCaptureKit stream or
 /// screenshot, even of a single other window for a fraction of a second, tells every
@@ -27,6 +28,14 @@ public enum CaptureGuard {
         return videoAssertionWords.contains { name.contains($0) }
     }
 
+    /// Power assertion IDs must be positive integers representable by pid_t.
+    /// Reject invalid external values instead of trapping or truncating to another process.
+    public static func processIdentifier(from rawValue: Any?) -> Int32? {
+        if let number = rawValue as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
+        guard let value = rawValue as? Int, value > 0 else { return nil }
+        return Int32(exactly: value)
+    }
+
     /// The processes keeping the display awake for video, from `IOPMCopyAssertionsByProcess`
     /// (process id → that process's assertions). An assertion made on behalf of another
     /// process counts for that one. Processes in `excluding` are left out.
@@ -37,7 +46,8 @@ public enum CaptureGuard {
             for assertion in list {
                 guard let type = assertion["AssertType"] as? String, displayAwakeTypes.contains(type),
                       isVideoAssertion(named: assertion["AssertName"] as? String) else { continue }
-                let owner = (assertion["AssertionOnBehalfOfPID"] as? Int).map(Int32.init) ?? pid
+                let owner = processIdentifier(from: assertion["AssertionOnBehalfOfPID"]) ?? pid
+                guard owner > 0 else { continue }
                 if !excluding.contains(owner), !owners.contains(owner) { owners.append(owner) }
             }
         }
