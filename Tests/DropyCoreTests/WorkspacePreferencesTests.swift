@@ -60,6 +60,16 @@ final class WorkspacePreferencesTests: XCTestCase {
                                                candidates: [original]), .selected(original))
     }
 
+    func testMissingAppWindowsReportUnavailableDespiteRememberedSelection() {
+        let remembered = window(1)
+        XCTAssertEqual(WindowSelection.resolve(bundleIdentifier: "notes", remembered: remembered,
+                                               candidates: []), .noWindows)
+        XCTAssertEqual(WindowSelection.resolve(bundleIdentifier: "notes", remembered: remembered,
+                                               candidates: [window(2, app: "browser")]), .noWindows)
+        XCTAssertEqual(WindowSelection.resolve(bundleIdentifier: "notes", remembered: nil,
+                                               candidates: []), .noWindows)
+    }
+
     func testMemoryIsBoundedAndContainsOneRecentWindowPerApp() throws {
         var preferences = DropyPreferences()
         preferences.rememberWindow(window(1))
