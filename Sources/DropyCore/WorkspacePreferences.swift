@@ -36,11 +36,12 @@ public enum WindowSelection: Equatable, Sendable {
     public static func resolve(bundleIdentifier: String, remembered: WindowIdentity?,
                                candidates: [WindowIdentity]) -> WindowSelection {
         let matches = candidates.filter { $0.bundleIdentifier == bundleIdentifier }
+        guard !matches.isEmpty else { return .noWindows }
         if let remembered {
             return matches.contains(remembered) ? .selected(remembered) : .chooseWindow
         }
         if matches.count == 1 { return .selected(matches[0]) }
-        return matches.isEmpty ? .noWindows : .chooseWindow
+        return .chooseWindow
     }
 }
 
