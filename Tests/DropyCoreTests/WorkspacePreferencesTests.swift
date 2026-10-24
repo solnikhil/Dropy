@@ -29,6 +29,20 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertNil(preferences.openTargetBundleIdentifier, "Removing a default must not silently open another app")
         preferences.addFavorite("browser")
         XCTAssertEqual(preferences.favoriteApps.map(\.id), ["browser"])
+        XCTAssertNil(preferences.openTargetBundleIdentifier)
+    }
+
+    func testAddingFavoritesPreservesOpeningChoiceAfterDefaultIsCleared() throws {
+        var preferences = DropyPreferences(openBehavior: .lastUsed, lastUsedBundleIdentifier: "editor")
+        preferences.addFavorite("notes")
+        preferences.pinnedBundleIdentifier = nil
+        // The choice must survive saving settings before another app is added.
+        preferences = try JSONDecoder().decode(DropyPreferences.self, from: JSONEncoder().encode(preferences))
+        preferences.addFavorite("browser")
+        preferences.addFavorite("notes")
+        XCTAssertEqual(preferences.favoriteApps.map(\.id), ["notes", "browser"])
+        XCTAssertNil(preferences.pinnedBundleIdentifier)
+        XCTAssertEqual(preferences.openTargetBundleIdentifier, "editor")
     }
 
     func testPerAppPresentationDoesNotChangeGlobalDefaults() throws {
