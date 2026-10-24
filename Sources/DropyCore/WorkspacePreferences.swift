@@ -61,10 +61,13 @@ extension DropyPreferences {
 
     public mutating func addFavorite(_ bundleIdentifier: String) {
         favorites = favoriteApps
+        let isFirstFavorite = favorites.isEmpty
         if !favorites.contains(where: { $0.id == bundleIdentifier }) {
             favorites.append(FavoriteApp(bundleIdentifier: bundleIdentifier))
         }
-        if pinnedBundleIdentifier == nil { pinnedBundleIdentifier = bundleIdentifier }
+        // Seed a default only for the initial favorite. An existing collection with
+        // no default means the person's opening choice should continue to apply.
+        if isFirstFavorite && pinnedBundleIdentifier == nil { pinnedBundleIdentifier = bundleIdentifier }
     }
 
     public mutating func removeFavorite(_ bundleIdentifier: String) {
