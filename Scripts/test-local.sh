@@ -61,6 +61,7 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Tests/LocalPlacementJournalCheck.swift" \
   "$repo_dir/Sources/Dropy/PlacementJournal.swift" \
   "$repo_dir/Sources/Dropy/PlacementRecovery.swift" \
+  "$repo_dir/Sources/Dropy/NotificationObservation.swift" \
   "$repo_dir/Sources/Dropy/WindowPlacer.swift" \
   "$repo_dir/Sources/Dropy/WindowCatalog.swift"
 "$build_dir/PlacementJournalTests"
@@ -70,6 +71,24 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/UpdateChecks" \
   "$repo_dir/Tests/LocalUpdateCheck.swift" "$repo_dir/Sources/Dropy/UpdateChecker.swift"
 "$build_dir/UpdateChecks"
+
+# Registration ownership and teardown, without installing input hooks or showing UI.
+swiftc -swift-version 6 -o "$build_dir/ResourceLifetimeChecks" \
+  "$repo_dir/Tests/LocalResourceLifetimeCheck.swift" \
+  "$repo_dir/Sources/Dropy/NotificationObservation.swift" "$repo_dir/Sources/Dropy/MainThreadCleanup.swift" \
+  "$repo_dir/Sources/Dropy/RepeatingTimer.swift"
+"$build_dir/ResourceLifetimeChecks"
+
+swiftc -swift-version 6 -o "$build_dir/HotKeyLifetimeChecks" \
+  "$repo_dir/Tests/LocalHotKeyLifetimeCheck.swift" \
+  "$repo_dir/Sources/Dropy/GlobalHotKey.swift" "$repo_dir/Sources/Dropy/MainThreadCleanup.swift"
+"$build_dir/HotKeyLifetimeChecks"
+
+swiftc -swift-version 6 -o "$build_dir/NativeRegistrationChecks" \
+  "$repo_dir/Tests/LocalNativeRegistrationCheck.swift" \
+  "$repo_dir/Sources/Dropy/EventTapRegistration.swift" "$repo_dir/Sources/Dropy/AccessibilityObservation.swift" \
+  "$repo_dir/Sources/Dropy/MainThreadCleanup.swift"
+"$build_dir/NativeRegistrationChecks"
 
 swiftc -swift-version 6 -o "$build_dir/OnboardingChecks" \
   "$repo_dir/Tests/LocalOnboardingCheck.swift" "$repo_dir/Sources/Dropy/OnboardingProgress.swift"
@@ -102,7 +121,8 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 # format guide matches the one Dropy writes (regenerate with `bun run animation:docs`).
 swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/AnimationLibraryChecks" \
-  "$repo_dir/Tests/LocalAnimationLibraryCheck.swift" "$repo_dir/Sources/Dropy/AnimationLibrary.swift"
+  "$repo_dir/Tests/LocalAnimationLibraryCheck.swift" "$repo_dir/Sources/Dropy/AnimationLibrary.swift" \
+  "$repo_dir/Sources/Dropy/AnimationFolderWatcher.swift" "$repo_dir/Sources/Dropy/MainThreadCleanup.swift"
 "$build_dir/AnimationLibraryChecks"
 
 app_binary="$build_dir/Dropy.app/Contents/MacOS/Dropy"
@@ -152,5 +172,6 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 
 # Opt-in benchmark IPC: real notification/reply and malformed command rejection, no UI.
 swiftc -swift-version 6 -o "$build_dir/BenchmarkControlChecks" \
-  "$repo_dir/Tests/LocalBenchmarkControlCheck.swift" "$repo_dir/Sources/Dropy/BenchmarkControl.swift"
+  "$repo_dir/Tests/LocalBenchmarkControlCheck.swift" "$repo_dir/Sources/Dropy/BenchmarkControl.swift" \
+  "$repo_dir/Sources/Dropy/NotificationObservation.swift"
 "$build_dir/BenchmarkControlChecks"
