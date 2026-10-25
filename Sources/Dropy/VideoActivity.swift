@@ -10,20 +10,17 @@ import IOKit.pwr_mgt
 @MainActor
 final class VideoActivity {
     private var log = VideoActivityLog()
-    private var timer: Timer?
+    private var timer: RepeatingTimer?
     /// An app started keeping the display awake: a video began playing.
     var onPlaybackStarted: (() -> Void)?
 
     func start() {
         guard timer == nil else { return }
-        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
-        }
-        timer.tolerance = 0.5
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        timer = RepeatingTimer(interval: 2, tolerance: 0.5, mode: .common) { [weak self] in self?.refresh() }
         refresh()
     }
+
+    func stop() { timer = nil }
 
     /// The name of an app that played video within the last minutes, or nil.
     func recentPlayer() -> String? {
