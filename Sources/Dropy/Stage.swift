@@ -35,9 +35,8 @@ final class Stage {
     /// ID after removal prevents a late NSScreen notification treating it as hardware.
     private(set) var ownedDisplayIDs: Set<CGDirectDisplayID> = []
     private var curtain: NSPanel?
-    private var barrier: CFMachPort?
-    private var barrierSource: CFRunLoopSource?
-    private var screenObserver: NSObjectProtocol?
+    private var barrier: EventTapRegistration?
+    private var screenObserver: NotificationObservation?
     private var starting: Task<Bool, Never>?
     /// While true, the pointer may be on the Stage (Live mode's hand-off).
     var allowsPointer = false
@@ -130,7 +129,7 @@ final class Stage {
         arrange()
         showCurtain()
         installBarrier()
-        screenObserver = NotificationCenter.default.addObserver(
+        screenObserver = NotificationObservation(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.arrange() }
         }
@@ -178,7 +177,6 @@ final class Stage {
     }
 
     func stop() {
-        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
         removeBarrier()
         curtain?.orderOut(nil)
@@ -227,31 +225,13 @@ final class Stage {
     private func installBarrier() {
         let mask = (1 << CGEventType.mouseMoved.rawValue) | (1 << CGEventType.leftMouseDragged.rawValue)
             | (1 << CGEventType.rightMouseDragged.rawValue) | (1 << CGEventType.otherMouseDragged.rawValue)
-        let callback: CGEventTapCallBack = { _, type, event, context in
-            guard let context else { return Unmanaged.passUnretained(event) }
-            let owner = Unmanaged<Stage>.fromOpaque(context).takeUnretainedValue()
-            MainActor.assumeIsolated { owner.filter(type: type, event: event) }
-            return Unmanaged.passUnretained(event)
+        barrier = EventTapRegistration(eventsOfInterest: CGEventMask(mask)) { [weak self] type, event in
+            self?.filter(type: type, event: event)
         }
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-                                          eventsOfInterest: CGEventMask(mask), callback: callback,
-                                          userInfo: Unmanaged.passUnretained(self).toOpaque()),
-              let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
-            NSLog("Dropy stage: barrier unavailable")
-            return
-        }
-        barrier = tap
-        barrierSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        if barrier == nil { NSLog("Dropy stage: barrier unavailable") }
     }
 
-    private func removeBarrier() {
-        if let barrier { CGEvent.tapEnable(tap: barrier, enable: false); CFMachPortInvalidate(barrier) }
-        if let barrierSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), barrierSource, .commonModes) }
-        barrier = nil
-        barrierSource = nil
-    }
+    private func removeBarrier() { barrier = nil }
 
     /// Hooks that see pointer events first while the pointer is handed over (Live mode).
     var onPointerEvent: ((CGEventType, CGEvent) -> Void)?
@@ -259,7 +239,7 @@ final class Stage {
     private func filter(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             // macOS turns a slow tap off; turn it back on rather than leave the Stage open.
-            if let barrier { CGEvent.tapEnable(tap: barrier, enable: true) }
+            barrier?.setEnabled(true)
             return
         }
         if let onPointerEvent {

@@ -16,7 +16,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
     private var live: LiveSession?
     /// Where Live mode shows the app, global top-left (development drivers).
     var liveCast: CGRect? { live?.cast }
-    private var workspaceObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NotificationObservation] = []
     /// Size in points of the window being shown.
     var selectedWindowSize: CGSize?
     /// A short note over the preview, e.g. why it is view only.
@@ -115,7 +115,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
     /// continues only while its captured generation is still current.
     var generation = UUID()
     private(set) var state: CapturePhase = .closed
-    private var sessionMonitors: [Any] = []
+    private var sessionMonitors: [EventMonitor] = []
     private var trackingArea: NSTrackingArea?
     private var pointerHasEntered = false
     private var pendingPointerLeave: DispatchWorkItem?
@@ -146,7 +146,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(self, selector: #selector(applicationTerminated(_:)),
                            name: NSWorkspace.didTerminateApplicationNotification, object: nil)
-        workspaceObservers.append(center.addObserver(
+        workspaceObservers.append(NotificationObservation(center: center,
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             let pid = application?.processIdentifier ?? 0
@@ -156,7 +156,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         // Switching desktops on the overlay's display (a swipe, Control-arrow, an app
         // going full screen) closes it: a docked window stays on the desktop it was
         // docked on, and the window list or preview belongs to the desktop it opened on.
-        workspaceObservers.append(center.addObserver(
+        workspaceObservers.append(NotificationObservation(center: center,
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -174,21 +174,21 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         // screen: the overlay should not be waiting there afterwards.
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
                      NSWorkspace.sessionDidResignActiveNotification] {
-            workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+            workspaceObservers.append(NotificationObservation(center: center, forName: name, object: nil, queue: .main) { [weak self] note in
                 let reason = note.name.rawValue
                 MainActor.assumeIsolated { self?.sessionEnded(reason) }
             })
         }
         let distributed = DistributedNotificationCenter.default()
         for name in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
-            workspaceObservers.append(distributed.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] note in
+            workspaceObservers.append(NotificationObservation(center: distributed, forName: Notification.Name(name), object: nil, queue: .main) { [weak self] note in
                 let reason = note.name.rawValue
                 MainActor.assumeIsolated { self?.sessionEnded(reason) }
             })
         }
         // A display unplugged, rearranged or resized: the overlay's layout no longer
         // fits it. Adding Dropy's own Stage display leaves the overlay's display as is.
-        workspaceObservers.append(NotificationCenter.default.addObserver(
+        workspaceObservers.append(NotificationObservation(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.screensChanged() }
         })
@@ -442,6 +442,7 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
     /// or in Dropy.
     func close(returnsFocus: Bool = true, putsBack: Bool = true) {
         guard state != .closed else { return }
+        missionControl.stop()
         let wasDocked = state == .docked
         let wasDocking = state.isDocking
         generation = UUID()
@@ -490,6 +491,9 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
 
     /// Puts a docked window back where the person had it, for quitting.
     func shutdown() {
+        workspaceObservers = []
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        missionControl.stop()
         native.releaseNow()
         close(returnsFocus: false, putsBack: false)
     }
@@ -601,13 +605,13 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
         removeSessionWatchers()
         // Global monitors see only other apps' events, so any click they report is
         // outside Dropy's panel.
-        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown],
+        if let monitor = EventMonitor.global(matching: [.leftMouseDown, .rightMouseDown],
                                                            handler: { [weak self] _ in
             self?.dismiss(.clickOutside)
         }) { sessionMonitors.append(monitor) }
         // Other Dropy windows (including the status menu) are invisible to the
         // global monitor. Keep those events flowing after checking the panel.
-        if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self, weak panel] event in
+        if let monitor = EventMonitor.local(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self, weak panel] event in
             if let panel, event.window !== panel { self?.dismiss(.clickOutside) }
             return event
         }) { sessionMonitors.append(monitor) }
@@ -629,7 +633,6 @@ final class OverlayController: NSObject, NSMenuDelegate, NSSearchFieldDelegate, 
     }
 
     func removeSessionWatchers() {
-        sessionMonitors.forEach(NSEvent.removeMonitor)
         sessionMonitors = []
         if let trackingArea { panel?.contentView?.removeTrackingArea(trackingArea) }
         trackingArea = nil

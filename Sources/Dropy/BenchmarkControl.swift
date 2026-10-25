@@ -5,13 +5,13 @@ import Foundation
 @MainActor
 final class BenchmarkControl {
     private let directory: URL
-    private var observer: NSObjectProtocol?
+    private var observer: NotificationObservation?
     private let handle: (String) -> [String: Any]
 
     init(directory: String, handle: @escaping (String) -> [String: Any]) {
         self.directory = URL(fileURLWithPath: directory, isDirectory: true)
         self.handle = handle
-        observer = DistributedNotificationCenter.default().addObserver(
+        observer = NotificationObservation(center: DistributedNotificationCenter.default(),
             forName: .init("org.dropy.benchmark.\(self.directory.lastPathComponent)"),
             object: nil, queue: .main) { [weak self] notification in
                 guard let text = notification.object as? String else { return }

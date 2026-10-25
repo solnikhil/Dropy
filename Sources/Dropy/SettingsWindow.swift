@@ -55,7 +55,7 @@ final class SettingsModel: ObservableObject {
     var playOnNotch: ((DropyAnimation, Double) -> TimeInterval)?
     /// The animation in use, and why when it is not the one chosen.
     @Published private(set) var animationChoice = AnimationLibrary.Choice(animation: MotionStyle.balanced.animation)
-    private var shortcutRecorder: Any?
+    private var shortcutRecorder: EventMonitor?
     private var catalogGeneration = 0
     private let change: (_ edit: (inout DropyPreferences) -> Void) -> Void
 
@@ -315,14 +315,13 @@ final class SettingsModel: ObservableObject {
         stopRecordingShortcut()
         shortcutProblem = nil
         isRecordingShortcut = true
-        shortcutRecorder = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        shortcutRecorder = EventMonitor.local(matching: .keyDown) { [weak self] event in
             self?.recorded(event)
             return nil
         }
     }
 
     func stopRecordingShortcut() {
-        if let shortcutRecorder { NSEvent.removeMonitor(shortcutRecorder) }
         shortcutRecorder = nil
         isRecordingShortcut = false
     }

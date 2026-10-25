@@ -14,9 +14,9 @@ final class NativeSession: NSObject {
     let dock: WindowDock
     /// Where the docked window and the overlay's body are, in screen coordinates.
     private var dockLayout: DockLayout?
-    private var monitors: [Any] = []
+    private var monitors: [EventMonitor] = []
     private var session: UUID?
-    private var permissionWatch: Timer?
+    private var permissionWatch: RepeatingTimer?
 
     init(host: OverlaySessionHost, journal: PlacementJournal, stage: Stage?) {
         self.host = host
@@ -368,25 +368,23 @@ final class NativeSession: NSObject {
     private func installWatchers() {
         host.removeSessionWatchers()
         removeWatchers()
-        permissionWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, !WindowPlacer.isTrusted else { return }
-                self.host.close(returnsFocus: false, putsBack: true)
-                self.releaseForSystemChange()
-            }
+        permissionWatch = RepeatingTimer(interval: 1) { [weak self] in
+            guard let self, !WindowPlacer.isTrusted else { return }
+            self.host.close(returnsFocus: false, putsBack: true)
+            self.releaseForSystemChange()
         }
         host.panel?.ignoresMouseEvents = true
         // The overlay takes the pointer only over its own outline (the band with the
         // controls and the border); everywhere over the window it lets clicks through.
         let kinds: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
-        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: kinds, handler: { [weak self] _ in
+        if let monitor = EventMonitor.global(matching: kinds, handler: { [weak self] _ in
             self?.updatePointer()
         }) { monitors.append(monitor) }
-        if let monitor = NSEvent.addLocalMonitorForEvents(matching: kinds, handler: { [weak self] event in
+        if let monitor = EventMonitor.local(matching: kinds, handler: { [weak self] event in
             self?.updatePointer()
             return event
         }) { monitors.append(monitor) }
-        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
+        if let monitor = EventMonitor.global(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
                                                            handler: { [weak self] _ in self?.clickedElsewhere() }) {
             monitors.append(monitor)
         }
@@ -394,9 +392,7 @@ final class NativeSession: NSObject {
     }
 
     private func removeWatchers() {
-        permissionWatch?.invalidate()
         permissionWatch = nil
-        monitors.forEach(NSEvent.removeMonitor)
         monitors = []
     }
 
