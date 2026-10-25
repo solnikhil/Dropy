@@ -186,12 +186,13 @@ final class AnimationLibrary: ObservableObject {
 
     // MARK: Writing
 
-    /// Saves `animation` as `<id>.json` and reads the folder again.
+    /// Creates `<id>.json` and reads the folder again. All callers add a new file;
+    /// existing files must survive name collisions or another writer winning a race.
     @discardableResult
     func save(_ animation: DropyAnimation, as id: String) throws -> URL {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let url = folder.appendingPathComponent("\(id).json")
-        try AnimationFile.data(for: animation).write(to: url, options: .atomic)
+        try AnimationFile.data(for: animation).write(to: url, options: .withoutOverwriting)
         scan()
         return url
     }
