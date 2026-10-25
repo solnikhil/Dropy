@@ -5,9 +5,9 @@ import DropyCore
 final class WindowPickerTests: XCTestCase {
     private func window(_ pid: Int32, _ id: UInt32, _ app: String, _ title: String,
                         layer: Int = 0, size: CGSize = CGSize(width: 800, height: 600),
-                        onScreen: Bool = true) -> WindowSummary {
+                        onScreen: Bool = true, appHidden: Bool = false) -> WindowSummary {
         WindowSummary(processID: pid, windowID: id, applicationName: app, title: title,
-                      layer: layer, size: size, isOnScreen: onScreen)
+                      layer: layer, size: size, isOnScreen: onScreen, isApplicationHidden: appHidden)
     }
 
     func testSameTitleWindowsGetDistinctLabelsInCreationOrder() {
@@ -47,6 +47,16 @@ final class WindowPickerTests: XCTestCase {
         ])
         XCTAssertEqual(entries.map(\.label),
                        ["TextEdit — docA.txt · not visible", "TextEdit — docB.txt"])
+    }
+
+    func testHiddenAppKeepsItsLargestUntitledWindowSelectable() {
+        let entries = WindowPicker.entries(from: [
+            window(31, 5, "Player", "", size: CGSize(width: 400, height: 300), onScreen: false, appHidden: true),
+            window(31, 6, "Player", "", size: CGSize(width: 900, height: 600), onScreen: false, appHidden: true),
+            window(32, 7, "Other", "", onScreen: false),
+        ])
+        XCTAssertEqual(entries.map(\.windowID), [6])
+        XCTAssertEqual(entries.map(\.label), ["Player · not visible"])
     }
 
     func testTinyWindowsAreExcluded() {
