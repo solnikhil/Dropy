@@ -64,13 +64,37 @@ public enum MotionCurve: Equatable, Sendable {
     /// closing. Where the original waited at its start, the reverse ends as soon as it
     /// arrives instead of holding.
     public func reversed() -> MotionCurve {
+        if case .keyframes(var keys) = self, keys.count >= 2 {
+            // Remove only the opening's initial hold. A later return to zero (or
+            // below it) is part of the motion, not the end of the reverse.
+            while keys.count > 2 && keys[0].value == 0 && keys[1].value == 0 {
+                keys.removeFirst()
+            }
+            let end = keys.last!.time
+            return .keyframes(keys.indices.reversed().map { index in
+                let ease: MotionEase
+                if index == keys.count - 1 {
+                    ease = .smooth // The first key has no incoming segment.
+                } else {
+                    switch keys[index + 1].ease {
+                    case .linear: ease = .linear
+                    case .smooth: ease = .smooth
+                    case .curve(let curve):
+                        ease = .curve(TimingCurve(1 - curve.x2, 1 - curve.y2, 1 - curve.x1, 1 - curve.y1))
+                    }
+                }
+                return MotionKeyframe(time: end - keys[index].time, value: 1 - keys[index].value, ease: ease)
+            })
+        }
         let end = max(duration, 0.05)
+        let hold: TimeInterval
+        if case .spring(_, let delay) = self { hold = max(0, delay) } else { hold = 0 }
+        let reversedDuration = max(0.001, end - hold)
         var samples: [(time: Double, value: Double)] = []
         for step in 0...160 {
-            let time = end * Double(step) / 160
+            let time = reversedDuration * Double(step) / 160
             let value = 1 - value(at: end - time)
             samples.append((time, value))
-            if step > 0, value >= 0.999 { break }
         }
         return .keyframes(CurveSketch.keyframes(from: samples, tolerance: 0.008))
     }
