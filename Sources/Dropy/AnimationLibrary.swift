@@ -121,10 +121,17 @@ final class AnimationLibrary: ObservableObject {
     }
 
     private func writeIfChanged(_ text: String, to url: URL) {
-        let existing = Self.data(at: url).flatMap { String(data: $0, encoding: .utf8) }
-        guard existing != text else { return }
-        if let existing, !existing.hasPrefix(AnimationGuide.generatedMarker) { return }
-        try? Data(text.utf8).write(to: url, options: .atomic)
+        if FileManager.default.fileExists(atPath: url.path) {
+            // An unreadable, oversized or non-UTF-8 document is still the person's
+            // file. Check ownership with a bounded read before replacing anything.
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+            defer { try? handle.close() }
+            let marker = Data(AnimationGuide.generatedMarker.utf8)
+            guard (try? handle.read(upToCount: marker.count)) == marker else { return }
+        }
+        let data = Data(text.utf8)
+        guard Self.data(at: url) != data else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     /// The built-in styles and the gallery, as written to Examples/.

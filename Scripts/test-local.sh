@@ -100,6 +100,11 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
 # The animation command line, in a throwaway animations folder: every built-in style and
 # example checks clean, a new file round-trips, a broken one fails, and the repository's
 # format guide matches the one Dropy writes (regenerate with `bun run animation:docs`).
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/AnimationLibraryChecks" \
+  "$repo_dir/Tests/LocalAnimationLibraryCheck.swift" "$repo_dir/Sources/Dropy/AnimationLibrary.swift"
+"$build_dir/AnimationLibraryChecks"
+
 app_binary="$build_dir/Dropy.app/Contents/MacOS/Dropy"
 animations_dir="$(mktemp -d)"
 export DROPY_ANIMATIONS_FOLDER="$animations_dir"
