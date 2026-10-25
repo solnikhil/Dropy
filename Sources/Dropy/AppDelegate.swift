@@ -311,7 +311,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             && !value.protectsVideo
     }
 
-    private var stageRetirement: Timer?
+    private var stageRetirement: RepeatingTimer?
     private var stageIdleSince: Date?
 
     /// macOS treats the Stage as a real display, so a full-screen screenshot (⇧⌘3)
@@ -320,9 +320,7 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// desktop) and removed once Dropy has been closed a few seconds with nothing on it.
     private func startStageRetirement() {
         guard stageRetirement == nil, stage != nil else { return }
-        stageRetirement = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.retireStageIfIdle() }
-        }
+        stageRetirement = RepeatingTimer(interval: 2) { [weak self] in self?.retireStageIfIdle() }
     }
 
     private func retireStageIfIdle() {
@@ -419,6 +417,9 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // An edit made in the Animation Studio a moment ago is saved, not lost.
         studio.model?.saveNow()
+        animations.stop()
+        stageRetirement = nil
+        videoActivity.stop()
         updater.cancel()
         demo.stop()
         overlay.shutdown()

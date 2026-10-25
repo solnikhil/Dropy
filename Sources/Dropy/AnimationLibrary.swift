@@ -1,5 +1,4 @@
 import AppKit
-import CoreServices
 import DropyCore
 
 /// The person's animations: the `.json` files in
@@ -40,12 +39,15 @@ final class AnimationLibrary: ObservableObject {
     @Published private(set) var entries: [Entry] = []
     /// Called after the files change (not for the initial scan).
     var onChange: (() -> Void)?
-    private var stream: FSEventStreamRef?
-    private var pendingScan = false
+    private var watcher: AnimationFolderWatcher?
+    private var scanTask: Task<Void, Never>?
+    var isWatching: Bool { watcher != nil }
 
     init(folder: URL = AnimationLibrary.defaultFolder) {
         self.folder = folder
     }
+
+    deinit { scanTask?.cancel() }
 
     /// How to run Dropy's animation commands from a terminal. It goes into the guide
     /// agents run commands from, so the path is single-quoted (a folder named with
@@ -98,9 +100,16 @@ final class AnimationLibrary: ObservableObject {
 
     /// Creates the folder and its guide, reads the animations and starts watching.
     func start() {
+        guard watcher == nil else { return }
         prepareFolder()
         scan(notify: false)
         watch()
+    }
+
+    func stop() {
+        watcher = nil
+        scanTask?.cancel()
+        scanTask = nil
     }
 
     /// The folder, the guide for people and agents, and the examples, written only when
@@ -235,33 +244,23 @@ final class AnimationLibrary: ObservableObject {
     // MARK: Watching
 
     private func watch() {
-        guard stream == nil else { return }
-        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
-                                           retain: nil, release: nil, copyDescription: nil)
-        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
-            guard let info else { return }
-            let library = Unmanaged<AnimationLibrary>.fromOpaque(info).takeUnretainedValue()
-            MainActor.assumeIsolated { library.scheduleScan() }
+        guard watcher == nil else { return }
+        watcher = AnimationFolderWatcher(folder: folder) { [weak self] in
+            self?.scheduleScan()
         }
-        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
-        guard let stream = FSEventStreamCreate(nil, callback, &context, [folder.path] as CFArray,
-                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.1, flags) else {
+        if watcher == nil {
             NSLog("Dropy animations: cannot watch %@", folder.path)
-            return
         }
-        FSEventStreamSetDispatchQueue(stream, .main)
-        FSEventStreamStart(stream)
-        self.stream = stream
     }
 
     /// Editors often save in several steps; read once they are done.
     private func scheduleScan() {
-        guard !pendingScan else { return }
-        pendingScan = true
-        Task { @MainActor [weak self] in
+        guard watcher != nil, scanTask == nil else { return }
+        scanTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
-            self?.pendingScan = false
-            self?.scan()
+            guard !Task.isCancelled, let self, self.watcher != nil else { return }
+            self.scanTask = nil
+            self.scan()
         }
     }
 }

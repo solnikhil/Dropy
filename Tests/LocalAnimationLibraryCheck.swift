@@ -1,8 +1,10 @@
 import Foundation
 import DropyCore
 
+private final class WatcherLifetimeProbe: Sendable {}
+
 @main struct AnimationLibraryChecks {
-    @MainActor static func main() throws {
+    @MainActor static func main() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -47,6 +49,56 @@ import DropyCore
         let copyID = library.freeID(for: "My Animation")
         let copy = try library.save(MotionStyle.rapid.animation, as: copyID)
         precondition(copy != existing && library.entry(copyID)?.animation != nil)
+        try await verifyWatcherLifetime(in: folder)
         print("Animation library checks passed (documents preserved, generated guide refreshed, creation refuses overwrites)")
+    }
+
+    @MainActor private static func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<300 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        preconditionFailure("Timed out waiting for a folder-watcher lifecycle event")
+    }
+
+    @MainActor private static func verifyWatcherLifetime(in folder: URL) async throws {
+        var events = 0
+        var probe: WatcherLifetimeProbe? = WatcherLifetimeProbe()
+        weak var callbackContext = probe
+        var watcher = AnimationFolderWatcher(folder: folder) { [probe = probe!] in
+            withExtendedLifetime(probe) {}
+            events += 1
+        }
+        precondition(watcher != nil)
+        probe = nil
+        precondition(callbackContext != nil)
+        try Data("event".utf8).write(to: folder.appendingPathComponent("watcher-event.txt"))
+        await waitUntil { events > 0 }
+        watcher = nil
+        await waitUntil { callbackContext == nil }
+        let stoppedAt = events
+        try Data("after teardown".utf8).write(to: folder.appendingPathComponent("after-teardown.txt"))
+        try await Task.sleep(for: .milliseconds(300))
+        precondition(events == stoppedAt, "A released watcher must not keep delivering callbacks")
+
+        var watchingLibrary: AnimationLibrary? = AnimationLibrary(folder: folder)
+        weak var releasedLibrary = watchingLibrary
+        watchingLibrary?.start()
+        watchingLibrary?.start()
+        precondition(watchingLibrary?.isWatching == true)
+        let data = AnimationFile.data(for: MotionStyle.balanced.animation)
+        try data.write(to: folder.appendingPathComponent("watcher-added.json"))
+        await waitUntil { watchingLibrary?.entry("watcher-added") != nil }
+        watchingLibrary?.stop()
+        watchingLibrary?.stop()
+        precondition(watchingLibrary?.isWatching == false)
+        try data.write(to: folder.appendingPathComponent("while-stopped.json"))
+        try await Task.sleep(for: .milliseconds(300))
+        precondition(watchingLibrary?.entry("while-stopped") == nil)
+        watchingLibrary?.start()
+        precondition(watchingLibrary?.entry("while-stopped") != nil)
+        watchingLibrary = nil
+        precondition(releasedLibrary == nil, "A live watcher must not retain its library")
+        print("Folder watcher checks passed (real events, context release, stop/restart, owner destruction)")
     }
 }
