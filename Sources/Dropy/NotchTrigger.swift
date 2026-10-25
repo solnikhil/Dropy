@@ -10,15 +10,15 @@ final class NotchTrigger {
     private let restrictCrossing: () -> Bool
     private let open: () -> Void
     private var activations: [NotchActivation] = []
-    private var monitors: [Any] = []
+    private var monitors: [EventMonitor] = []
     private var scheduledDeadline: TimeInterval?
     private var pendingHover: DispatchWorkItem?
     private var timerGeneration = UUID()
     private var hover = NotchHoverSession()
     private var activeScreen: Int?
     private var quietUntil: TimeInterval = 0
-    private var screenObserver: NSObjectProtocol?
-    private var activeObserver: NSObjectProtocol?
+    private var screenObserver: NotificationObservation?
+    private var activeObserver: NotificationObservation?
     var onRestrictionStatus: ((String) -> Void)?
     private lazy var restriction = NotchCursorRestriction(isArmed: { [weak self] in
         guard let self else { return false }
@@ -31,21 +31,20 @@ final class NotchTrigger {
         self.mode = mode; self.isArmed = isArmed; self.restrictCrossing = restrictCrossing; self.open = open
     }
     func start() {
+        guard screenObserver == nil, activeObserver == nil else { return }
         restriction.onStatus = { [weak self] message in self?.onRestrictionStatus?(message) }
         rebuild()
-        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+        activeObserver = NotificationObservation(forName: NSApplication.didBecomeActiveNotification,
             object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, self.isArmed() else { return }
                     self.configureRestriction()
                 }
             }
-        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+        screenObserver = NotificationObservation(forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.rebuild() } }
     }
     func stop() {
-        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
         activeObserver = nil
         screenObserver = nil; tearDown()
     }
@@ -72,7 +71,7 @@ final class NotchTrigger {
         if isArmed() { installMouseObservation(); configureRestriction() }
     }
     private func stopObservation() {
-        monitors.forEach(NSEvent.removeMonitor); monitors = []
+        monitors = []
     }
     static func housing(on screen: NSScreen) -> CGRect? {
         guard let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
@@ -127,11 +126,11 @@ final class NotchTrigger {
     private func installMouseObservation() {
         stopObservation()
         guard isArmed(), mode() != .shortcut else { return }
-        let move: (NSEvent) -> Void = { [weak self] _ in self?.pointerMoved() }
-        let click: (NSEvent) -> Void = { [weak self] _ in self?.clicked() }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: move) { monitors.append(m) }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: click) { monitors.append(m) }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { move($0); return $0 }) { monitors.append(m) }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { click($0); return $0 }) { monitors.append(m) }
+        let move: @MainActor (NSEvent) -> Void = { [weak self] _ in self?.pointerMoved() }
+        let click: @MainActor (NSEvent) -> Void = { [weak self] _ in self?.clicked() }
+        if let m = EventMonitor.global(matching: .mouseMoved, handler: move) { monitors.append(m) }
+        if let m = EventMonitor.global(matching: .leftMouseDown, handler: click) { monitors.append(m) }
+        if let m = EventMonitor.local(matching: .mouseMoved, handler: { move($0); return $0 }) { monitors.append(m) }
+        if let m = EventMonitor.local(matching: .leftMouseDown, handler: { click($0); return $0 }) { monitors.append(m) }
     }
 }

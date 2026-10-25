@@ -6,8 +6,7 @@ import DropyCore
 /// timeout/permission failure, and bypassed by Option, drags, or an open overlay.
 @MainActor
 final class NotchCursorRestriction {
-    private var tap: CFMachPort?
-    private var source: CFRunLoopSource?
+    private var tap: EventTapRegistration?
     private var previous: CGPoint?
     private var housings: [CGRect] = []
     private var screens: [CGRect] = []
@@ -23,33 +22,20 @@ final class NotchCursorRestriction {
         guard !housings.isEmpty else { onStatus?("Unavailable on this display"); return }
         guard AXIsProcessTrusted() else { onStatus?("Waiting for Accessibility permission"); return }
         previous = CGEvent(source: nil)?.location
-        let callback: CGEventTapCallBack = { _, type, event, context in
-            guard let context else { return Unmanaged.passUnretained(event) }
-            MainActor.assumeIsolated {
-                let owner = Unmanaged<NotchCursorRestriction>.fromOpaque(context).takeUnretainedValue()
-                owner.filter(type: type, event: event)
-            }
-            return Unmanaged.passUnretained(event)
+        tap = EventTapRegistration(eventsOfInterest: CGEventMask(1 << CGEventType.mouseMoved.rawValue)) { [weak self] type, event in
+            self?.filter(type: type, event: event)
         }
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
-                                          options: .defaultTap,
-                                          eventsOfInterest: CGEventMask(1 << CGEventType.mouseMoved.rawValue),
-                                          callback: callback, userInfo: Unmanaged.passUnretained(self).toOpaque()),
-              let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+        guard tap != nil else {
             onStatus?("Unavailable: macOS did not allow the cursor filter")
             NSLog("Dropy experimental cursor restriction unavailable")
             return
         }
-        self.tap = tap; self.source = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
         onStatus?("Active while Dropy is closed · Option bypasses")
     }
 
     func stop() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
-        tap = nil; source = nil; previous = nil
+        tap = nil
+        previous = nil
         onStatus?("Inactive")
     }
 

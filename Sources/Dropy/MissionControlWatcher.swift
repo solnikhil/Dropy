@@ -9,7 +9,7 @@ import ApplicationServices
 @MainActor
 final class MissionControlWatcher {
     var onBegin: (() -> Void)?
-    private var observer: AXObserver?
+    private var observer: AccessibilityObservation?
     private var dockPID: pid_t = 0
 
     private static let notifications = ["AXExposeShowAllWindows", "AXExposeShowFrontWindows", "AXExposeShowDesktop"]
@@ -20,33 +20,17 @@ final class MissionControlWatcher {
               let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
         guard observer == nil || dock.processIdentifier != dockPID else { return }
         stop()
-        var created: AXObserver?
-        let callback: AXObserverCallback = { _, _, notification, refcon in
-            guard let refcon else { return }
-            let watcher = Unmanaged<MissionControlWatcher>.fromOpaque(refcon).takeUnretainedValue()
-            let name = notification as String
-            MainActor.assumeIsolated {
-                NSLog("Dropy dismiss: %@", name)
-                watcher.onBegin?()
-            }
-        }
-        guard AXObserverCreate(dock.processIdentifier, callback, &created) == .success, let created else { return }
         let element = AXUIElementCreateApplication(dock.processIdentifier)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        var added = 0
-        for name in Self.notifications where AXObserverAddNotification(created, element, name as CFString, refcon) == .success {
-            added += 1
-        }
-        guard added > 0 else { return }
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .defaultMode)
-        observer = created
+        observer = AccessibilityObservation(processID: dock.processIdentifier,
+            notifications: Self.notifications.map { (element, $0) }) { [weak self] name in
+                NSLog("Dropy dismiss: %@", name)
+                self?.onBegin?()
+            }
+        guard observer != nil else { return }
         dockPID = dock.processIdentifier
     }
 
     func stop() {
-        if let observer {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        }
         observer = nil
         dockPID = 0
     }

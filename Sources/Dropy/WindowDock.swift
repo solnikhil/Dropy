@@ -67,7 +67,7 @@ final class WindowDock {
     var onEvent: ((Event) -> Void)?
     /// Called when a release could not finish yet, so recovery can retry it.
     var onDeferredRestore: ((WindowIdentity) -> Void)?
-    private var observer: AXObserver?
+    private var observer: AccessibilityObservation?
     private let operations = WindowSessionQueue()
 
     init(journal: PlacementJournal, stage: Stage?) {
@@ -493,27 +493,17 @@ final class WindowDock {
 
     private func startObserving(_ docked: Docked) {
         stopObserving()
-        var created: AXObserver?
-        guard AXObserverCreate(docked.identity.processID, dockObserverCallback, &created) == .success,
-              let created else { return }
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        for name in [kAXMovedNotification, kAXResizedNotification, kAXUIElementDestroyedNotification,
-                     kAXWindowMiniaturizedNotification] {
-            AXObserverAddNotification(created, docked.element, name as CFString, refcon)
+        var notifications = [kAXMovedNotification, kAXResizedNotification, kAXUIElementDestroyedNotification,
+                             kAXWindowMiniaturizedNotification].map { (element: docked.element, name: $0) }
+        notifications.append((AXUIElementCreateApplication(docked.identity.processID), kAXApplicationHiddenNotification))
+        observer = AccessibilityObservation(processID: docked.identity.processID, notifications: notifications) { [weak self] name in
+            self?.handle(name)
         }
-        AXObserverAddNotification(created, AXUIElementCreateApplication(docked.identity.processID),
-                                  kAXApplicationHiddenNotification as CFString, refcon)
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .defaultMode)
-        observer = created
     }
 
-    private func stopObserving() {
-        guard let observer else { return }
-        CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        self.observer = nil
-    }
+    private func stopObserving() { observer = nil }
 
-    fileprivate func handle(_ notification: String) {
+    private func handle(_ notification: String) {
         guard var docked = current else { return }
         if notification == kAXUIElementDestroyedNotification {
             onEvent?(.closed)
@@ -548,17 +538,5 @@ final class WindowDock {
         default:
             break
         }
-    }
-}
-
-private func dockObserverCallback(_ observer: AXObserver, _ element: AXUIElement, _ notification: CFString,
-                                  _ refcon: UnsafeMutableRawPointer?) {
-    guard let refcon else { return }
-    let name = notification as String
-    let address = UInt(bitPattern: refcon)
-    // Added to the main run loop, so this runs on the main thread.
-    MainActor.assumeIsolated {
-        guard let pointer = UnsafeMutableRawPointer(bitPattern: address) else { return }
-        Unmanaged<WindowDock>.fromOpaque(pointer).takeUnretainedValue().handle(name)
     }
 }

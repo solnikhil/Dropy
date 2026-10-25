@@ -21,8 +21,8 @@ final class PlacementRecovery {
     private var requested: Set<WindowIdentity>
     private var attempt = 0
     private var scheduled: Task<Void, Never>?
-    private var observers: [NSObjectProtocol] = []
-    private var screenObserver: NSObjectProtocol?
+    private var observers: [NotificationObservation] = []
+    private var screenObserver: NotificationObservation?
 
     init(journal: PlacementJournal) {
         self.journal = journal
@@ -31,17 +31,18 @@ final class PlacementRecovery {
 
     /// Starts listening for Space, activation and wake changes, then tries once.
     func start() {
+        guard observers.isEmpty, screenObserver == nil else { return }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
-            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            observers.append(NotificationObservation(center: center, forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, !self.requested.isEmpty else { return }
                     self.run(resetBackoff: true)
                 }
             })
         }
-        screenObserver = NotificationCenter.default.addObserver(
+        screenObserver = NotificationObservation(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, !self.requested.isEmpty else { return }
@@ -52,9 +53,7 @@ final class PlacementRecovery {
     }
 
     func stop() {
-        observers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         observers = []
-        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
         scheduled?.cancel()
         scheduled = nil
