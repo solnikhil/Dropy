@@ -130,6 +130,28 @@ final class MotionCurveTests: XCTestCase {
         XCTAssertEqual(animation.morph.close.extent, 0...1)
     }
 
+    func testReversingKeyframesPreservesLaterReturnsToTheStartingValueAndEasing() {
+        let opening = MotionCurve.keyframes(keys((0, 0, .smooth), (0.2, 0.8, .easeOut),
+                                                (0.4, -0.2, .linear), (0.6, 1, .smooth)))
+        let closing = opening.reversed()
+        XCTAssertEqual(closing.duration, opening.duration, accuracy: 1e-9)
+        for step in 0...120 {
+            let time = opening.duration * Double(step) / 120
+            XCTAssertEqual(closing.value(at: time), 1 - opening.value(at: opening.duration - time), accuracy: 1e-6)
+        }
+    }
+
+    func testReversingKeyframesTrimsOnlyTheInitialHold() {
+        let opening = MotionCurve.keyframes(keys((0.1, 0, .smooth), (0.2, 0, .linear),
+                                                (0.3, 0.8, .easeIn), (0.4, 0, .smooth), (0.6, 1, .easeOut)))
+        let closing = opening.reversed()
+        XCTAssertEqual(closing.duration, 0.4, accuracy: 1e-9)
+        for step in 0...80 {
+            let time = 0.4 * Double(step) / 80
+            XCTAssertEqual(closing.value(at: time), 1 - opening.value(at: 0.6 - time), accuracy: 1e-6)
+        }
+    }
+
     func testTheWindowMarginHoldsABouncyAnimation() throws {
         let animation = try XCTUnwrap(DropyAnimation.gallery.first { $0.id == "elastic-drop" }?.animation)
         let size = CGSize(width: 900, height: 560)
