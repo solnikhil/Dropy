@@ -10,9 +10,10 @@ public struct WindowSummary: Equatable, Sendable {
     public let layer: Int
     public let size: CGSize
     public let isOnScreen: Bool
+    public let isApplicationHidden: Bool
 
     public init(processID: Int32, windowID: UInt32, applicationName: String, title: String,
-                layer: Int, size: CGSize, isOnScreen: Bool) {
+                layer: Int, size: CGSize, isOnScreen: Bool, isApplicationHidden: Bool = false) {
         self.processID = processID
         self.windowID = windowID
         self.applicationName = applicationName
@@ -20,6 +21,7 @@ public struct WindowSummary: Equatable, Sendable {
         self.layer = layer
         self.size = size
         self.isOnScreen = isOnScreen
+        self.isApplicationHidden = isApplicationHidden
     }
 }
 
@@ -35,7 +37,8 @@ public enum WindowPicker {
     /// Choose document-like windows and give every entry a label a person can tell apart.
     /// - Only the normal window layer: floating panels, menus and overlays are excluded.
     /// - Per app, titled windows are offered. An app with none offers its largest
-    ///   on-screen untitled window; an off-screen untitled one is usually a hidden helper.
+    ///   on-screen untitled window, or its largest untitled window when the app is
+    ///   hidden. Hiding an app takes all its windows off screen, including documents.
     /// - Entries that would share a label get a creation-order suffix, and windows that
     ///   are not on screen say so because their preview will be paused.
     public static func entries(from windows: [WindowSummary]) -> [PickerEntry] {
@@ -46,7 +49,7 @@ public enum WindowPicker {
         let chosen = Dictionary(grouping: candidates, by: \.processID).values.flatMap { app in
             let titled = app.filter { !$0.title.isEmpty }
             if !titled.isEmpty { return titled }
-            return app.filter(\.isOnScreen)
+            return app.filter { $0.isOnScreen || $0.isApplicationHidden }
                 .max { $0.size.width * $0.size.height < $1.size.width * $1.size.height }
                 .map { [$0] } ?? []
         }

@@ -102,7 +102,8 @@ enum WindowCatalog {
                 title: (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                 layer: window.windowLayer,
                 size: window.frame.size,
-                isOnScreen: window.isOnScreen))
+                isOnScreen: window.isOnScreen,
+                isApplicationHidden: runningApplication.isHidden))
         }
         return WindowPicker.entries(from: summaries).compactMap { entry in
             guard let (window, launchDate) = eligible[entry.windowID],
