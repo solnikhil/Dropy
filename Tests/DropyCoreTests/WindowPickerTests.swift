@@ -64,4 +64,14 @@ final class WindowPickerTests: XCTestCase {
             window(50, 7, "Tool", "Palette", size: CGSize(width: 720, height: 84)),
         ]).isEmpty)
     }
+
+    func testEqualSizeUntitledFallbackDoesNotDependOnCatalogOrder() {
+        let windows = [window(31, 6, "Player", ""), window(31, 5, "Player", "")]
+        XCTAssertEqual(WindowPicker.entries(from: windows).map(\.windowID), [5])
+        XCTAssertEqual(WindowPicker.entries(from: windows.reversed()).map(\.windowID), [5])
+        let hidden = [window(31, 6, "Player", "", onScreen: false, appHidden: true),
+                      window(31, 5, "Player", "", onScreen: false, appHidden: true)]
+        XCTAssertEqual(WindowPicker.entries(from: hidden).map(\.windowID), [5])
+        XCTAssertEqual(WindowPicker.entries(from: hidden.reversed()).map(\.windowID), [5])
+    }
 }
