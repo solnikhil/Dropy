@@ -50,7 +50,13 @@ public enum WindowPicker {
             let titled = app.filter { !$0.title.isEmpty }
             if !titled.isEmpty { return titled }
             return app.filter { $0.isOnScreen || $0.isApplicationHidden }
-                .max { $0.size.width * $0.size.height < $1.size.width * $1.size.height }
+                .max {
+                    let leftArea = $0.size.width * $0.size.height
+                    let rightArea = $1.size.width * $1.size.height
+                    // Catalog order can change between snapshots. Keep the oldest
+                    // window when equally sized candidates would otherwise tie.
+                    return leftArea == rightArea ? $0.windowID > $1.windowID : leftArea < rightArea
+                }
                 .map { [$0] } ?? []
         }
         let sorted = chosen.sorted { lhs, rhs in
