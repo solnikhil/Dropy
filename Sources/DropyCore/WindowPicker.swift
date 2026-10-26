@@ -70,7 +70,7 @@ public enum WindowPicker {
         let baseLabels = sorted.map(baseLabel)
         let counts = Dictionary(baseLabels.map { ($0, 1) }, uniquingKeysWith: +)
         var seen: [String: Int] = [:]
-        return zip(sorted, baseLabels).map { window, base in
+        let entries = zip(sorted, baseLabels).map { window, base in
             var label = base
             if let total = counts[base], total > 1 {
                 let ordinal = (seen[base] ?? 0) + 1
@@ -79,6 +79,18 @@ public enum WindowPicker {
             }
             if !window.isOnScreen { label += " · not visible" }
             return PickerEntry(processID: window.processID, windowID: window.windowID, label: label)
+        }
+        // A real title can contain our ordinal or visibility wording. Disambiguate
+        // after all formatting, reserving literal labels before adding window IDs.
+        let finalCounts = Dictionary(entries.map { ($0.label, 1) }, uniquingKeysWith: +)
+        var reserved = Set(entries.map(\.label))
+        return entries.map { entry in
+            guard finalCounts[entry.label, default: 0] > 1 else { return entry }
+            let suffix = " · window \(entry.windowID)"
+            var label = entry.label + suffix
+            while reserved.contains(label) { label += suffix }
+            reserved.insert(label)
+            return PickerEntry(processID: entry.processID, windowID: entry.windowID, label: label)
         }
     }
 
