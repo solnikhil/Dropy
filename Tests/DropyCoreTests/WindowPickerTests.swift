@@ -74,4 +74,18 @@ final class WindowPickerTests: XCTestCase {
         XCTAssertEqual(WindowPicker.entries(from: hidden).map(\.windowID), [5])
         XCTAssertEqual(WindowPicker.entries(from: hidden.reversed()).map(\.windowID), [5])
     }
+
+    func testLiteralTitlesCannotCollideWithGeneratedLabels() {
+        let windows = [window(10, 1, "Notes", "Doc"), window(10, 2, "Notes", "Doc"),
+                       window(10, 3, "Notes", "Doc (1 of 2)"),
+                       window(10, 4, "Notes", "Doc (1 of 2) · window 1")]
+        let entries = WindowPicker.entries(from: windows)
+        XCTAssertEqual(Set(entries.map(\.label)).count, windows.count)
+        XCTAssertEqual(entries.first(where: { $0.windowID == 4 })?.label, "Notes — Doc (1 of 2) · window 1")
+        XCTAssertEqual(WindowPicker.entries(from: windows.reversed()), entries)
+
+        let visibility = WindowPicker.entries(from: [window(10, 5, "Notes", "Draft", onScreen: false),
+                                                      window(10, 6, "Notes", "Draft · not visible")])
+        XCTAssertEqual(Set(visibility.map(\.label)).count, 2)
+    }
 }
