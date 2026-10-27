@@ -11,6 +11,7 @@ private final class WatcherLifetimeProbe: Sendable {}
         defer { try? FileManager.default.removeItem(at: folder) }
         let library = AnimationLibrary(folder: folder)
         try verifyBoundedReads(in: folder)
+        try verifyPreservedTimestampEdits(in: folder)
         let personalDocuments: [(String, Data)] = [
             ("README.md", Data(repeating: 120, count: AnimationFile.maximumSize + 1)),
             ("AGENTS.md", Data([0xff, 0xfe, 0x41, 0x00])),
@@ -81,6 +82,28 @@ private final class WatcherLifetimeProbe: Sendable {}
         precondition(mkfifo(fifo.path, 0o600) == 0)
         precondition(AnimationLibrary.data(at: fifo) == nil, "A named pipe must be refused without waiting for a writer")
         precondition(AnimationLibrary.data(at: folder) == nil)
+    }
+
+    @MainActor private static func verifyPreservedTimestampEdits(in folder: URL) throws {
+        let file = folder.appendingPathComponent("timestamp-edit.json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let date = Date(timeIntervalSince1970: 1_000)
+        try Data(#"{"dropyAnimation":1,"name":"Before"}"#.utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+        let library = AnimationLibrary(folder: folder)
+        library.scan(notify: false)
+        precondition(library.entry("timestamp-edit")?.name == "Before")
+        var changes = 0
+        library.onChange = { changes += 1 }
+        library.scan()
+        precondition(changes == 0)
+        try Data(#"{"dropyAnimation":1,"name":"After!"}"#.utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+        library.scan()
+        precondition(library.entry("timestamp-edit")?.name == "After!", "Preserved timestamps must not hide content changes")
+        precondition(changes == 1)
+        library.scan()
+        precondition(changes == 1, "An unchanged snapshot must not trigger another update")
     }
 
     @MainActor private static func verifyWatcherLifetime(in folder: URL) async throws {

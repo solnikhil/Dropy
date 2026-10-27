@@ -15,6 +15,7 @@ final class AnimationLibrary: ObservableObject {
         let url: URL
         var result: AnimationReadResult
         var modified: Date
+        let contents: Data?
 
         var animation: DropyAnimation? { result.animation }
         var name: String { result.animation?.name ?? id }
@@ -75,7 +76,11 @@ final class AnimationLibrary: ObservableObject {
 
     /// Reads an animation file, refusing one too big to be an animation before loading it.
     static func read(_ url: URL) -> AnimationReadResult {
-        guard let data = data(at: url) else {
+        read(url, contents: data(at: url))
+    }
+
+    private static func read(_ url: URL, contents: Data?) -> AnimationReadResult {
+        guard let data = contents else {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             let message = size > AnimationFile.maximumSize
                 ? "The file is \(size / 1024) KB; an animation file may be at most \(AnimationFile.maximumSize / 1024) KB."
@@ -183,11 +188,17 @@ final class AnimationLibrary: ObservableObject {
             // smuggle text into what an agent reads; such files are not listed.
             guard Self.isUsable(id: id) else { continue }
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            if let old = entry(id), old.modified == modified, old.url == url {
-                next.append(old)
-                continue
+            let contents = Self.data(at: url)
+            // File copies and external editors can preserve modification dates.
+            // Compare bounded contents; cache parsing, not the assumption that an
+            // unchanged timestamp means an unchanged animation.
+            let result: AnimationReadResult
+            if let old = entry(id), old.url == url, old.contents == contents {
+                result = old.result
+            } else {
+                result = Self.read(url, contents: contents)
             }
-            next.append(Entry(id: id, url: url, result: Self.read(url), modified: modified))
+            next.append(Entry(id: id, url: url, result: result, modified: modified, contents: contents))
         }
         next.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         guard next != entries else { return }
