@@ -207,10 +207,17 @@ final class AnimationStudioModel: ObservableObject {
     func moveKey(_ index: Int, time: Double? = nil, value: Double? = nil, ease: MotionEase? = nil) {
         guard var keys, keys.indices.contains(index) else { return }
         var key = keys[index]
-        if let time {
-            let low = index > 0 ? keys[index - 1].time + 0.005 : AnimationLimits.keyTime.lowerBound
-            let high = index < keys.count - 1 ? keys[index + 1].time - 0.005 : AnimationLimits.keyTime.upperBound
-            key.time = (min(max(time, low), max(low, high)) * 1000).rounded() / 1000
+        if let time, time.isFinite {
+            let lower = index > 0 ? keys[index - 1].time + 0.001 : AnimationLimits.keyTime.lowerBound
+            let upper = index < keys.count - 1 ? keys[index + 1].time - 0.001 : AnimationLimits.keyTime.upperBound
+            // Drag times use milliseconds. An imported curve may have tighter
+            // spacing; if no grid point fits, preserve its time instead of crossing
+            // a neighbor. Value/ease edits can still proceed.
+            let low = ceil(lower * 1000 - 1e-9) / 1000
+            let high = floor(upper * 1000 + 1e-9) / 1000
+            if low <= high {
+                key.time = (min(max(time, low), high) * 1000).rounded() / 1000
+            }
         }
         if let value, index > 0, index < keys.count - 1 {
             key.value = (min(max(value, AnimationLimits.keyValue.lowerBound), AnimationLimits.keyValue.upperBound) * 1000).rounded() / 1000
@@ -416,4 +423,3 @@ final class AnimationStudioModel: ObservableObject {
         NSPasteboard.general.setString(prompt, forType: .string)
     }
 }
-

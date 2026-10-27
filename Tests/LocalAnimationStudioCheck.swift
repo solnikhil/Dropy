@@ -7,6 +7,7 @@ import DropyCore
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         try verifyOriginalFileURL(in: folder)
+        try verifyCrowdedKeyframes(in: folder)
         print("Animation Studio checks passed (original file path preserved; no windows shown)")
     }
 
@@ -31,5 +32,26 @@ import DropyCore
         model.rename("Edited uppercase file")
         model.saveNow()
         precondition(AnimationLibrary.read(file).animation?.name == "Edited uppercase file")
+    }
+
+    @MainActor private static func verifyCrowdedKeyframes(in folder: URL) throws {
+        for spacing in [0.001, 0.0002] {
+            var animation = MotionStyle.balanced.animation
+            animation.open.height = .keyframes([
+                MotionKeyframe(time: 0, value: 0), MotionKeyframe(time: spacing, value: 0.2),
+                MotionKeyframe(time: 2 * spacing, value: 1),
+            ])
+            let (_, model, file) = try fixture(in: folder, animation: animation)
+            model.moveKey(1, time: spacing, value: 0.4)
+            precondition(model.keys?[1].time == spacing)
+            precondition(model.keys?[1].value == 0.4)
+            model.saveNow()
+            let result = AnimationLibrary.read(file)
+            precondition(result.errors.isEmpty)
+            if case .keyframes(let keys) = result.animation?.open.height {
+                precondition(zip(keys, keys.dropFirst()).allSatisfy { $0.time < $1.time })
+                precondition(keys[1].time == spacing, "Dragging must not reorder closely spaced imported keys")
+            } else { preconditionFailure("Expected a saved keyframe curve") }
+        }
     }
 }
