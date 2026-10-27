@@ -62,6 +62,8 @@ final class AnimationStudioModel: ObservableObject {
     private var saveTask: Task<Void, Never>?
     private var autoplayTask: Task<Void, Never>?
     private var written: Data?
+    private var savedAnimation: DropyAnimation
+    private var deferredFileChange: [AnimationLibrary.Entry]?
     private var observation: AnyCancellable?
 
     init(library: AnimationLibrary, fileID: String, animation: DropyAnimation) {
@@ -69,7 +71,8 @@ final class AnimationStudioModel: ObservableObject {
         self.fileID = fileID
         fileURL = library.entry(fileID)?.url ?? library.folder.appendingPathComponent("\(fileID).json")
         self.animation = animation
-        written = AnimationFile.data(for: animation)
+        savedAnimation = animation
+        written = library.entry(fileID)?.contents ?? AnimationFile.data(for: animation)
         validate()
         observation = library.$entries.dropFirst().sink { [weak self] entries in
             Task { @MainActor in self?.fileChanged(entries) }
@@ -113,6 +116,12 @@ final class AnimationStudioModel: ObservableObject {
     func endGesture() {
         guard let start = gestureStart else { return }
         gestureStart = nil
+        defer {
+            if let pending = deferredFileChange {
+                deferredFileChange = nil
+                fileChanged(pending)
+            }
+        }
         guard start != animation else { return }
         undoStack.append(start)
         redoStack.removeAll()
@@ -364,12 +373,21 @@ final class AnimationStudioModel: ObservableObject {
 
     func saveNow() {
         saveTask?.cancel()
+        saveTask = nil
+        guard animation != savedAnimation else { return }
+        if FileManager.default.fileExists(atPath: url.path), AnimationLibrary.data(at: url) != written {
+            // Catch outside edits even before the watcher has delivered them.
+            // Refresh the model rather than overwriting a newer disk version.
+            library.scan()
+            fileChanged(library.entries)
+            return
+        }
         let data = AnimationFile.data(for: animation)
-        guard data != written else { return }
         do {
             try FileManager.default.createDirectory(at: library.folder, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
             written = data
+            savedAnimation = animation
             fileMissing = false
             library.scan()
         } catch {
@@ -385,14 +403,23 @@ final class AnimationStudioModel: ObservableObject {
             return
         }
         fileMissing = false
-        guard gestureStart == nil, let data = AnimationLibrary.data(at: entry.url), data != written else { return }
+        let data = entry.contents
+        guard data != written else { return }
+        saveTask?.cancel()
+        saveTask = nil
+        if gestureStart != nil {
+            deferredFileChange = entries
+            return
+        }
         written = data
+        savedAnimation = animation
+        issues = entry.result.issues
         guard let outside = entry.animation, outside != animation else { return }
         undoStack.append(animation)
         redoStack.removeAll()
         animation = outside
+        savedAnimation = outside
         selectedKey = nil
-        validate()
         play()
     }
 
