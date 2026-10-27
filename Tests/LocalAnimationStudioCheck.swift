@@ -9,7 +9,8 @@ import DropyCore
         try verifyOriginalFileURL(in: folder)
         try verifyCrowdedKeyframes(in: folder)
         try await verifyExternalEditsSurviveAutosave(in: folder)
-        print("Animation Studio checks passed (original file path preserved; no windows shown)")
+        try await verifyDeletionDoesNotResurrectPendingEdits(in: folder)
+        print("Animation Studio checks passed (original paths, crowded keys, outside edits, gestures, deletion; no windows shown)")
     }
 
     @MainActor private static func fixture(in root: URL, filename: String = "studio.json",
@@ -103,5 +104,27 @@ import DropyCore
         model.undo()
         precondition(model.animation.name == "Unsaved local work")
         model.saveNow()
+    }
+
+    @MainActor private static func verifyDeletionDoesNotResurrectPendingEdits(in folder: URL) async throws {
+        for notify in [false, true] {
+            let (library, model, file) = try fixture(in: folder, filename: "Deleted.JSON")
+            model.rename("Pending edit before deletion")
+            try FileManager.default.removeItem(at: file)
+            if notify {
+                library.scan()
+                try await settleUpdates()
+            }
+            model.saveNow()
+            try await Task.sleep(for: .milliseconds(400))
+            precondition(!FileManager.default.fileExists(atPath: file.path), "An old autosave or window close must not resurrect a deleted file")
+            precondition(model.fileMissing && model.animation.name == "Pending edit before deletion")
+            // Preserve the documented recovery behavior: a new deliberate edit
+            // after deletion can recreate the file, at its original path.
+            model.rename("New explicit edit after deletion")
+            model.saveNow()
+            precondition(!model.fileMissing && model.url.lastPathComponent == "Deleted.JSON")
+            precondition(AnimationLibrary.read(file).animation?.name == "New explicit edit after deletion")
+        }
     }
 }
