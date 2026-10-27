@@ -374,6 +374,11 @@ final class AnimationStudioModel: ObservableObject {
     func saveNow() {
         saveTask?.cancel()
         saveTask = nil
+        if !fileMissing && !FileManager.default.fileExists(atPath: url.path) {
+            noteMissingFile()
+            library.scan()
+            return
+        }
         guard animation != savedAnimation else { return }
         if FileManager.default.fileExists(atPath: url.path), AnimationLibrary.data(at: url) != written {
             // Catch outside edits even before the watcher has delivered them.
@@ -399,7 +404,7 @@ final class AnimationStudioModel: ObservableObject {
     /// that the file went away.
     private func fileChanged(_ entries: [AnimationLibrary.Entry]) {
         guard let entry = entries.first(where: { $0.id == fileID }) else {
-            fileMissing = true
+            noteMissingFile()
             return
         }
         fileMissing = false
@@ -421,6 +426,18 @@ final class AnimationStudioModel: ObservableObject {
         savedAnimation = outside
         selectedKey = nil
         play()
+    }
+
+    private func noteMissingFile() {
+        fileMissing = true
+        saveTask?.cancel()
+        saveTask = nil
+        deferredFileChange = nil
+        written = nil
+        // Keep pending work in the model for Save a Copy, but do not recreate a
+        // deleted file on close or on an old timer. A subsequent explicit edit
+        // changes this baseline and can save it again, as the banner promises.
+        savedAnimation = animation
     }
 
     func copyShareCode() {
