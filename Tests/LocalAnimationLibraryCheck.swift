@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import DropyCore
 
 private final class WatcherLifetimeProbe: Sendable {}
@@ -9,6 +10,7 @@ private final class WatcherLifetimeProbe: Sendable {}
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let library = AnimationLibrary(folder: folder)
+        try verifyBoundedReads(in: folder)
         let personalDocuments: [(String, Data)] = [
             ("README.md", Data(repeating: 120, count: AnimationFile.maximumSize + 1)),
             ("AGENTS.md", Data([0xff, 0xfe, 0x41, 0x00])),
@@ -59,6 +61,26 @@ private final class WatcherLifetimeProbe: Sendable {}
             try? await Task.sleep(for: .milliseconds(10))
         }
         preconditionFailure("Timed out waiting for a folder-watcher lifecycle event")
+    }
+
+    @MainActor private static func verifyBoundedReads(in folder: URL) throws {
+        let file = folder.appendingPathComponent("bounded-read.json")
+        let link = folder.appendingPathComponent("bounded-link.json")
+        let fifo = folder.appendingPathComponent("pipe.json")
+        defer {
+            for url in [file, link, fifo] { try? FileManager.default.removeItem(at: url) }
+        }
+        let exact = Data(repeating: 120, count: AnimationFile.maximumSize)
+        try exact.write(to: file)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        precondition(AnimationLibrary.data(at: file) == exact)
+        precondition(AnimationLibrary.data(at: link) == exact)
+        try Data(repeating: 120, count: AnimationFile.maximumSize + 1).write(to: file)
+        precondition(AnimationLibrary.data(at: file) == nil)
+        precondition(AnimationLibrary.data(at: link) == nil, "Symlinks must not bypass the read limit")
+        precondition(mkfifo(fifo.path, 0o600) == 0)
+        precondition(AnimationLibrary.data(at: fifo) == nil, "A named pipe must be refused without waiting for a writer")
+        precondition(AnimationLibrary.data(at: folder) == nil)
     }
 
     @MainActor private static func verifyWatcherLifetime(in folder: URL) async throws {
