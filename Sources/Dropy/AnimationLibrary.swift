@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import DropyCore
 
 /// The person's animations: the `.json` files in
@@ -86,9 +87,25 @@ final class AnimationLibrary: ObservableObject {
 
     /// A file's contents, or nil when it cannot be read or is too big to be an animation.
     static func data(at url: URL) -> Data? {
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size <= AnimationFile.maximumSize else { return nil }
-        return try? Data(contentsOf: url)
+        // Inspect the opened target, not metadata for a symlink or an earlier
+        // version of the file. Nonblocking open also refuses to wait on a FIFO.
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size <= AnimationFile.maximumSize else { return nil }
+        var data = Data()
+        do {
+            // The file can grow after fstat. Read at most one byte past the limit
+            // and handle short reads without ever allocating an unbounded buffer.
+            while let chunk = try handle.read(upToCount: AnimationFile.maximumSize + 1 - data.count), !chunk.isEmpty {
+                data.append(chunk)
+                guard data.count <= AnimationFile.maximumSize else { return nil }
+            }
+            return data
+        } catch { return nil }
     }
 
     /// Whether a file name can be listed and used as an animation's name in commands.
