@@ -125,6 +125,15 @@ swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
   "$repo_dir/Sources/Dropy/AnimationFolderWatcher.swift" "$repo_dir/Sources/Dropy/MainThreadCleanup.swift"
 "$build_dir/AnimationLibraryChecks"
 
+# The editing model is independent of its window and can exercise autosave and
+# external-file changes without showing UI or starting a folder watcher.
+swiftc -swift-version 6 -I "$build_dir" -L "$build_dir" -lDropyCore \
+  -Xlinker -rpath -Xlinker "$build_dir" -o "$build_dir/AnimationStudioChecks" \
+  "$repo_dir/Tests/LocalAnimationStudioCheck.swift" "$repo_dir/Sources/Dropy/AnimationStudio.swift" \
+  "$repo_dir/Sources/Dropy/AnimationLibrary.swift" "$repo_dir/Sources/Dropy/AnimationFolderWatcher.swift" \
+  "$repo_dir/Sources/Dropy/MainThreadCleanup.swift"
+"$build_dir/AnimationStudioChecks"
+
 app_binary="$build_dir/Dropy.app/Contents/MacOS/Dropy"
 animations_dir="$(mktemp -d)"
 export DROPY_ANIMATIONS_FOLDER="$animations_dir"

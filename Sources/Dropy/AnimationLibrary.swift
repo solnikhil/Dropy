@@ -71,7 +71,8 @@ final class AnimationLibrary: ObservableObject {
 
     /// An animation file's path for a command in a prompt, single-quoted.
     func quotedPath(for id: String) -> String {
-        AnimationText.shellQuoted("\(shownFolder)/\(id).json")
+        let filename = entry(id)?.url.lastPathComponent ?? "\(id).json"
+        return AnimationText.shellQuoted("\(shownFolder)/\(filename)")
     }
 
     /// Reads an animation file, refusing one too big to be an animation before loading it.
