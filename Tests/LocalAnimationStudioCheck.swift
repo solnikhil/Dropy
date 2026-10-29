@@ -11,8 +11,9 @@ import DropyCore
         try verifyNonFiniteKeyEdits(in: folder)
         try verifySpringConversionPreservesDelay(in: folder)
         try await verifyExternalEditsSurviveAutosave(in: folder)
+        try await verifyLatestExternalEditDuringGesture(in: folder)
         try await verifyDeletionDoesNotResurrectPendingEdits(in: folder)
-        print("Animation Studio checks passed (original paths, crowded keys, outside edits, gestures, deletion; no windows shown)")
+        print("Animation Studio checks passed (original paths, crowded keys, numeric inputs, conversion delays, outside edits, gestures, deletion; no windows shown)")
     }
 
     @MainActor private static func fixture(in root: URL, filename: String = "studio.json",
@@ -149,6 +150,34 @@ import DropyCore
         model.undo()
         precondition(model.animation.name == "Unsaved local work")
         model.saveNow()
+    }
+
+    @MainActor private static func verifyLatestExternalEditDuringGesture(in folder: URL) async throws {
+        for localEdit in [false, true] {
+            let (library, model, file) = try fixture(in: folder)
+            let original = model.animation
+            let originalData = try Data(contentsOf: file)
+            model.beginGesture()
+            if localEdit { model.rename("Local drag edit") }
+            var outside = original
+            outside.name = "Intermediate external version"
+            try AnimationFile.data(for: outside).write(to: file)
+            library.scan()
+            try await settleUpdates()
+            try originalData.write(to: file)
+            library.scan()
+            try await settleUpdates()
+            model.endGesture()
+            precondition(model.animation.name == (localEdit ? "Local drag edit" : original.name),
+                         "A reverted external edit must not reappear after the gesture")
+            try await Task.sleep(for: .milliseconds(450))
+            precondition(AnimationLibrary.read(file).animation == model.animation,
+                         "Local drag autosave must resume after a temporary outside edit")
+            if localEdit {
+                model.undo()
+                precondition(model.animation == original)
+            }
+        }
     }
 
     @MainActor private static func verifyDeletionDoesNotResurrectPendingEdits(in folder: URL) async throws {

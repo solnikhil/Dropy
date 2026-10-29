@@ -120,6 +120,9 @@ final class AnimationStudioModel: ObservableObject {
             if let pending = deferredFileChange {
                 deferredFileChange = nil
                 fileChanged(pending)
+                // A temporary outside edit may have canceled the drag's save,
+                // then returned to the original bytes. Resume saving local work.
+                if animation != savedAnimation { scheduleSave() }
             }
         }
         guard start != animation else { return }
@@ -414,13 +417,19 @@ final class AnimationStudioModel: ObservableObject {
         }
         fileMissing = false
         let data = entry.contents
+        if gestureStart != nil {
+            // Always replace the deferred snapshot, including a return to the
+            // original bytes. Otherwise an intermediate external edit wins.
+            deferredFileChange = entries
+            if data != written {
+                saveTask?.cancel()
+                saveTask = nil
+            }
+            return
+        }
         guard data != written else { return }
         saveTask?.cancel()
         saveTask = nil
-        if gestureStart != nil {
-            deferredFileChange = entries
-            return
-        }
         written = data
         savedAnimation = animation
         issues = entry.result.issues
