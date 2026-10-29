@@ -9,6 +9,7 @@ import DropyCore
         try verifyOriginalFileURL(in: folder)
         try verifyCrowdedKeyframes(in: folder)
         try verifyNonFiniteKeyEdits(in: folder)
+        try verifySpringConversionPreservesDelay(in: folder)
         try await verifyExternalEditsSurviveAutosave(in: folder)
         try await verifyDeletionDoesNotResurrectPendingEdits(in: folder)
         print("Animation Studio checks passed (original paths, crowded keys, outside edits, gestures, deletion; no windows shown)")
@@ -80,6 +81,25 @@ import DropyCore
         precondition(model.keys?[1].time == 0.25 && model.keys?[1].value == 0.8)
         model.addKey(time: 0.3, value: 0.9)
         precondition(model.keys?.count == 4 && model.errors.isEmpty)
+    }
+
+    @MainActor private static func verifySpringConversionPreservesDelay(in folder: URL) throws {
+        for initialHold in [false, true] {
+            var animation = MotionStyle.balanced.animation
+            var keys: [MotionKeyframe] = [.init(time: 0.2, value: 0), .init(time: 0.6, value: 1)]
+            if initialHold { keys.insert(.init(time: 0, value: 0), at: 0) }
+            animation.open.height = .keyframes(keys)
+            let (_, model, file) = try fixture(in: folder, animation: animation)
+            model.setKind(keyframes: false)
+            precondition(model.spring?.delay == 0.2)
+            precondition(abs((model.spring?.spring.response ?? 0) - 0.4 / 1.4) < 1e-9)
+            precondition(model.curve?.value(at: 0.19) == 0)
+            precondition((model.curve?.value(at: 0.3) ?? 0) > 0)
+            model.saveNow()
+            precondition(AnimationLibrary.read(file).errors.isEmpty)
+            model.undo()
+            precondition(model.animation == animation)
+        }
     }
 
     @MainActor private static func settleUpdates() async throws {
