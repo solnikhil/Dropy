@@ -214,7 +214,8 @@ final class AnimationStudioModel: ObservableObject {
     /// Moves keyframe `index`, keeping it between its neighbors; the first stays at 0
     /// and the last at 1.
     func moveKey(_ index: Int, time: Double? = nil, value: Double? = nil, ease: MotionEase? = nil) {
-        guard var keys, keys.indices.contains(index) else { return }
+        guard time?.isFinite != false, value?.isFinite != false,
+              var keys, keys.indices.contains(index) else { return }
         var key = keys[index]
         if let time, time.isFinite {
             let lower = index > 0 ? keys[index - 1].time + 0.001 : AnimationLimits.keyTime.lowerBound
@@ -238,6 +239,7 @@ final class AnimationStudioModel: ObservableObject {
 
     /// Adds a keyframe at `time` (with `value`, or the curve's value there) and selects it.
     func addKey(time: Double, value: Double? = nil) {
+        guard time.isFinite, value?.isFinite != false else { return }
         var keys = keys ?? curve?.asKeyframes() ?? []
         guard keys.count < AnimationLimits.keyCount.upperBound, let curve else { return }
         let time = (min(max(time, 0.005), AnimationLimits.keyTime.upperBound) * 1000).rounded() / 1000
