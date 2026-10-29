@@ -195,10 +195,13 @@ final class AnimationStudioModel: ObservableObject {
         switch (curve, keyframes) {
         case (.spring, true):
             setCurve(.keyframes(curve.asKeyframes()))
-        case (.keyframes, false):
-            // The spring that settles in about the same time, without a bounce to start.
-            let response = min(max(curve.duration / 1.4, AnimationLimits.response.lowerBound), AnimationLimits.response.upperBound)
-            setCurve(.spring(MorphSpring(response: response, dampingRatio: 0.85)))
+        case (.keyframes(let keys), false):
+            // Preserve the initial wait separately from the moving duration. A
+            // sequence of zero-valued keys is also an intentional initial hold.
+            let hold = keys.prefix { $0.value == 0 }.last?.time ?? 0
+            let delay = min(max(hold, AnimationLimits.delay.lowerBound), AnimationLimits.delay.upperBound)
+            let response = min(max((curve.duration - delay) / 1.4, AnimationLimits.response.lowerBound), AnimationLimits.response.upperBound)
+            setCurve(.spring(MorphSpring(response: response, dampingRatio: 0.85), delay: delay))
         default: break
         }
         selectedKey = nil
