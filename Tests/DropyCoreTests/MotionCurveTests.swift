@@ -90,6 +90,18 @@ final class MotionCurveTests: XCTestCase {
         XCTAssertTrue(curve.extent.upperBound > 1.05, "the overshoot survives simplification")
     }
 
+    func testInvalidSketchTolerancesStillProduceBoundedCurves() {
+        let points = (0...100).map {
+            (time: Double($0) / 100, value: $0 == 100 ? 1.0 : ($0.isMultiple(of: 2) ? 0.1 : 1.1))
+        }
+        let expected = CurveSketch.keyframes(from: points)
+        for tolerance in [0, -0.1, Double.nan, .infinity, -.infinity] {
+            let keys = CurveSketch.keyframes(from: points, tolerance: tolerance)
+            XCTAssertEqual(keys, expected)
+            XCTAssertTrue(AnimationLimits.keyCount.contains(keys.count))
+        }
+    }
+
     func testAStrokeLiftedPastTheEndSettlesInsteadOfJumping() {
         let stroke = stride(from: 0.0, through: 0.3, by: 0.01).map { (time: $0, value: min($0 / 0.2, 1) * 1.1) }
         let keys = CurveSketch.keyframes(from: stroke)
