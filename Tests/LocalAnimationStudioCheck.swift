@@ -8,6 +8,7 @@ import DropyCore
         defer { try? FileManager.default.removeItem(at: folder) }
         try verifyOriginalFileURL(in: folder)
         try verifyCrowdedKeyframes(in: folder)
+        try verifyNonFiniteKeyEdits(in: folder)
         try await verifyExternalEditsSurviveAutosave(in: folder)
         try await verifyDeletionDoesNotResurrectPendingEdits(in: folder)
         print("Animation Studio checks passed (original paths, crowded keys, outside edits, gestures, deletion; no windows shown)")
@@ -55,6 +56,30 @@ import DropyCore
                 precondition(keys[1].time == spacing, "Dragging must not reorder closely spaced imported keys")
             } else { preconditionFailure("Expected a saved keyframe curve") }
         }
+    }
+
+    @MainActor private static func verifyNonFiniteKeyEdits(in folder: URL) throws {
+        var animation = MotionStyle.balanced.animation
+        animation.open.height = .keyframes([
+            .init(time: 0, value: 0), .init(time: 0.2, value: 0.5), .init(time: 0.4, value: 1),
+        ])
+        let (_, model, file) = try fixture(in: folder, animation: animation)
+        let original = try Data(contentsOf: file)
+        for invalid in [Double.nan, .infinity, -.infinity] {
+            model.moveKey(1, time: 0.25, value: invalid)
+            model.moveKey(1, time: invalid, value: 0.8)
+            model.addKey(time: invalid, value: 0.7)
+            model.addKey(time: 0.3, value: invalid)
+            precondition(model.animation == animation && !model.canUndo,
+                         "Invalid key inputs must leave the curve and undo history intact")
+            model.saveNow()
+            let saved = try Data(contentsOf: file)
+            precondition(saved == original)
+        }
+        model.moveKey(1, time: 0.25, value: 0.8)
+        precondition(model.keys?[1].time == 0.25 && model.keys?[1].value == 0.8)
+        model.addKey(time: 0.3, value: 0.9)
+        precondition(model.keys?.count == 4 && model.errors.isEmpty)
     }
 
     @MainActor private static func settleUpdates() async throws {
