@@ -322,7 +322,9 @@ public enum CurveSketch {
         }
         let height = max(high - low, 1)
         let normalized = forward.map { CGPoint(x: ($0.time - first.time) / span, y: $0.value / height) }
-        var epsilon = tolerance
+        // A zero or negative tolerance cannot grow toward the key-count limit.
+        // Non-finite tolerances also have no useful geometric meaning.
+        var epsilon = tolerance.isFinite && tolerance > 0 ? tolerance : 0.025
         var kept = simplify(normalized, epsilon: epsilon)
         while kept.count > maximumKeys {
             epsilon *= 1.5
