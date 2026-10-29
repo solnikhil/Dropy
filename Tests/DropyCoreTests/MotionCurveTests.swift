@@ -102,6 +102,22 @@ final class MotionCurveTests: XCTestCase {
         }
     }
 
+    func testDenseSketchesKeepStrictlyIncreasingTimesAfterSimplification() {
+        for (start, spacing) in [(0.0, 0.0002), (0.123, 0.0002), (0.0, 0.000002), (0.123, 0.000002)] {
+            let keys = CurveSketch.keyframes(from: [(start, 0), (start + spacing, 1.2), (start + 2 * spacing, 1)])
+            XCTAssertTrue(zip(keys, keys.dropFirst()).allSatisfy { $0.time < $1.time })
+            XCTAssertEqual(keys.first?.time ?? -1, start, accuracy: 1e-12)
+            XCTAssertEqual(keys.last?.time ?? -1, start + 2 * spacing, accuracy: 1e-12)
+            let curve = MotionCurve.keyframes(keys)
+            XCTAssertEqual(curve.value(at: start + spacing), 1.2, accuracy: 1e-9)
+            var animation = MotionStyle.balanced.animation
+            animation.open.height = curve
+            let result = AnimationFile.read(AnimationFile.data(for: animation))
+            XCTAssertTrue(result.errors.isEmpty)
+            XCTAssertEqual(result.animation?.open.height, curve)
+        }
+    }
+
     func testAStrokeLiftedPastTheEndSettlesInsteadOfJumping() {
         let stroke = stride(from: 0.0, through: 0.3, by: 0.01).map { (time: $0, value: min($0 / 0.2, 1) * 1.1) }
         let keys = CurveSketch.keyframes(from: stroke)

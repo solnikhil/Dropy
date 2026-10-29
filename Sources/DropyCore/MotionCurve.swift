@@ -330,8 +330,12 @@ public enum CurveSketch {
             epsilon *= 1.5
             kept = simplify(normalized, epsilon: epsilon)
         }
-        return kept.map { index in
-            MotionKeyframe(time: (forward[index].time * 1000).rounded() / 1000,
+        let roundedTimes = kept.map { (forward[$0].time * 1000).rounded() / 1000 }
+        // Sub-millisecond strokes can collapse multiple keys onto one grid point.
+        // Keep their original precision whenever rounding would change ordering.
+        let canRoundTimes = zip(roundedTimes, roundedTimes.dropFirst()).allSatisfy { $0 < $1 }
+        return kept.enumerated().map { offset, index in
+            MotionKeyframe(time: canRoundTimes ? roundedTimes[offset] : forward[index].time,
                            value: (forward[index].value * 1000).rounded() / 1000, ease: .smooth)
         }
     }

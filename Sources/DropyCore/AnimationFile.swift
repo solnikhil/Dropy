@@ -213,7 +213,7 @@ public enum AnimationFile {
             return .object(fields)
         case .keyframes(let keys):
             return .object([("keyframes", .array(keys.enumerated().map { index, key in
-                var fields: [(String, JSONText)] = [("time", .number(key.time)), ("value", .number(key.value))]
+                var fields: [(String, JSONText)] = [("time", .preciseNumber(key.time)), ("value", .number(key.value))]
                 if index > 0 { fields.append(("ease", ease(key.ease))) }
                 return .inlineObject(fields)
             }))])
@@ -647,6 +647,8 @@ indirect enum JSONText {
     case inlineArray([JSONText])
     case string(String)
     case number(Double)
+    /// Key times must round-trip without merging neighboring frames.
+    case preciseNumber(Double)
 
     /// Pretty with `indent` (nil: one compact line).
     static func render(_ value: JSONText, indent: Int?) -> String {
@@ -656,6 +658,9 @@ indirect enum JSONText {
         switch value {
         case .string(let string): return quote(string)
         case .number(let number): return format(number)
+        case .preciseNumber(let number):
+            let compact = format(number)
+            return Double(compact) == number ? compact : String(number)
         case .inlineObject(let fields):
             return "{ " + fields.map { "\(quote($0.0)): \(render($0.1, indent: nil))" }.joined(separator: ", ") + " }"
         case .inlineArray(let items):
