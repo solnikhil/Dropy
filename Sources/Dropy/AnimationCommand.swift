@@ -137,12 +137,9 @@ enum AnimationCommand {
         // Line by line, so a person or an agent reading the output sees each play at once.
         setvbuf(stdout, nil, _IOLBF, 0)
         print("Watching \(AnimationText.clean(url.lastPathComponent, limit: 100)). Save it to play it on the notch; Control-C stops.")
-        var lastSeen: Date?
+        var changes = AnimationLibrary.FileChanges()
         while true {
-            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
-            if let modified, modified != lastSeen {
-                lastSeen = modified
-                let result = AnimationLibrary.read(url)
+            if let result = changes.poll(url) {
                 let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
                 for issue in result.issues {
                     print("  \(issue.severity.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0))\(issue.path.isEmpty ? "" : issue.path + ": ")\(issue.message)")
