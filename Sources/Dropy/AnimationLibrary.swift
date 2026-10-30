@@ -114,6 +114,27 @@ final class AnimationLibrary: ObservableObject {
         } catch { return nil }
     }
 
+    /// A terminal watch compares bounded content snapshots as well as save times.
+    /// This catches timestamp-preserving edits while retaining replay-on-save for
+    /// unchanged content. Missing files produce one diagnostic until recreated.
+    @MainActor struct FileChanges {
+        private var hasRead = false
+        private var previous: Data?
+        private var previousModification: Date?
+
+        mutating func poll(_ url: URL) -> AnimationReadResult? {
+            let contents = AnimationLibrary.data(at: url)
+            // URL resource values may be cached on a reused URL. Fetch fresh
+            // filesystem attributes so repeated polls observe ordinary saves too.
+            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            guard !hasRead || contents != previous || modified != previousModification else { return nil }
+            hasRead = true
+            previous = contents
+            previousModification = modified
+            return AnimationLibrary.read(url, contents: contents)
+        }
+    }
+
     /// Whether a file name can be listed and used as an animation's name in commands.
     static func isUsable(id: String) -> Bool {
         id.count <= 100 && AnimationText.canEmbed(path: id) && !id.contains("/")
