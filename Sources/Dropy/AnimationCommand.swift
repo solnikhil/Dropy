@@ -128,7 +128,7 @@ enum AnimationCommand {
         }
         let expanded = URL(fileURLWithPath: (target as NSString).expandingTildeInPath)
         let url = FileManager.default.fileExists(atPath: expanded.path) ? expanded
-            : library.entry(URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent)?.url
+            : isPath(target) ? nil : library.entry(URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent)?.url
         guard let url else { return notFound(target, library) }
         guard let slow = playbackSlowdown(arguments) else {
             return fail("--slow requires a finite number.", status: 2)
@@ -187,8 +187,11 @@ enum AnimationCommand {
 
     private static func use(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
         guard let target = arguments.positionals.first else { return fail("Which animation? \(AnimationLibrary.command) use <name>", status: 2) }
+        guard !isPath(target) else {
+            return fail("Use an animation name from the animations folder, rather than a file path.", status: 2)
+        }
         let id = URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent
-        let builtIn = MotionStyle(rawValue: id.lowercased())
+        let builtIn = target.lowercased().hasSuffix(".json") ? nil : MotionStyle(rawValue: id.lowercased())
         if builtIn == nil {
             guard let entry = library.entry(id) else {
                 return fail("There is no \(id).json in \(library.folder.path).\(DropyAnimation.gallery.contains { $0.id == id } ? " Add the example first: \(AnimationLibrary.command) new \(id) --from \(id)" : "")")
@@ -271,8 +274,12 @@ enum AnimationCommand {
         if FileManager.default.fileExists(atPath: url.path) {
             return Found(label: AnimationText.clean(url.lastPathComponent, limit: 100), result: AnimationLibrary.read(url))
         }
+        // A path identifies exactly that file. Never turn a missing path into
+        // a same-named library entry or built-in animation.
+        guard !isPath(target) else { return nil }
         let id = url.deletingPathExtension().lastPathComponent
         if let entry = library.entry(id) { return Found(label: entry.url.lastPathComponent, result: entry.result) }
+        guard !target.lowercased().hasSuffix(".json") else { return nil }
         if let style = MotionStyle(rawValue: id.lowercased()) {
             return Found(label: style.title, result: AnimationReadResult(animation: style.animation, issues: []))
         }
@@ -280,6 +287,10 @@ enum AnimationCommand {
             return Found(label: example.animation.name, result: AnimationReadResult(animation: example.animation, issues: []))
         }
         return nil
+    }
+
+    private static func isPath(_ target: String) -> Bool {
+        target.contains("/") || target.hasPrefix("~")
     }
 
     private static func notFound(_ target: String, _ library: AnimationLibrary) -> Int32 {
