@@ -12,6 +12,7 @@ private final class WatcherLifetimeProbe: Sendable {}
         let library = AnimationLibrary(folder: folder)
         try verifyBoundedReads(in: folder)
         try verifyPreservedTimestampEdits(in: folder)
+        try verifyWatchedFileChanges(in: folder)
         let personalDocuments: [(String, Data)] = [
             ("README.md", Data(repeating: 120, count: AnimationFile.maximumSize + 1)),
             ("AGENTS.md", Data([0xff, 0xfe, 0x41, 0x00])),
@@ -82,6 +83,46 @@ private final class WatcherLifetimeProbe: Sendable {}
         precondition(mkfifo(fifo.path, 0o600) == 0)
         precondition(AnimationLibrary.data(at: fifo) == nil, "A named pipe must be refused without waiting for a writer")
         precondition(AnimationLibrary.data(at: folder) == nil)
+    }
+
+    @MainActor private static func verifyWatchedFileChanges(in folder: URL) throws {
+        let file = folder.appendingPathComponent("terminal-watch.json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let date = Date(timeIntervalSince1970: 1_000)
+        var animation = MotionStyle.balanced.animation
+        animation.name = "Before"
+        func write() throws {
+            try AnimationFile.data(for: animation).write(to: file, options: .atomic)
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+        }
+        try write()
+        var changes = AnimationLibrary.FileChanges()
+        precondition(changes.poll(file)?.animation?.name == "Before")
+        precondition(changes.poll(file) == nil)
+        try FileManager.default.setAttributes([.modificationDate: date.addingTimeInterval(1)], ofItemAtPath: file.path)
+        precondition(changes.poll(file)?.animation?.name == "Before",
+                     "Saving identical content must still replay when its timestamp changes")
+        precondition(changes.poll(file) == nil)
+        animation.name = "After!"
+        try write()
+        precondition(changes.poll(file)?.animation?.name == "After!",
+                     "Terminal watch must detect changed bytes even when mtime is preserved")
+        precondition(changes.poll(file) == nil)
+        try Data("{ unfinished".utf8).write(to: file)
+        precondition(changes.poll(file)?.errors.isEmpty == false)
+        precondition(changes.poll(file) == nil, "An unchanged invalid file should only be reported once")
+        try write()
+        precondition(changes.poll(file)?.animation?.name == "After!")
+        try FileManager.default.removeItem(at: file)
+        precondition(changes.poll(file)?.errors.isEmpty == false)
+        precondition(changes.poll(file) == nil, "Missing-file diagnostics must not repeat on every poll")
+        try write()
+        precondition(changes.poll(file)?.animation?.name == "After!",
+                     "A recreated file must be played again, including when it restores the same content and mtime")
+        var initiallyMissing = AnimationLibrary.FileChanges()
+        try FileManager.default.removeItem(at: file)
+        precondition(initiallyMissing.poll(file)?.errors.isEmpty == false)
+        precondition(initiallyMissing.poll(file) == nil)
     }
 
     @MainActor private static func verifyPreservedTimestampEdits(in folder: URL) throws {

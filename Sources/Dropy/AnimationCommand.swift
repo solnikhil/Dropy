@@ -27,7 +27,12 @@ enum AnimationCommand {
     /// Runs the command in `arguments` (after "animation") and returns the exit status.
     static func run(_ arguments: [String]) -> Int32 {
         guard let command = arguments.first else { return fail(usage, status: 2) }
-        let rest = Array(arguments.dropFirst())
+        let rest: AnimationCommandArguments
+        do {
+            rest = try AnimationCommandArguments(command: command, arguments: Array(arguments.dropFirst()))
+        } catch {
+            return fail(error.localizedDescription, status: 2)
+        }
         let library = AnimationLibrary()
         library.prepareFolder()
         library.scan(notify: false)
@@ -42,7 +47,7 @@ enum AnimationCommand {
         case "code": return code(rest, library)
         case "import": return importCode(rest, library)
         case "docs":
-            let generic = rest.contains("--generic")
+            let generic = rest.options["--generic"] != nil
             print(generic ? AnimationGuide.readme(marker: AnimationGuide.repositoryMarker)
                           : AnimationGuide.readme(folder: library.shownFolder, command: AnimationLibrary.command), terminator: "")
             return 0
@@ -56,8 +61,8 @@ enum AnimationCommand {
 
     // MARK: Commands
 
-    private static func check(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        guard let target = arguments.first else { return fail("Which animation? \(AnimationLibrary.command) check <file or name>", status: 2) }
+    private static func check(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        guard let target = arguments.positionals.first else { return fail("Which animation? \(AnimationLibrary.command) check <file or name>", status: 2) }
         guard let found = resolve(target, library) else { return notFound(target, library) }
         let result = found.result
         let errors = result.errors.count
@@ -72,8 +77,8 @@ enum AnimationCommand {
         return errors > 0 ? 1 : 0
     }
 
-    private static func render(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        guard let target = arguments.first(where: { !$0.hasPrefix("--") }) else {
+    private static func render(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        guard let target = arguments.positionals.first else {
             return fail("Which animation? \(AnimationLibrary.command) render <file or name> [--out <png>]", status: 2)
         }
         guard let found = resolve(target, library) else { return notFound(target, library) }
@@ -92,14 +97,14 @@ enum AnimationCommand {
         return 0
     }
 
-    private static func playbackSlowdown(_ arguments: [String]) -> Double? {
-        guard arguments.contains("--slow") else { return 1 }
+    private static func playbackSlowdown(_ arguments: AnimationCommandArguments) -> Double? {
+        guard arguments.options["--slow"] != nil else { return 1 }
         guard let raw = option("--slow", in: arguments), let value = Double(raw) else { return nil }
         return AnimationPlayback.slowdown(value)
     }
 
-    private static func play(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        guard let target = arguments.first(where: { !$0.hasPrefix("--") }) else {
+    private static func play(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        guard let target = arguments.positionals.first else {
             return fail("Which animation? \(AnimationLibrary.command) play <file or name> [--slow <n>]", status: 2)
         }
         guard let found = resolve(target, library) else { return notFound(target, library) }
@@ -117,13 +122,13 @@ enum AnimationCommand {
     }
 
     /// Plays the animation, then again each time its file changes, listing its problems.
-    private static func watch(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        guard let target = arguments.first(where: { !$0.hasPrefix("--") }) else {
+    private static func watch(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        guard let target = arguments.positionals.first else {
             return fail("Which file? \(AnimationLibrary.command) watch <file or name> [--slow <n>]", status: 2)
         }
         let expanded = URL(fileURLWithPath: (target as NSString).expandingTildeInPath)
         let url = FileManager.default.fileExists(atPath: expanded.path) ? expanded
-            : library.entry(URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent)?.url
+            : isPath(target) ? nil : library.entry(URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent)?.url
         guard let url else { return notFound(target, library) }
         guard let slow = playbackSlowdown(arguments) else {
             return fail("--slow requires a finite number.", status: 2)
@@ -132,12 +137,9 @@ enum AnimationCommand {
         // Line by line, so a person or an agent reading the output sees each play at once.
         setvbuf(stdout, nil, _IOLBF, 0)
         print("Watching \(AnimationText.clean(url.lastPathComponent, limit: 100)). Save it to play it on the notch; Control-C stops.")
-        var lastSeen: Date?
+        var changes = AnimationLibrary.FileChanges()
         while true {
-            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
-            if let modified, modified != lastSeen {
-                lastSeen = modified
-                let result = AnimationLibrary.read(url)
+            if let result = changes.poll(url) {
                 let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
                 for issue in result.issues {
                     print("  \(issue.severity.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0))\(issue.path.isEmpty ? "" : issue.path + ": ")\(issue.message)")
@@ -153,8 +155,8 @@ enum AnimationCommand {
         }
     }
 
-    private static func new(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        let words = arguments.prefix { !$0.hasPrefix("--") }
+    private static func new(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        let words = arguments.positionals
         guard !words.isEmpty else {
             return fail("Name it: \(AnimationLibrary.command) new <name> [--from <style, example or file>]", status: 2)
         }
@@ -180,10 +182,13 @@ enum AnimationCommand {
         }
     }
 
-    private static func use(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        guard let target = arguments.first else { return fail("Which animation? \(AnimationLibrary.command) use <name>", status: 2) }
+    private static func use(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        guard let target = arguments.positionals.first else { return fail("Which animation? \(AnimationLibrary.command) use <name>", status: 2) }
+        guard !isPath(target) else {
+            return fail("Use an animation name from the animations folder, rather than a file path.", status: 2)
+        }
         let id = URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent
-        let builtIn = MotionStyle(rawValue: id.lowercased())
+        let builtIn = target.lowercased().hasSuffix(".json") ? nil : MotionStyle(rawValue: id.lowercased())
         if builtIn == nil {
             guard let entry = library.entry(id) else {
                 return fail("There is no \(id).json in \(library.folder.path).\(DropyAnimation.gallery.contains { $0.id == id } ? " Add the example first: \(AnimationLibrary.command) new \(id) --from \(id)" : "")")
@@ -226,16 +231,16 @@ enum AnimationCommand {
         return 0
     }
 
-    private static func code(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        guard let target = arguments.first else { return fail("Which animation? \(AnimationLibrary.command) code <file or name>", status: 2) }
+    private static func code(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        guard let target = arguments.positionals.first else { return fail("Which animation? \(AnimationLibrary.command) code <file or name>", status: 2) }
         guard let found = resolve(target, library) else { return notFound(target, library) }
         guard let animation = found.result.animation else { return fail("\(found.label) has errors; fix them first.") }
         print(AnimationFile.shareCode(for: animation))
         return 0
     }
 
-    private static func importCode(_ arguments: [String], _ library: AnimationLibrary) -> Int32 {
-        guard let code = arguments.first(where: { $0.hasPrefix(AnimationFile.shareCodePrefix) }) else {
+    private static func importCode(_ arguments: AnimationCommandArguments, _ library: AnimationLibrary) -> Int32 {
+        guard let code = arguments.positionals.first(where: { $0.hasPrefix(AnimationFile.shareCodePrefix) }) else {
             return fail("Paste the code: \(AnimationLibrary.command) import \(AnimationFile.shareCodePrefix)… [--name <name>]", status: 2)
         }
         let result = AnimationFile.read(shareCode: code)
@@ -266,8 +271,12 @@ enum AnimationCommand {
         if FileManager.default.fileExists(atPath: url.path) {
             return Found(label: AnimationText.clean(url.lastPathComponent, limit: 100), result: AnimationLibrary.read(url))
         }
+        // A path identifies exactly that file. Never turn a missing path into
+        // a same-named library entry or built-in animation.
+        guard !isPath(target) else { return nil }
         let id = url.deletingPathExtension().lastPathComponent
         if let entry = library.entry(id) { return Found(label: entry.url.lastPathComponent, result: entry.result) }
+        guard !target.lowercased().hasSuffix(".json") else { return nil }
         if let style = MotionStyle(rawValue: id.lowercased()) {
             return Found(label: style.title, result: AnimationReadResult(animation: style.animation, issues: []))
         }
@@ -275,6 +284,10 @@ enum AnimationCommand {
             return Found(label: example.animation.name, result: AnimationReadResult(animation: example.animation, issues: []))
         }
         return nil
+    }
+
+    private static func isPath(_ target: String) -> Bool {
+        target.contains("/") || target.hasPrefix("~")
     }
 
     private static func notFound(_ target: String, _ library: AnimationLibrary) -> Int32 {
@@ -301,9 +314,8 @@ enum AnimationCommand {
         return lines.joined(separator: "\n")
     }
 
-    private static func option(_ name: String, in arguments: [String]) -> String? {
-        guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
-        return arguments[index + 1]
+    private static func option(_ name: String, in arguments: AnimationCommandArguments) -> String? {
+        arguments.options[name]
     }
 
     private static func count(_ number: Int, _ noun: String) -> String { "\(number) \(noun)\(number == 1 ? "" : "s")" }

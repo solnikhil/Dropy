@@ -144,6 +144,36 @@ done
 "$app_binary" animation check check-drop >/dev/null
 "$app_binary" animation render check-drop --out "$animations_dir/check.png" >/dev/null
 [[ -s "$animations_dir/check.png" ]] || { print -u2 "animation render wrote nothing"; exit 1; }
+# Option values are never animation targets, and malformed creation arguments
+# must fail rather than writing an animation from an unintended default style.
+"$app_binary" animation render --out "$animations_dir/options-first.png" check-drop >/dev/null
+[[ -s "$animations_dir/options-first.png" ]] || { print -u2 "options-first render failed"; exit 1; }
+if "$app_binary" animation new "Missing Source" --from >"$animations_dir/argument-check.txt" 2>&1; then
+  print -u2 "a missing --from value created an animation"; exit 1
+fi
+[[ ! -e "$animations_dir/missing-source.json" ]] || { print -u2 "malformed arguments wrote a file"; exit 1; }
+if "$app_binary" animation new "Unknown Option" --typo >"$animations_dir/argument-check.txt" 2>&1; then
+  print -u2 "an unknown option created an animation"; exit 1
+fi
+[[ ! -e "$animations_dir/unknown-option.json" ]] || { print -u2 "an unknown option wrote a file"; exit 1; }
+# An explicit missing path cannot silently select a same-named built-in or
+# library file. These failures happen before playback IPC or preference writes.
+for verb in check code render watch use; do
+  for target in "$animations_dir/missing/balanced.json" "$animations_dir/missing/check-drop.json"; do
+    if "$app_binary" animation "$verb" "$target" >"$animations_dir/path-check.txt" 2>&1; then
+      print -u2 "animation $verb substituted a missing explicit path"; exit 1
+    fi
+  done
+done
+if "$app_binary" animation check balanced.json >"$animations_dir/path-check.txt" 2>&1; then
+  print -u2 "a missing JSON filename selected a built-in style"; exit 1
+fi
+if "$app_binary" animation new "Missing Path Source" --from "$animations_dir/missing/balanced.json" >"$animations_dir/path-check.txt" 2>&1; then
+  print -u2 "a missing --from path selected a built-in style"; exit 1
+fi
+[[ ! -e "$animations_dir/missing-path-source.json" ]] || { print -u2 "a missing source path created a file"; exit 1; }
+"$app_binary" animation check "$animations_dir/check-drop.json" >/dev/null
+"$app_binary" animation check check-drop.json >/dev/null
 print '{ "open": 1 }' > "$animations_dir/broken.json"
 if "$app_binary" animation check broken >/dev/null 2>&1; then print -u2 "a broken animation passed its check"; exit 1; fi
 print '{ "dropyAnimation": 1e100 }' > "$animations_dir/oversized-version.json"
