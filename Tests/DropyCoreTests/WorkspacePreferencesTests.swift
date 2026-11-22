@@ -45,6 +45,37 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.openTargetBundleIdentifier, "editor")
     }
 
+    func testEmptyFavoritesCannotDisplaceTheFirstRealOpeningChoice() throws {
+        var preferences = DropyPreferences()
+        let initial = preferences
+        preferences.addFavorite("")
+        XCTAssertEqual(preferences, initial)
+        preferences.addFavorite("notes")
+        XCTAssertEqual(preferences.favoriteApps.map(\.id), ["notes"])
+        XCTAssertEqual(preferences.openTargetBundleIdentifier, "notes")
+
+        let saved = Data(#"{"pinnedBundleIdentifier":"","favorites":[{"bundleIdentifier":""}],"openBehavior":"lastUsed","lastUsedBundleIdentifier":"editor"}"#.utf8)
+        var restored = try JSONDecoder().decode(DropyPreferences.self, from: saved)
+        XCTAssertNil(restored.pinnedBundleIdentifier, "Settings must not treat an empty legacy pin as active")
+        XCTAssertTrue(restored.favoriteApps.isEmpty)
+        XCTAssertEqual(restored.openTargetBundleIdentifier, "editor")
+        restored.addFavorite("notes")
+        XCTAssertEqual(restored.favoriteApps.map(\.id), ["notes"])
+        XCTAssertEqual(restored.openTargetBundleIdentifier, "notes")
+        restored = try JSONDecoder().decode(DropyPreferences.self, from: JSONEncoder().encode(restored))
+        XCTAssertEqual(restored.openTargetBundleIdentifier, "notes")
+    }
+
+    func testEmptySavedOpeningChoicesResolveToThePicker() {
+        XCTAssertNil(DropyPreferences(openBehavior: .direct, selectedBundleIdentifier: "").openTargetBundleIdentifier)
+        XCTAssertNil(DropyPreferences(openBehavior: .lastUsed, lastUsedBundleIdentifier: "").openTargetBundleIdentifier)
+        XCTAssertNil(DropyPreferences(pinnedBundleIdentifier: "").openTargetBundleIdentifier)
+        XCTAssertNil(DropyPreferences(pinnedBundleIdentifier: "").pinnedBundleIdentifier)
+        var preferences = DropyPreferences(pinnedBundleIdentifier: "notes")
+        preferences.pinnedBundleIdentifier = ""
+        XCTAssertNil(preferences.pinnedBundleIdentifier)
+    }
+
     func testPerAppPresentationDoesNotChangeGlobalDefaults() throws {
         let preferences = DropyPreferences(sizePreset: .compact, favorites: [
             FavoriteApp(bundleIdentifier: "notes", sizePreset: .wide, position: .left),

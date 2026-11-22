@@ -53,13 +53,15 @@ extension DropyPreferences {
         for favorite in favorites where !favorite.bundleIdentifier.isEmpty {
             if !result.contains(where: { $0.id == favorite.id }) { result.append(favorite) }
         }
-        if let pinnedBundleIdentifier, !result.contains(where: { $0.id == pinnedBundleIdentifier }) {
+        if let pinnedBundleIdentifier, !pinnedBundleIdentifier.isEmpty, !result.contains(where: { $0.id == pinnedBundleIdentifier }) {
             result.insert(FavoriteApp(bundleIdentifier: pinnedBundleIdentifier), at: 0)
         }
         return result
     }
 
     public mutating func addFavorite(_ bundleIdentifier: String) {
+        guard !bundleIdentifier.isEmpty else { return }
+        if pinnedBundleIdentifier?.isEmpty == true { pinnedBundleIdentifier = nil }
         favorites = favoriteApps
         let isFirstFavorite = favorites.isEmpty
         if !favorites.contains(where: { $0.id == bundleIdentifier }) {
