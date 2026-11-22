@@ -118,6 +118,24 @@ final class MotionCurveTests: XCTestCase {
         }
     }
 
+    func testDegenerateSketchesNeverReuseRejectedNonFiniteTimes() {
+        for invalid in [Double.nan, .infinity, -.infinity] {
+            for points in [[(invalid, 0.0), (invalid, 1.0)], [(0.2, 0.0), (invalid, 1.0)],
+                           [(0.2, 0.0), (0.8, invalid)]] {
+                let keys = CurveSketch.keyframes(from: points)
+                XCTAssertEqual(keys.count, 2)
+                XCTAssertTrue(keys.allSatisfy { $0.time.isFinite && $0.value.isFinite })
+                XCTAssertTrue(keys[0].time < keys[1].time)
+                var animation = MotionStyle.balanced.animation
+                animation.open.height = .keyframes(keys)
+                XCTAssertTrue(AnimationFile.read(AnimationFile.data(for: animation)).errors.isEmpty)
+            }
+        }
+        let single = CurveSketch.keyframes(from: [(0.2, 0), (Double.infinity, 1)])
+        XCTAssertEqual(single.last?.time ?? 0, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(CurveSketch.keyframes(from: []).last?.time ?? 0, 0.3, accuracy: 1e-9)
+    }
+
     func testAStrokeLiftedPastTheEndSettlesInsteadOfJumping() {
         let stroke = stride(from: 0.0, through: 0.3, by: 0.01).map { (time: $0, value: min($0 / 0.2, 1) * 1.1) }
         let keys = CurveSketch.keyframes(from: stroke)

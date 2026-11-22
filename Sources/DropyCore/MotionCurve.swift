@@ -301,7 +301,9 @@ public enum CurveSketch {
             forward.append((time, point.value))
         }
         guard let first = forward.first, var last = forward.last, last.time > first.time else {
-            let end = max(points.last?.time ?? 0.3, 0.05)
+            // Only use accepted finite samples for the fallback. A rejected
+            // final point must not reintroduce infinity into an otherwise safe curve.
+            let end = max(forward.last?.time ?? 0.3, 0.05)
             return [MotionKeyframe(time: 0, value: 0), MotionKeyframe(time: end, value: 1)]
         }
         forward[0].value = 0
