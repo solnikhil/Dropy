@@ -141,7 +141,9 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     public var showInDock: Bool
     /// The app shown in the notch: every opening shows its window, launching the app
     /// first when needed. Nil leaves the open behavior to choose.
-    public var pinnedBundleIdentifier: String?
+    public var pinnedBundleIdentifier: String? {
+        didSet { if pinnedBundleIdentifier?.isEmpty == true { pinnedBundleIdentifier = nil } }
+    }
     /// Opens and closes the overlay from anywhere.
     public var shortcut: KeyShortcut
     /// Where on the screen the overlay opens from.
@@ -196,7 +198,7 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         self.motionStyle = motionStyle
         self.customAnimation = customAnimation
         self.showInDock = showInDock
-        self.pinnedBundleIdentifier = pinnedBundleIdentifier
+        self.pinnedBundleIdentifier = pinnedBundleIdentifier?.isEmpty == false ? pinnedBundleIdentifier : nil
         self.shortcut = shortcut
         self.position = position
         self.hidesDock = hidesDock
@@ -209,12 +211,14 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
     /// The app whose window an opening selects by itself, if any. A pinned app wins
     /// over the open behavior.
     public var openTargetBundleIdentifier: String? {
-        if let pinnedBundleIdentifier { return pinnedBundleIdentifier }
+        if let pinnedBundleIdentifier, !pinnedBundleIdentifier.isEmpty { return pinnedBundleIdentifier }
+        let target: String?
         switch openBehavior {
-        case .direct: return selectedBundleIdentifier
-        case .lastUsed: return lastUsedBundleIdentifier
-        case .picker: return nil
+        case .direct: target = selectedBundleIdentifier
+        case .lastUsed: target = lastUsedBundleIdentifier
+        case .picker: target = nil
         }
+        return target?.isEmpty == false ? target : nil
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -247,7 +251,8 @@ public struct DropyPreferences: Codable, Equatable, Sendable {
         motionStyle = try container.decodeIfPresent(MotionStyle.self, forKey: .motionStyle) ?? defaults.motionStyle
         customAnimation = try container.decodeIfPresent(String.self, forKey: .customAnimation)
         showInDock = try container.decodeIfPresent(Bool.self, forKey: .showInDock) ?? defaults.showInDock
-        pinnedBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
+        let decodedPin = try container.decodeIfPresent(String.self, forKey: .pinnedBundleIdentifier)
+        pinnedBundleIdentifier = decodedPin?.isEmpty == false ? decodedPin : nil
         favoriteShortcutsEnabled = try container.decodeIfPresent(Bool.self, forKey: .favoriteShortcutsEnabled) ?? false
         favorites = try container.decodeIfPresent([FavoriteApp].self, forKey: .favorites) ?? []
         rememberedWindows = try container.decodeIfPresent([RememberedWindow].self, forKey: .rememberedWindows) ?? []
