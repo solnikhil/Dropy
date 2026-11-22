@@ -61,6 +61,31 @@ final class WorkspaceLayoutTests: XCTestCase {
         let renamed = Data(#"{"sizePreset":"trueSize"}"#.utf8)
         XCTAssertEqual(try JSONDecoder().decode(DropyPreferences.self, from: renamed).sizePreset, .nativeSize)
     }
+    func testConstrainedBudgetsKeepPreviewInsideTheBody() {
+        for expanded in [false, true] {
+            for screen in [CGSize(width: 100, height: 70), CGSize(width: 1710, height: 1112)] {
+                for budget in [CGSize(width: 10, height: 10), CGSize(width: 40, height: 45)] {
+                    let layout = WorkspaceLayout.make(source: CGSize(width: 1200, height: 800),
+                        screen: screen, notch: notch, expanded: expanded, maximumSize: budget)
+                    let limit = expanded ? CGSize(width: screen.width - 32, height: screen.height - 32) : budget
+                    XCTAssertTrue(layout.size.width <= limit.width && layout.size.height <= limit.height)
+                    XCTAssertTrue(layout.preview.minX >= 0 && layout.preview.minY >= 0)
+                    XCTAssertTrue(layout.preview.maxX <= layout.size.width + 1e-9)
+                    XCTAssertTrue(layout.preview.maxY <= layout.size.height + 1e-9)
+                    XCTAssertEqual(layout.preview.width / layout.preview.height, 1.5, accuracy: 1e-9)
+                }
+            }
+        }
+    }
+
+    func testVeryLargeSourcesCanScaleBelowOneThousandth() {
+        let layout = WorkspaceLayout.make(source: CGSize(width: 2_000_000, height: 1_000_000),
+            screen: screen, notch: notch, expanded: false, maximumSize: CGSize(width: 600, height: 360))
+        XCTAssertTrue(layout.preview.width <= layout.size.width)
+        XCTAssertTrue(layout.size.width <= 600 && layout.size.height <= 360)
+        XCTAssertEqual(layout.preview.width / layout.preview.height, 2, accuracy: 1e-9)
+    }
+
     func testNewSettingsMigrateAndPersist() throws {
         let old = try JSONDecoder().decode(DropyPreferences.self, from: Data(#"{"trigger":"notchClick","contentMode":"fill"}"#.utf8))
         XCTAssertFalse(old.restrictNotchCrossing)

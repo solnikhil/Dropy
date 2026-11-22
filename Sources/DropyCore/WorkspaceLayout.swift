@@ -19,21 +19,25 @@ public struct WorkspaceLayout: Equatable, Sendable {
     }
     public static func make(source: CGSize, screen: CGSize, notch: CGSize, expanded: Bool,
                             maximumSize: CGSize? = nil) -> WorkspaceLayout {
-        let clearance = max(notch.height, 32)
         let budget = expanded ? screen : maximumSize ?? screen
         let widthLimit = max(1, min(screen.width - 32, budget.width))
         let totalHeightLimit = max(1, min(screen.height - 32, budget.height))
-        let heightLimit = max(1, totalHeightLimit - clearance - bottomInset)
+        // When display space is smaller than the normal chrome, shrink the
+        // insets before fitting content so the final body still obeys its budget.
+        let clearance = min(max(notch.height, 32), max(0, totalHeightLimit - 1))
+        let bottom = min(bottomInset, max(0, totalHeightLimit - clearance - 1))
+        let horizontal = min(contentInset, max(0, (widthLimit - 1) / 2))
+        let heightLimit = totalHeightLimit - clearance - bottom
         let sourceWidth = max(1, source.width), sourceHeight = max(1, source.height)
-        let fit = min(max(1, widthLimit - 2 * contentInset) / sourceWidth, heightLimit / sourceHeight)
-        let scale = max(0.001, expanded ? fit : min(1, fit))
+        let fit = min((widthLimit - 2 * horizontal) / sourceWidth, heightLimit / sourceHeight)
+        let scale = expanded ? fit : min(1, fit)
         let image = CGSize(width: sourceWidth * scale, height: sourceHeight * scale)
         let controls = 2 * (controlWingWidth + topControlInset + housingControlGap)
-        let width = min(widthLimit, max(notch.width + controls, image.width + 2 * contentInset))
-        let size = CGSize(width: width, height: image.height + clearance + bottomInset)
+        let width = min(widthLimit, max(notch.width + controls, image.width + 2 * horizontal))
+        let size = CGSize(width: width, height: image.height + clearance + bottom)
         // The controls may require a wider body than the image. Center the image
         // without stretching a narrow source to fill that extra room.
         return WorkspaceLayout(size: size, preview: CGRect(x: (width - image.width) / 2,
-            y: bottomInset, width: image.width, height: image.height))
+            y: bottom, width: image.width, height: image.height))
     }
 }
