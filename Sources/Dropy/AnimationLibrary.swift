@@ -222,7 +222,14 @@ final class AnimationLibrary: ObservableObject {
             }
             next.append(Entry(id: id, url: url, result: result, modified: modified, contents: contents))
         }
-        next.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        next.sort {
+            let byName = $0.name.localizedStandardCompare($1.name)
+            if byName != .orderedSame { return byName == .orderedAscending }
+            // Copies often retain their display name. Directory enumeration has
+            // no stable order; use file identity to keep equal-name rows in place.
+            if $0.id != $1.id { return $0.id < $1.id }
+            return $0.url.lastPathComponent < $1.url.lastPathComponent
+        }
         guard next != entries else { return }
         entries = next
         if notify { onChange?() }
