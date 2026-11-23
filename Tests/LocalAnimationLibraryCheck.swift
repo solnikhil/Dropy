@@ -10,6 +10,7 @@ private final class WatcherLifetimeProbe: Sendable {}
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let library = AnimationLibrary(folder: folder)
+        try verifyStableCatalogOrder(in: folder)
         try verifyBoundedReads(in: folder)
         try verifyPreservedTimestampEdits(in: folder)
         try verifyWatchedFileChanges(in: folder)
@@ -55,6 +56,37 @@ private final class WatcherLifetimeProbe: Sendable {}
         precondition(copy != existing && library.entry(copyID)?.animation != nil)
         try await verifyWatcherLifetime(in: folder)
         print("Animation library checks passed (documents preserved, generated guide refreshed, creation refuses overwrites)")
+    }
+
+    @MainActor private static func verifyStableCatalogOrder(in root: URL) throws {
+        let folder = root.appendingPathComponent("equal-names")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let ids = ["zeta", "alpha", "echo", "bravo", "delta", "charlie"]
+        let data = AnimationFile.data(for: MotionStyle.balanced.animation)
+        for id in ids { try data.write(to: folder.appendingPathComponent(id + ".json")) }
+        var first = MotionStyle.balanced.animation
+        first.name = "A first title"
+        try AnimationFile.data(for: first).write(to: folder.appendingPathComponent("zz-first.json"))
+        let library = AnimationLibrary(folder: folder)
+        library.scan(notify: false)
+        let expected = ["zz-first"] + ids.sorted()
+        precondition(library.entries.map(\.id) == expected,
+                     "Display name orders the catalog first; equal names must use stable file identities")
+        var notifications = 0
+        library.onChange = { notifications += 1 }
+        library.scan()
+        precondition(notifications == 0)
+        // Recreating files in a different order must not rearrange equal-name rows.
+        for id in ids.reversed() {
+            let file = folder.appendingPathComponent(id + ".json")
+            try FileManager.default.removeItem(at: file)
+            try data.write(to: file)
+        }
+        library.scan()
+        precondition(library.entries.map(\.id) == expected)
+        library.scan()
+        precondition(library.entries.map(\.id) == expected)
     }
 
     @MainActor private static func waitUntil(_ condition: () -> Bool) async {
