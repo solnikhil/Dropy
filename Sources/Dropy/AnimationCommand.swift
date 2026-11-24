@@ -187,31 +187,20 @@ enum AnimationCommand {
         guard !isPath(target) else {
             return fail("Use an animation name from the animations folder, rather than a file path.", status: 2)
         }
-        let id = URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent
-        let builtIn = target.lowercased().hasSuffix(".json") ? nil : MotionStyle(rawValue: id.lowercased())
-        if builtIn == nil {
-            guard let entry = library.entry(id) else {
-                return fail("There is no \(id).json in \(library.folder.path).\(DropyAnimation.gallery.contains { $0.id == id } ? " Add the example first: \(AnimationLibrary.command) new \(id) --from \(id)" : "")")
-            }
-            guard entry.animation != nil else { return fail("\(id).json has errors; run `\(AnimationLibrary.command) check \(id)` first.") }
+        guard let activation = library.activation(for: target) else {
+            return fail("There is no usable animation called “\(AnimationText.clean(target, limit: 100))” in \(library.folder.path). Run `\(AnimationLibrary.command) check \(AnimationText.shellQuoted(target))` for details.")
         }
         if AnimationRemote.dropyIsRunning {
-            guard let reply = AnimationRemote.send(.use, payload: builtIn?.rawValue ?? id) else {
+            guard let reply = AnimationRemote.send(.use, payload: activation.target) else {
                 return fail("Dropy didn't answer. Is it this copy of Dropy that's running?")
             }
             print(reply)
         } else {
             // Not running: change the saved preferences directly.
             let store = PreferenceStore()
-            store.update {
-                if let builtIn {
-                    $0.motionStyle = builtIn
-                    $0.customAnimation = nil
-                } else {
-                    $0.customAnimation = id
-                }
-            }
-            print("Dropy will use \(builtIn?.title ?? library.entry(id)?.name ?? id) when it starts.")
+            store.update { activation.apply(to: &$0) }
+            let name = library.choice(for: store.value).animation.name
+            print("Dropy will use \(name) when it starts.")
         }
         return 0
     }

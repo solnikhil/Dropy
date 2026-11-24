@@ -819,15 +819,12 @@ final class DropyAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func remoteUse(_ note: Notification) {
         guard let id = note.object as? String, let target = note.userInfo?["payload"] as? String else { return }
         animations.scan()
-        if let style = MotionStyle(rawValue: target) {
-            change { $0.motionStyle = style; $0.customAnimation = nil }
-        } else if animations.entry(target)?.animation != nil {
-            change { $0.customAnimation = target }
-        } else {
-            // Any process on the Mac can send this request: only a usable file in the
-            // animations folder may become the preference.
+        guard let activation = animations.activation(for: target) else {
+            // Any process can send this request: resolve only built-ins and usable
+            // files in the animations folder, preserving explicit file identity.
             return AnimationRemote.answer(id, "There is no usable animation called “\(AnimationText.clean(target, limit: 60))”.")
         }
+        change { activation.apply(to: &$0) }
         let choice = animations.choice(for: preferences.value)
         AnimationRemote.answer(id, choice.problem ?? "Dropy now uses “\(choice.animation.name)”.")
     }

@@ -10,6 +10,7 @@ private final class WatcherLifetimeProbe: Sendable {}
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let library = AnimationLibrary(folder: folder)
+        try verifyExplicitActivation(in: folder)
         try verifyStableCatalogOrder(in: folder)
         try verifyBoundedReads(in: folder)
         try verifyPreservedTimestampEdits(in: folder)
@@ -56,6 +57,42 @@ private final class WatcherLifetimeProbe: Sendable {}
         precondition(copy != existing && library.entry(copyID)?.animation != nil)
         try await verifyWatcherLifetime(in: folder)
         print("Animation library checks passed (documents preserved, generated guide refreshed, creation refuses overwrites)")
+    }
+
+    @MainActor private static func verifyExplicitActivation(in root: URL) throws {
+        let folder = root.appendingPathComponent("activation")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let library = AnimationLibrary(folder: folder)
+        var custom = MotionStyle.rapid.animation
+        custom.name = "My Balanced Animation"
+        try library.save(custom, as: "balanced")
+        try library.save(custom, as: "personal.v2")
+        try Data("{ invalid".utf8).write(to: folder.appendingPathComponent("smooth.json"))
+        library.scan(notify: false)
+        precondition(library.activation(for: "balanced") == .builtIn(.balanced))
+        for target in ["balanced.json", "balanced.JSON"] {
+            guard let activation = library.activation(for: target) else { preconditionFailure("Custom file must resolve") }
+            precondition(activation == .custom("balanced"))
+            // The command serializes the target and the running app resolves it
+            // again: that round-trip must not turn a file into a built-in style.
+            precondition(library.activation(for: activation.target) == activation)
+            var preferences = DropyPreferences()
+            activation.apply(to: &preferences)
+            precondition(preferences.customAnimation == "balanced")
+            precondition(library.choice(for: preferences).animation == custom)
+            library.activation(for: "balanced")?.apply(to: &preferences)
+            precondition(preferences.customAnimation == nil && preferences.motionStyle == .balanced)
+        }
+        for target in ["personal.v2", "personal.v2.json"] {
+            let activation = library.activation(for: target)
+            precondition(activation == .custom("personal.v2"))
+            precondition(activation.flatMap { library.activation(for: $0.target) } == activation)
+        }
+        for target in ["smooth.json", "missing.json", "../balanced.json", "/tmp/balanced.json", "~balanced"] {
+            precondition(library.activation(for: target) == nil, "An explicit invalid or outside file must never select a built-in")
+        }
+        precondition(library.activation(for: "smooth") == .builtIn(.smooth))
     }
 
     @MainActor private static func verifyStableCatalogOrder(in root: URL) throws {
