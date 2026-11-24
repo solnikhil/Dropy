@@ -250,6 +250,38 @@ final class AnimationLibrary: ObservableObject {
         return Choice(animation: animation)
     }
 
+    /// Activation preserves an explicit JSON filename, including one whose stem
+    /// matches a built-in style. The command and notification receiver share it.
+    enum Activation: Equatable {
+        case builtIn(MotionStyle)
+        case custom(String)
+
+        var target: String {
+            switch self {
+            case .builtIn(let style): style.rawValue
+            case .custom(let id): id + ".json"
+            }
+        }
+
+        func apply(to preferences: inout DropyPreferences) {
+            switch self {
+            case .builtIn(let style):
+                preferences.motionStyle = style
+                preferences.customAnimation = nil
+            case .custom(let id): preferences.customAnimation = id
+            }
+        }
+    }
+
+    func activation(for target: String) -> Activation? {
+        guard !target.contains("/"), !target.hasPrefix("~") else { return nil }
+        let explicitFile = target.lowercased().hasSuffix(".json")
+        if !explicitFile, let style = MotionStyle(rawValue: target.lowercased()) { return .builtIn(style) }
+        let id = explicitFile ? String(target.dropLast(5)) : target
+        guard entry(id)?.animation != nil else { return nil }
+        return .custom(id)
+    }
+
     // MARK: Writing
 
     /// Creates `<id>.json` and reads the folder again. All callers add a new file;
