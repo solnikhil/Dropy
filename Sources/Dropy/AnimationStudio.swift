@@ -59,6 +59,7 @@ final class AnimationStudioModel: ObservableObject {
     private var undoStack: [DropyAnimation] = []
     private var redoStack: [DropyAnimation] = []
     private var gestureStart: DropyAnimation?
+    private var ignoresGestureUpdates = false
     private var saveTask: Task<Void, Never>?
     private var autoplayTask: Task<Void, Never>?
     private var written: Data?
@@ -79,8 +80,9 @@ final class AnimationStudioModel: ObservableObject {
         }
     }
 
-    var canUndo: Bool { !undoStack.isEmpty }
-    var canRedo: Bool { !redoStack.isEmpty }
+    private var hasGestureEdits: Bool { gestureStart.map { $0 != animation } ?? false }
+    var canUndo: Bool { hasGestureEdits || !undoStack.isEmpty }
+    var canRedo: Bool { !hasGestureEdits && !redoStack.isEmpty }
     var errors: [AnimationIssue] { issues.filter { $0.severity == .error } }
     var warnings: [AnimationIssue] { issues.filter { $0.severity == .warning } }
 
@@ -89,6 +91,7 @@ final class AnimationStudioModel: ObservableObject {
     /// A complete change, such as a menu choice: one undo step, saved, and the edited
     /// motion played.
     func edit(_ change: (inout DropyAnimation) -> Void) {
+        guard !ignoresGestureUpdates else { return }
         if gestureStart != nil { return live(change) }
         var next = animation
         change(&next)
@@ -101,11 +104,13 @@ final class AnimationStudioModel: ObservableObject {
 
     /// The start of a drag or a slider move: everything until `endGesture` is one undo step.
     func beginGesture() {
+        ignoresGestureUpdates = false
         if gestureStart == nil { gestureStart = animation }
     }
 
     /// A step of a drag: shown at once, saved shortly after.
     func live(_ change: (inout DropyAnimation) -> Void) {
+        guard !ignoresGestureUpdates else { return }
         guard gestureStart != nil else { return edit(change) }
         var next = animation
         change(&next)
@@ -114,6 +119,7 @@ final class AnimationStudioModel: ObservableObject {
     }
 
     func endGesture() {
+        ignoresGestureUpdates = false
         guard let start = gestureStart else { return }
         gestureStart = nil
         defer {
@@ -132,6 +138,9 @@ final class AnimationStudioModel: ObservableObject {
     }
 
     func undo() {
+        // Commit a live gesture before traversing history. Otherwise Undo skips
+        // its edits, and the later mouse-up can erase the resulting redo entry.
+        finishGestureForHistory()
         guard let previous = undoStack.popLast() else { return }
         redoStack.append(animation)
         selectedKey = nil
@@ -140,11 +149,20 @@ final class AnimationStudioModel: ObservableObject {
     }
 
     func redo() {
+        finishGestureForHistory()
         guard let next = redoStack.popLast() else { return }
         undoStack.append(animation)
         selectedKey = nil
         apply(next)
         scheduleAutoplay()
+    }
+
+    private func finishGestureForHistory() {
+        guard gestureStart != nil else { return }
+        endGesture()
+        // The mouse is still down. Keep its remaining callbacks from starting
+        // independent edits and destroying the history command's redo branch.
+        ignoresGestureUpdates = true
     }
 
     private func apply(_ next: DropyAnimation) {

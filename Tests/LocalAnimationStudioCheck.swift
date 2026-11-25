@@ -6,6 +6,7 @@ import DropyCore
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
+        try verifyGestureUndoHistory(in: folder)
         try verifyOriginalFileURL(in: folder)
         try verifyCrowdedKeyframes(in: folder)
         try verifyNonFiniteKeyEdits(in: folder)
@@ -28,6 +29,65 @@ import DropyCore
         let id = file.deletingPathExtension().lastPathComponent
         let model = AnimationStudioModel(library: library, fileID: id, animation: animation)
         return (library, model, file)
+    }
+
+    @MainActor private static func verifyGestureUndoHistory(in folder: URL) throws {
+        let (_, model, file) = try fixture(in: folder)
+        let original = model.animation
+        model.rename("Previous edit")
+        let previous = model.animation
+        model.beginGesture()
+        model.rename("Current drag")
+        let dragged = model.animation
+        precondition(model.canUndo)
+        model.undo()
+        precondition(model.animation == previous && model.canRedo,
+                     "Undo must restore the start of the active drag, not skip to an older edit")
+        for step in 1...3 {
+            model.live { $0.name = "Late drag update \(step)" }
+            model.rename("Late slider update \(step)")
+            precondition(model.animation == previous && model.canRedo,
+                         "Continued pointer motion after Undo must not split the interrupted gesture")
+        }
+        model.endGesture() // The eventual mouse-up must not change history again.
+        precondition(model.canRedo)
+        model.redo()
+        precondition(model.animation == dragged)
+        model.undo()
+        model.undo()
+        precondition(model.animation == original)
+        model.beginGesture()
+        model.rename("Replacement drag")
+        precondition(model.canUndo && !model.canRedo,
+                     "A new drag invalidates the old redo branch before mouse-up")
+        model.redo()
+        precondition(model.animation.name == "Replacement drag" && !model.canRedo)
+        model.endGesture()
+        model.undo()
+        precondition(model.animation == original && model.canRedo)
+        // An unchanged gesture must preserve an existing redo branch.
+        model.beginGesture()
+        model.redo()
+        precondition(model.animation.name == "Replacement drag")
+        model.endGesture()
+        model.saveNow()
+        precondition(AnimationLibrary.read(file).animation == model.animation)
+
+        let (_, fresh, _) = try fixture(in: folder)
+        fresh.beginGesture()
+        fresh.rename("First drag")
+        precondition(fresh.canUndo, "The first live drag must enable Undo")
+        fresh.undo()
+        precondition(fresh.animation == original && fresh.canRedo)
+        fresh.endGesture()
+        fresh.redo()
+        precondition(fresh.animation.name == "First drag")
+        fresh.beginGesture()
+        fresh.rename("New drag after release")
+        fresh.endGesture()
+        precondition(fresh.animation.name == "New drag after release", "A new interaction must accept edits normally")
+        fresh.undo()
+        precondition(fresh.animation.name == "First drag")
     }
 
     @MainActor private static func verifyOriginalFileURL(in folder: URL) throws {
