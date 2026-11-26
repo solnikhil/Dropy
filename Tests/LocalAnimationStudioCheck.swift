@@ -7,6 +7,7 @@ import DropyCore
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         try verifyGestureUndoHistory(in: folder)
+        try verifyDuplicatePreservesLocalEdits(in: folder)
         try verifyOriginalFileURL(in: folder)
         try verifyCrowdedKeyframes(in: folder)
         try verifyNonFiniteKeyEdits(in: folder)
@@ -88,6 +89,34 @@ import DropyCore
         precondition(fresh.animation.name == "New drag after release", "A new interaction must accept edits normally")
         fresh.undo()
         precondition(fresh.animation.name == "First drag")
+    }
+
+    @MainActor private static func verifyDuplicatePreservesLocalEdits(in folder: URL) throws {
+        for name in [nil, "New Animation"] as [String?] {
+            let (library, model, file) = try fixture(in: folder)
+            var external = model.animation
+            external.name = "External version"
+            external.author = "External author"
+            model.rename("Studio version")
+            model.describe("Unsaved Studio edits", author: "Studio author")
+            let snapshot = model.animation
+            let externalData = AnimationFile.data(for: external)
+            // No catalog update has arrived yet. Saving the original during
+            // duplication will discover and adopt the external edit.
+            try externalData.write(to: file, options: .atomic)
+            var openedID: String?
+            model.openFile = { openedID = $0 }
+            model.duplicate(named: name)
+            let duplicateID = name == nil ? "studio-version-copy" : "new-animation"
+            precondition(openedID == duplicateID, "Duplicate must open a copy of the visible Studio version")
+            var expected = snapshot
+            expected.name = name ?? "Studio version Copy"
+            precondition(library.entry(duplicateID)?.animation == expected,
+                         "The copy must preserve the local edits present when the command was invoked")
+            let originalData = try Data(contentsOf: file)
+            precondition(originalData == externalData && model.animation == external,
+                         "Saving a copy must still respect changes to the original on disk")
+        }
     }
 
     @MainActor private static func verifyOriginalFileURL(in folder: URL) throws {
