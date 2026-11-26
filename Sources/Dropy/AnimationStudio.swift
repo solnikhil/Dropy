@@ -312,9 +312,11 @@ final class AnimationStudioModel: ObservableObject {
 
     /// Saves a copy (or a new animation starting as this one) and opens it.
     func duplicate(named name: String? = nil) {
-        saveNow()
+        // Saving can adopt an external edit. Copy the version visible when
+        // the command was invoked.
         var copy = animation
-        copy.name = name ?? "\(animation.name) Copy"
+        saveNow()
+        copy.name = name ?? "\(copy.name) Copy"
         let id = library.freeID(for: copy.name)
         if name != nil { copy.name = AnimationLibrary.title(for: id) }
         do {
