@@ -22,6 +22,9 @@ final class AnimationStudioController: NSObject, NSWindowDelegate {
 
     /// Opens `fileID` (a file in the animations folder).
     func open(_ fileID: String) {
+        // Reopening the current file must load the snapshot after its pending
+        // edits have been saved.
+        model?.saveNow()
         library.scan()
         guard let entry = library.entry(fileID) else { return }
         guard let animation = entry.animation else {
@@ -29,7 +32,6 @@ final class AnimationStudioController: NSObject, NSWindowDelegate {
             NSWorkspace.shared.open(entry.url)
             return
         }
-        model?.saveNow()
         let model = AnimationStudioModel(library: library, fileID: fileID, animation: animation)
         model.playOnNotch = playOnNotch
         model.use = use
