@@ -12,6 +12,7 @@ private final class WatcherLifetimeProbe: Sendable {}
         let library = AnimationLibrary(folder: folder)
         try verifyExplicitActivation(in: folder)
         try verifyStableCatalogOrder(in: folder)
+        try verifyFreeIDWithOccupiedPaths(in: folder)
         try verifyBoundedReads(in: folder)
         try verifyPreservedTimestampEdits(in: folder)
         try verifyWatchedFileChanges(in: folder)
@@ -93,6 +94,31 @@ private final class WatcherLifetimeProbe: Sendable {}
             precondition(library.activation(for: target) == nil, "An explicit invalid or outside file must never select a built-in")
         }
         precondition(library.activation(for: "smooth") == .builtIn(.smooth))
+    }
+
+    @MainActor private static func verifyFreeIDWithOccupiedPaths(in root: URL) throws {
+        let folder = root.appendingPathComponent("occupied-paths")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        // Start with an empty catalog to simulate changes made since the last scan.
+        let library = AnimationLibrary(folder: folder)
+        let oldFile = folder.appendingPathComponent("draft.JSON")
+        let oldData = AnimationFile.data(for: MotionStyle.rapid.animation)
+        try oldData.write(to: oldFile)
+        let brokenLink = folder.appendingPathComponent("draft-2.json")
+        let missingTarget = folder.appendingPathComponent("missing-target").path
+        try FileManager.default.createSymbolicLink(atPath: brokenLink.path, withDestinationPath: missingTarget)
+
+        let id = library.freeID(for: "Draft")
+        precondition(id == "draft-3", "Copy naming must skip both the existing animation and the dangling symlink")
+        let copy = try library.save(MotionStyle.balanced.animation, as: id)
+        precondition(copy.lastPathComponent == "draft-3.json")
+        let oldContents = try Data(contentsOf: oldFile)
+        precondition(oldContents == oldData)
+        let linkDestination = try FileManager.default.destinationOfSymbolicLink(atPath: brokenLink.path)
+        precondition(linkDestination == missingTarget)
+        precondition(!FileManager.default.fileExists(atPath: missingTarget))
     }
 
     @MainActor private static func verifyStableCatalogOrder(in root: URL) throws {
