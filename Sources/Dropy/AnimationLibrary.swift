@@ -298,10 +298,24 @@ final class AnimationLibrary: ObservableObject {
     /// A file name for `name` that is not taken yet: "Springy Drop" → "springy-drop",
     /// then "springy-drop-2"…
     func freeID(for name: String) -> String {
+        // The catalog can be stale, and it accepts every case of the JSON
+        // extension. Reserve those IDs even on a case-sensitive volume.
+        let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        let occupiedIDs = Set(urls.filter { $0.pathExtension.lowercased() == "json" }
+            .map { $0.deletingPathExtension().lastPathComponent })
+        func isOccupied(_ id: String) -> Bool {
+            if occupiedIDs.contains(id) { return true }
+            // Let the filesystem match case aliases and count dangling symlinks
+            // without following them.
+            var info = stat()
+            let path = folder.appendingPathComponent("\(id).json").path
+            return lstat(path, &info) == 0
+        }
+
         let base = Self.slug(name)
         var id = base
         var number = 2
-        while FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(id).json").path) {
+        while isOccupied(id) {
             id = "\(base)-\(number)"
             number += 1
         }
